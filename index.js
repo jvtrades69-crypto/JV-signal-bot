@@ -51,29 +51,68 @@ function userAllowed(interaction) {
   return interaction.member.permissions.has(PermissionsBitField.Flags.Administrator);
 }
 
-// ==== embed render ====
+// ==== embed render (pro format) ====
+function fmtPct(p) {
+  if (p == null) return null;
+  const n = Number(p);
+  if (!isFinite(n)) return null;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function code(x) { return `\`${x}\``; }
+
+function titleFrom(s) {
+  const asset = s.asset.toUpperCase();
+  const dir = s.direction.toUpperCase();
+  const tf = s.timeframe ? ` (${s.timeframe})` : '';
+  const emoji = s.direction.toLowerCase() === 'long' ? '🟢' : '🔴';
+  return `${emoji} $${asset} | ${dir}${tf}`;
+}
+
 function makeSignalEmbed(s) {
-  const dirColor = s.direction.toLowerCase() === 'long' ? 0x00A86B : 0xE63946; // green/red
-  const title = `${s.asset.toUpperCase()} | ${s.direction.toUpperCase()} ${s.timeframe ? `(${s.timeframe})` : ''}`.trim();
-
-  const rows = [
-    `**Entry:** ${s.entry}`,
-    `**SL:** ${s.sl}`,
-    s.tp1 ? `**TP1:** ${s.tp1}` : null,
-    s.tp2 ? `**TP2:** ${s.tp2}` : null,
-    s.tp3 ? `**TP3:** ${s.tp3}` : null,
-    s.risk ? `**Risk:** ${s.risk}%` : null,
-    s.chart ? `**Chart:** ${s.chart}` : null
-  ].filter(Boolean);
-
-  const desc = rows.join(' • ').replace('**Chart:**', '\n**Chart:**');
-
-  return new EmbedBuilder()
-    .setTitle(title)
-    .setDescription(desc)
-    .setFooter({ text: `Signal ID: ${s.id} • Status: ${s.status}` })
+  const color = s.direction.toLowerCase() === 'long' ? 0x00A86B : 0xE63946; // green/red
+  const e = new EmbedBuilder()
+    .setTitle(titleFrom(s))
+    .setColor(color)
     .setTimestamp(new Date(s.createdAt))
-    .setColor(dirColor);
+    .setFooter({ text: `Signal ID: ${s.id} • Status: ${s.status}` });
+
+  // 📌 Reason (optional)
+  if (s.reason && s.reason.trim().length) {
+    e.addFields({ name: '📌 Reason for Setup', value: s.reason.trim().slice(0, 1024) });
+  }
+
+  // 📊 Trade details
+  const lines = [];
+  lines.push(`**Entry:** ${code(s.entry)}`);
+  lines.push(`**Stop Loss:** ${code(s.sl)}`);
+  if (s.tp1) {
+    const pct = fmtPct(s.tp1_close_pct) ?? 50;
+    lines.push(`**TP1:** ${code(s.tp1)} (${pct === 100 ? 'final target 🎯' : `close ${pct}% 📉`})`);
+  }
+  if (s.tp2) {
+    const pct = fmtPct(s.tp2_close_pct);
+    const label = (pct == null || pct >= 100) ? 'final target 🎯' : `close ${pct}% 📉`;
+    lines.push(`**TP2:** ${code(s.tp2)} (${label})`);
+  }
+  if (s.tp3) {
+    const pct = fmtPct(s.tp3_close_pct);
+    const label = (pct == null || pct >= 100) ? 'final target 🎯' : `close ${pct}% 📉`;
+    lines.push(`**TP3:** ${code(s.tp3)} (${label})`);
+  }
+  e.addFields({ name: '📊 Trade Details', value: lines.join('\n') });
+
+  // 💵 Risk (optional)
+  if (s.risk != null) {
+    e.addFields({ name: '💵 Risk', value: `${s.risk}%`, inline: true });
+  }
+
+  // 🔗 Chart (optional)
+  if (s.chart) {
+    e.addFields({ name: '🔗 Chart / Setup', value: `<${s.chart}>` });
+  }
+
+  return e;
 }
 
 function makeActionRow(s) {
@@ -98,22 +137,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (name === 'signal') {
         if (!userAllowed(interaction)) return interaction.reply({ content: 'No permission.', ephemeral: true });
 
-        const asset = interaction.options.getString('asset', true);
-        const direction = interaction.options.getString('direction', true);
+        const asset = interaction.options.getString('asset', true);               // choices: btc/eth/sol
+        const direction = interaction.options.getString('direction', true);       // long/short
         const entry = interaction.options.getString('entry', true);
         const sl = interaction.options.getString('sl', true);
         const tp1 = interaction.options.getString('tp1', false);
         const tp2 = interaction.options.getString('tp2', false);
         const tp3 = interaction.options.getString('tp3', false);
+        const tp1_close_pct = interaction.options.getNumber('tp1_close_pct', false) ?? 50;
+        const tp2_close_pct = interaction.options.getNumber('tp2_close_pct', false) ?? 100;
+        const tp3_close_pct = interaction.options.getNumber('tp3_close_pct', false) ?? null;
         const timeframe = interaction.options.getString('timeframe', false);
         const risk = interaction.options.getNumber('risk', false);
+        const reason = interaction.options.getString('reason', false);
         const chart = interaction.options.getString('chart', false);
         const channelOpt = interaction.options.getChannel('channel', false);
 
         const s = {
           id: nanoid(8),
           asset, direction, entry, sl, tp1, tp2, tp3,
-          timeframe, risk, chart,
+          tp1_close_pct, tp2_close_pct, tp3_close_pct,
+          timeframe, risk, reason, chart,
           status: 'Open',
           createdAt: Date.now(),
           messageLink: null
@@ -122,7 +166,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const embed = makeSignalEmbed(s);
         const row = makeActionRow(s);
 
-        // pick destination (prefer provided, else where the command was used)
+        // choose destination (prefer provided, else where command was used)
         let target = null;
         if (channelOpt) {
           if (channelOpt.type !== ChannelType.GuildText) {
@@ -159,7 +203,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const s = db.signals[id];
         if (!s) return interaction.reply({ content: 'Signal not found.', ephemeral: true });
 
-        const fields = ['entry','sl','tp1','tp2','tp3','chart','timeframe'];
+        const fields = ['entry','sl','tp1','tp2','tp3','timeframe','reason','chart'];
         let changed = false;
         for (const f of fields) {
           const val = interaction.options.getString(f, false);
@@ -167,12 +211,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
         }
         const riskNum = interaction.options.getNumber('risk', false);
         if (riskNum !== null) { s.risk = riskNum; changed = true; }
+        const p1 = interaction.options.getNumber('tp1_close_pct', false);
+        if (p1 !== null) { s.tp1_close_pct = p1; changed = true; }
+        const p2 = interaction.options.getNumber('tp2_close_pct', false);
+        if (p2 !== null) { s.tp2_close_pct = p2; changed = true; }
+        const p3 = interaction.options.getNumber('tp3_close_pct', false);
+        if (p3 !== null) { s.tp3_close_pct = p3; changed = true; }
 
         if (!changed) return interaction.reply({ content: 'Nothing to update.', ephemeral: true });
 
         const embed = makeSignalEmbed(s);
         await saveDB(db);
 
+        // try to edit original message
         if (s.messageLink) {
           try {
             const url = new URL(s.messageLink);
@@ -192,7 +243,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (name === 'signal-close') {
         if (!userAllowed(interaction)) return interaction.reply({ content: 'No permission.', ephemeral: true });
         const id = interaction.options.getString('id', true);
-        const result = interaction.options.getString('result', true);
+        const result = interaction.options.getString('result', true); // Win/Loss/Breakeven/Manual Close
         const r = interaction.options.getNumber('r', false);
 
         const db = await loadDB();
@@ -223,7 +274,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     // Buttons
     if (interaction.isButton()) {
       if (!userAllowed(interaction)) return interaction.reply({ content: 'No permission.', ephemeral: true });
-      const [prefix, action, id] = interaction.customId.split('_');
+      const [prefix, action, id] = interaction.customId.split('_'); // signal_run_ID
       if (prefix !== 'signal') return;
 
       const db = await loadDB();
@@ -251,7 +302,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
 
       if (action === 'update') {
-        return interaction.reply({ content: `Use **/signal-update id:${id}** with the fields you want to change.`, ephemeral: true });
+        return interaction.reply({ content: `Use **/signal-update id:${id}** with any fields to change.`, ephemeral: true });
       }
 
       if (action === 'close') {
