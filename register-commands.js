@@ -1,32 +1,26 @@
-// register-commands.js
+// purge-and-register.js
 const { REST, Routes, SlashCommandBuilder, ChannelType } = require('discord.js');
 require('dotenv').config();
 
 const { DISCORD_TOKEN, CLIENT_ID, GUILD_ID } = process.env;
 if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID) {
-  console.error('Missing DISCORD_TOKEN / CLIENT_ID / GUILD_ID');
-  process.exit(1);
+  console.error('Missing DISCORD_TOKEN / CLIENT_ID / GUILD_ID'); process.exit(1);
 }
+const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
 
 const pctChoices = [
   { name: '25%', value: 25 }, { name: '33%', value: 33 },
   { name: '50%', value: 50 }, { name: '75%', value: 75 },
   { name: '100% (final)', value: 100 },
 ];
-
 const statusChoices = [
-  { name: 'Active', value: 'Active' },
-  { name: 'Running', value: 'Running' },
-  { name: 'BE (Break-even)', value: 'BE' },
-  { name: 'Invalid', value: 'Invalid' },
+  { name: 'Active', value: 'Active' }, { name: 'Running', value: 'Running' },
+  { name: 'BE (Break-even)', value: 'BE' }, { name: 'Invalid', value: 'Invalid' },
   { name: 'Closed', value: 'Closed' },
 ];
-
 const resultChoices = [
-  { name: 'Win', value: 'Win' },
-  { name: 'Loss', value: 'Loss' },
-  { name: 'Breakeven', value: 'Breakeven' },
-  { name: 'Manual Close', value: 'Manual Close' },
+  { name: 'Win', value: 'Win' }, { name: 'Loss', value: 'Loss' },
+  { name: 'Breakeven', value: 'Breakeven' }, { name: 'Manual Close', value: 'Manual Close' },
 ];
 
 const guildCommands = [
@@ -84,13 +78,28 @@ const guildCommands = [
 ];
 
 (async () => {
-  const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+  console.log('CLIENT_ID:', CLIENT_ID, 'GUILD_ID:', GUILD_ID);
 
-  // 1) Clear any GLOBAL commands (this removes old /signal-auto that might have been global)
+  // List current GLOBAL
+  const globalBefore = await rest.get(Routes.applicationCommands(CLIENT_ID));
+  console.log('Global before:', globalBefore.map(c => c.name));
+
+  // List current GUILD
+  const guildBefore = await rest.get(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID));
+  console.log('Guild before:', guildBefore.map(c => c.name));
+
+  // 1) Clear GLOBAL
   await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
+  console.log('Global commands cleared');
 
-  // 2) Overwrite the GUILD commands with our new list
+  // 2) Overwrite GUILD
   await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: guildCommands });
+  console.log('Guild commands replaced');
 
-  console.log('Slash commands updated ✅');
+  // Verify after
+  const globalAfter = await rest.get(Routes.applicationCommands(CLIENT_ID));
+  const guildAfter = await rest.get(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID));
+  console.log('Global after:', globalAfter.map(c => c.name));
+  console.log('Guild after:', guildAfter.map(c => c.name));
+  console.log('✅ Done');
 })();
