@@ -1,3 +1,4 @@
+// register-commands.js
 const { REST, Routes, SlashCommandBuilder, ChannelType } = require('discord.js');
 require('dotenv').config();
 
@@ -28,7 +29,7 @@ const resultChoices = [
   { name: 'Manual Close', value: 'Manual Close' },
 ];
 
-const commands = [
+const guildCommands = [
   new SlashCommandBuilder()
     .setName('signal')
     .setDescription('Post a trading signal (manual fill).')
@@ -56,7 +57,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName('signal-update')
     .setDescription('Update an existing signal by ID or message link.')
-    .addStringOption(o => o.setName('id').setDescription('Signal ID (from your ephemeral reply)'))
+    .addStringOption(o => o.setName('id').setDescription('Signal ID (from private reply)'))
     .addStringOption(o => o.setName('message_link').setDescription('Link to the signal message'))
     .addStringOption(o => o.setName('asset').setDescription('BTC / ETH / SOL').addChoices(
       { name: 'BTC', value: 'btc' }, { name: 'ETH', value: 'eth' }, { name: 'SOL', value: 'sol' }
@@ -79,11 +80,17 @@ const commands = [
     .addStringOption(o => o.setName('status').setDescription('Status').addChoices(...statusChoices))
     .addStringOption(o => o.setName('result').setDescription('If closing, result').addChoices(...resultChoices))
     .addNumberOption(o => o.setName('r').setDescription('If closing, R multiple e.g., 2.0'))
-    .toJSON(),
+    .toJSON()
 ];
 
 (async () => {
   const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
-  await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
-  console.log('Commands registered ✅');
+
+  // 1) Clear any GLOBAL commands (this removes old /signal-auto that might have been global)
+  await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
+
+  // 2) Overwrite the GUILD commands with our new list
+  await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: guildCommands });
+
+  console.log('Slash commands updated ✅');
 })();
