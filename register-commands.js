@@ -1,11 +1,12 @@
-// register-commands.js — reset and re-add only guild commands
 const { REST, Routes, SlashCommandBuilder, ChannelType } = require('discord.js');
 require('dotenv').config();
 
 const { DISCORD_TOKEN, CLIENT_ID, GUILD_ID } = process.env;
+console.log('ENV CHECK -> CLIENT_ID:', CLIENT_ID, ' GUILD_ID:', GUILD_ID);
 if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID) {
-  console.error('Missing DISCORD_TOKEN / CLIENT_ID / GUILD_ID'); process.exit(1);
+  throw new Error('Missing DISCORD_TOKEN or CLIENT_ID or GUILD_ID');
 }
+
 const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
 
 const pct = [{name:'25%',value:25},{name:'33%',value:33},{name:'50%',value:50},{name:'75%',value:75},{name:'100% (final)',value:100}];
@@ -59,29 +60,26 @@ const guildCommands = [
 ];
 
 (async () => {
-  console.log('CLIENT_ID:', CLIENT_ID);
-  console.log('GUILD_ID :', GUILD_ID);
+  try {
+    const globalBefore = await rest.get(Routes.applicationCommands(CLIENT_ID));
+    const guildBefore  = await rest.get(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID));
+    console.log('Global BEFORE:', globalBefore.map(c => c.name));
+    console.log('Guild  BEFORE:', guildBefore.map(c => c.name));
 
-  // Show what’s there now
-  const globalBefore = await rest.get(Routes.applicationCommands(CLIENT_ID));
-  const guildBefore  = await rest.get(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID));
-  console.log('Global BEFORE:', globalBefore.map(c => c.name));
-  console.log('Guild  BEFORE:', guildBefore.map(c => c.name));
+    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
+    await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: [] });
+    console.log('Cleared all global + guild commands');
 
-  // Delete ALL global + guild commands
-  await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
-  await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: [] });
-  console.log('Cleared all global + guild commands');
+    await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: guildCommands });
+    console.log('Re-registered /signal and /signal-update (guild)');
 
-  // Re-add only to this guild
-  await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: guildCommands });
-  console.log('Re-registered /signal and /signal-update (guild)');
-
-  // Show after
-  const globalAfter = await rest.get(Routes.applicationCommands(CLIENT_ID));
-  const guildAfter  = await rest.get(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID));
-  console.log('Global AFTER:', globalAfter.map(c => c.name));
-  console.log('Guild  AFTER:', guildAfter.map(c => c.name));
-  console.log('✅ Done');
+    const globalAfter = await rest.get(Routes.applicationCommands(CLIENT_ID));
+    const guildAfter  = await rest.get(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID));
+    console.log('Global AFTER:', globalAfter.map(c => c.name));
+    console.log('Guild  AFTER:', guildAfter.map(c => c.name));
+    console.log('✅ Done');
+  } catch (e) {
+    console.error('Registrar error:', e);
+    process.exit(1);
+  }
 })();
-
