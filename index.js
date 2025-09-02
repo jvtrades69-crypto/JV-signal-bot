@@ -28,7 +28,6 @@ client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 });
 
-/** Permissions: owner, OWNER_ID, ALLOWED_ROLE_ID, or Admin */
 function canManage(interaction, signal) {
   if (!interaction || !signal) return false;
   const userId = interaction.user.id;
@@ -40,7 +39,6 @@ function canManage(interaction, signal) {
   return false;
 }
 
-/** Keep a per-channel summary message */
 async function updateSummary(channelId) {
   try {
     const channel = await client.channels.fetch(channelId);
@@ -54,9 +52,9 @@ async function updateSummary(channelId) {
     } else {
       const lines = active.map(s => {
         const name = `$${s.asset.toUpperCase()} • ${s.side === 'LONG' ? 'Long' : 'Short'}`;
-        const tps = [s.tp1, s.tp2, s.tp3].filter(Boolean).join(' | ') || '-';
+        const tpsList = [s.tp1, s.tp2, s.tp3].filter(Boolean).join(' | ') || '-';
         const latest = s.latestTpHit ? ` • Latest: TP${s.latestTpHit}` : '';
-        return `• ${name} — Entry ${s.entry} | SL ${s.sl || '-'} | Targets ${tps}${latest} — [jump](https://discord.com/channels/${s.guildId}/${s.channelId}/${s.messageId})`;
+        return `• ${name} — Entry ${s.entry} | SL ${s.sl || '-'} | Targets ${tpsList}${latest} — [jump](https://discord.com/channels/${s.guildId}/${s.channelId}/${s.messageId})`;
       });
       content = `${header}\n${lines.join('\n')}`;
     }
@@ -76,7 +74,7 @@ async function updateSummary(channelId) {
   }
 }
 
-/** Build the create-signal modal (max 5 inputs — Discord limit) */
+/** Create modal (5 inputs max per Discord) with clear placeholders */
 function buildCreateModal() {
   const modal = new ModalBuilder()
     .setCustomId('signal-create')
@@ -84,31 +82,36 @@ function buildCreateModal() {
 
   const asset = new TextInputBuilder()
     .setCustomId('asset')
-    .setLabel('Asset (e.g., BTC, ETH)')
+    .setLabel('Asset')
+    .setPlaceholder('BTC / ETH / SOL')
     .setStyle(TextInputStyle.Short)
     .setRequired(true);
 
   const side = new TextInputBuilder()
     .setCustomId('side')
-    .setLabel('Side (LONG or SHORT)')
+    .setLabel('Side')
+    .setPlaceholder('LONG or SHORT')
     .setStyle(TextInputStyle.Short)
     .setRequired(true);
 
   const entry = new TextInputBuilder()
     .setCustomId('entry')
-    .setLabel('Entry (number or range)')
+    .setLabel('Entry')
+    .setPlaceholder('e.g., 108,201 or 108,100–108,300')
     .setStyle(TextInputStyle.Short)
     .setRequired(true);
 
   const sl = new TextInputBuilder()
     .setCustomId('sl')
     .setLabel('SL (optional)')
+    .setPlaceholder('e.g., 100,201')
     .setStyle(TextInputStyle.Short)
     .setRequired(false);
 
   const tps = new TextInputBuilder()
     .setCustomId('tps')
-    .setLabel('Targets (TP1 | TP2 | TP3)')
+    .setLabel('Targets (optional)')
+    .setPlaceholder('TP1 | TP2 | TP3 — e.g., 110,000 | 121,201')
     .setStyle(TextInputStyle.Short)
     .setRequired(false);
 
@@ -123,13 +126,13 @@ function buildCreateModal() {
 
 client.on('interactionCreate', async (interaction) => {
   try {
-    /** Slash command: open the modal */
+    // Slash command -> open modal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
       await interaction.showModal(buildCreateModal());
       return;
     }
 
-    /** Create-signal modal submit */
+    // Modal submit -> create signal
     if (interaction.isModalSubmit() && interaction.customId === 'signal-create') {
       const get = (id) => interaction.fields.getTextInputValue(id) || '';
       const asset = get('asset').trim().toUpperCase();
@@ -158,23 +161,23 @@ client.on('interactionCreate', async (interaction) => {
         id,
         guildId: interaction.guildId,
         asset,
-        side, // LONG | SHORT
+        side,
         entry,
         sl,
         tp1, tp2, tp3,
-        timeframe: '',         // can add later via Edit
-        rationale: '',         // can add later via Edit
+        timeframe: '',
+        rationale: '',
         status: 'RUNNING_VALID',
         latestTpHit: null,
         ownerId: interaction.user.id,
         createdAt: Date.now(),
-        imageUrl: null,        // not via modal; add later via Edit if needed
+        imageUrl: null,
       };
 
       const embed = buildEmbed(signal);
       const comps = components(id);
 
-      const channel = interaction.channel; // post in the same channel
+      const channel = interaction.channel;
       const msg = await channel.send({ embeds: [embed], components: comps });
 
       signal.messageId = msg.id;
@@ -190,7 +193,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    /** Buttons: status / TP / edit / delete */
+    // Buttons: status / TP / edit / delete
     if (interaction.isButton()) {
       const parts = interaction.customId.split('|');
       if (parts[0] !== 'signal') return;
@@ -233,7 +236,7 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.reply({ content: 'Invalid TP.', flags: 64 });
           return;
         }
-        signal.latestTpHit = tpNum; // latest only
+        signal.latestTpHit = tpNum;
         store.upsert(signal);
 
         const channel = await client.channels.fetch(signal.channelId);
@@ -253,6 +256,7 @@ client.on('interactionCreate', async (interaction) => {
         const entryInput = new TextInputBuilder()
           .setCustomId('entry')
           .setLabel('Entry')
+          .setPlaceholder('e.g., 108,201 or 108,100–108,300')
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
           .setValue(signal.entry || '');
@@ -260,6 +264,7 @@ client.on('interactionCreate', async (interaction) => {
         const slInput = new TextInputBuilder()
           .setCustomId('sl')
           .setLabel('SL')
+          .setPlaceholder('e.g., 100,201')
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
           .setValue(signal.sl || '');
@@ -267,6 +272,7 @@ client.on('interactionCreate', async (interaction) => {
         const tpsInput = new TextInputBuilder()
           .setCustomId('tps')
           .setLabel('Targets (TP1 | TP2 | TP3)')
+          .setPlaceholder('e.g., 110,000 | 121,201')
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
           .setValue([signal.tp1, signal.tp2, signal.tp3].filter(Boolean).join(' | '));
@@ -274,6 +280,7 @@ client.on('interactionCreate', async (interaction) => {
         const tfInput = new TextInputBuilder()
           .setCustomId('timeframe')
           .setLabel('Timeframe (e.g., 1H, 4H)')
+          .setPlaceholder('e.g., 1H')
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
           .setValue(signal.timeframe || '');
@@ -281,6 +288,7 @@ client.on('interactionCreate', async (interaction) => {
         const reasonInput = new TextInputBuilder()
           .setCustomId('reason')
           .setLabel('Reason (<= 1000 chars)')
+          .setPlaceholder('Short notes about the setup')
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setValue(signal.rationale ? signal.rationale.slice(0, 1000) : '');
@@ -291,7 +299,6 @@ client.on('interactionCreate', async (interaction) => {
         const row4 = new ActionRowBuilder().addComponents(tfInput);
         const row5 = new ActionRowBuilder().addComponents(reasonInput);
 
-        // NB: Edit modal uses 5 rows (max). If you later add image here, replace one field.
         modal.addComponents(row1, row2, row3, row4, row5);
         await interaction.showModal(modal);
         return;
@@ -309,7 +316,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    /** Edit-signal modal submit */
+    // Edit submit
     if (interaction.isModalSubmit() && interaction.customId.startsWith('signal-edit|')) {
       const signalId = interaction.customId.split('|')[1];
       const signal = store.getById(signalId);
