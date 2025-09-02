@@ -30,9 +30,9 @@ client.once('ready', () => {
 
 function canManage(interaction, signal) {
   if (!interaction || !signal) return false;
-  const userId = interaction.user.id;
-  if (signal.ownerId === userId) return true;
-  if (config.ownerId && userId === config.ownerId) return true;
+  const uid = interaction.user.id;
+  if (signal.ownerId === uid) return true;
+  if (config.ownerId && uid === config.ownerId) return true;
   const member = interaction.member;
   if (member?.permissions?.has(PermissionFlagsBits.Administrator)) return true;
   if (config.allowedRoleId) return Boolean(member?.roles?.cache?.has(config.allowedRoleId));
@@ -52,9 +52,9 @@ async function updateSummary(channelId) {
     } else {
       const lines = active.map(s => {
         const name = `$${s.asset.toUpperCase()} • ${s.side === 'LONG' ? 'Long' : 'Short'}`;
-        const tpsList = [s.tp1, s.tp2, s.tp3].filter(Boolean).join(' | ') || '-';
+        const tps = [s.tp1, s.tp2, s.tp3].filter(Boolean).join(' | ') || '-';
         const latest = s.latestTpHit ? ` • Latest: TP${s.latestTpHit}` : '';
-        return `• ${name} — Entry ${s.entry} | SL ${s.sl || '-'} | Targets ${tpsList}${latest} — [jump](https://discord.com/channels/${s.guildId}/${s.channelId}/${s.messageId})`;
+        return `• ${name} — Entry ${s.entry} | Stop Loss ${s.sl || '-'} | Targets ${tps}${latest} — [jump](https://discord.com/channels/${s.guildId}/${s.channelId}/${s.messageId})`;
       });
       content = `${header}\n${lines.join('\n')}`;
     }
@@ -74,46 +74,30 @@ async function updateSummary(channelId) {
   }
 }
 
-/** Create modal (5 inputs max per Discord) with clear placeholders */
 function buildCreateModal() {
   const modal = new ModalBuilder()
     .setCustomId('signal-create')
     .setTitle('Create Trade Signal');
 
   const asset = new TextInputBuilder()
-    .setCustomId('asset')
-    .setLabel('Asset')
-    .setPlaceholder('BTC / ETH / SOL')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
+    .setCustomId('asset').setLabel('Asset').setPlaceholder('BTC / ETH / SOL')
+    .setStyle(TextInputStyle.Short).setRequired(true);
 
   const side = new TextInputBuilder()
-    .setCustomId('side')
-    .setLabel('Side')
-    .setPlaceholder('LONG or SHORT')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
+    .setCustomId('side').setLabel('Side').setPlaceholder('LONG or SHORT')
+    .setStyle(TextInputStyle.Short).setRequired(true);
 
   const entry = new TextInputBuilder()
-    .setCustomId('entry')
-    .setLabel('Entry')
-    .setPlaceholder('e.g., 108,201 or 108,100–108,300')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
+    .setCustomId('entry').setLabel('Entry').setPlaceholder('e.g., 108,201 or 108,100–108,300')
+    .setStyle(TextInputStyle.Short).setRequired(true);
 
   const sl = new TextInputBuilder()
-    .setCustomId('sl')
-    .setLabel('SL (optional)')
-    .setPlaceholder('e.g., 100,201')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(false);
+    .setCustomId('sl').setLabel('Stop Loss').setPlaceholder('e.g., 100,201')
+    .setStyle(TextInputStyle.Short).setRequired(false);
 
   const tps = new TextInputBuilder()
-    .setCustomId('tps')
-    .setLabel('Targets (optional)')
-    .setPlaceholder('TP1 | TP2 | TP3 — e.g., 110,000 | 121,201')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(false);
+    .setCustomId('tps').setLabel('Targets').setPlaceholder('TP1 | TP2 | TP3 — 110,000 | 121,201')
+    .setStyle(TextInputStyle.Short).setRequired(false);
 
   return modal.addComponents(
     new ActionRowBuilder().addComponents(asset),
@@ -123,6 +107,8 @@ function buildCreateModal() {
     new ActionRowBuilder().addComponents(tps),
   );
 }
+
+const oneLine = (s) => (s || '').replace(/\s+/g, ' ').trim();
 
 client.on('interactionCreate', async (interaction) => {
   try {
@@ -134,25 +120,21 @@ client.on('interactionCreate', async (interaction) => {
 
     // Modal submit -> create signal
     if (interaction.isModalSubmit() && interaction.customId === 'signal-create') {
-      const get = (id) => interaction.fields.getTextInputValue(id) || '';
-      const asset = get('asset').trim().toUpperCase();
-      const sideRaw = get('side').trim().toUpperCase();
+      const asset = oneLine(interaction.fields.getTextInputValue('asset')).toUpperCase();
+      const sideRaw = oneLine(interaction.fields.getTextInputValue('side')).toUpperCase();
       const side = sideRaw === 'LONG' ? 'LONG' : (sideRaw === 'SHORT' ? 'SHORT' : '');
-      const entry = get('entry').trim();
-      const sl = get('sl').trim();
+      const entry = oneLine(interaction.fields.getTextInputValue('entry'));
+      const sl = oneLine(interaction.fields.getTextInputValue('sl') || '');
+      const tpsRaw = oneLine(interaction.fields.getTextInputValue('tps') || '');
 
-      const tpsRaw = get('tps');
       let tp1 = '', tp2 = '', tp3 = '';
       if (tpsRaw) {
-        const parts = tpsRaw.split('|').map(s => s.trim()).filter(Boolean);
+        const parts = tpsRaw.split('|').map(s => oneLine(s));
         [tp1, tp2, tp3] = [parts[0] || '', parts[1] || '', parts[2] || ''];
       }
 
       if (!asset || !side || !entry) {
-        await interaction.reply({
-          content: 'Asset, Side, and Entry are required. Side must be LONG or SHORT.',
-          flags: 64
-        });
+        await interaction.reply({ content: 'Asset, Side, and Entry are required. Side must be LONG or SHORT.', flags: 64 });
         return;
       }
 
@@ -184,11 +166,7 @@ client.on('interactionCreate', async (interaction) => {
       signal.channelId = msg.channelId;
       store.upsert(signal);
 
-      await interaction.reply({
-        content: `Signal posted here: https://discord.com/channels/${interaction.guildId}/${msg.channelId}/${msg.id}`,
-        flags: 64
-      });
-
+      await interaction.reply({ content: `Signal posted here: https://discord.com/channels/${interaction.guildId}/${msg.channelId}/${msg.id}`, flags: 64 });
       await updateSummary(signal.channelId);
       return;
     }
@@ -201,9 +179,13 @@ client.on('interactionCreate', async (interaction) => {
       const signalId = parts[1];
       const action = parts[2];
 
-      const signal = store.getById(signalId);
+      let signal = store.getById(signalId);
       if (!signal) {
-        await interaction.reply({ content: 'Signal not found or storage missing.', flags: 64 });
+        // Fallback: try map by message ID (if storage was reset)
+        signal = store.getByMessageId(interaction.message?.id);
+      }
+      if (!signal) {
+        await interaction.reply({ content: 'Signal not found (storage reset or message is stale). Create a new one.', flags: 64 });
         return;
       }
 
@@ -224,7 +206,7 @@ client.on('interactionCreate', async (interaction) => {
         const channel = await client.channels.fetch(signal.channelId);
         const msg = await channel.messages.fetch(signal.messageId);
         await msg.edit({ embeds: [buildEmbed(signal)], components: components(signal.id) });
-        await interaction.reply({ content: `Status updated to **${STATUS_META[newStatus].label}**.`, flags: 64 });
+        await interaction.reply({ content: `Status updated.`, flags: 64 });
 
         await updateSummary(signal.channelId);
         return;
@@ -242,7 +224,7 @@ client.on('interactionCreate', async (interaction) => {
         const channel = await client.channels.fetch(signal.channelId);
         const msg = await channel.messages.fetch(signal.messageId);
         await msg.edit({ embeds: [buildEmbed(signal)], components: components(signal.id) });
-        await interaction.reply({ content: `Marked **TP${tpNum} hit**.`, flags: 64 });
+        await interaction.reply({ content: `Marked TP${tpNum} hit.`, flags: 64 });
 
         await updateSummary(signal.channelId);
         return;
@@ -263,7 +245,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const slInput = new TextInputBuilder()
           .setCustomId('sl')
-          .setLabel('SL')
+          .setLabel('Stop Loss')
           .setPlaceholder('e.g., 100,201')
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
@@ -319,7 +301,8 @@ client.on('interactionCreate', async (interaction) => {
     // Edit submit
     if (interaction.isModalSubmit() && interaction.customId.startsWith('signal-edit|')) {
       const signalId = interaction.customId.split('|')[1];
-      const signal = store.getById(signalId);
+      let signal = store.getById(signalId);
+      if (!signal) signal = store.getByMessageId(interaction.message?.id);
       if (!signal) {
         await interaction.reply({ content: 'Signal not found.', flags: 64 });
         return;
@@ -329,18 +312,16 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      const entry = interaction.fields.getTextInputValue('entry');
-      const sl = interaction.fields.getTextInputValue('sl') || '';
-      const tpsRaw = interaction.fields.getTextInputValue('tps') || '';
-      const timeframe = interaction.fields.getTextInputValue('timeframe') || '';
+      const entry = oneLine(interaction.fields.getTextInputValue('entry'));
+      const sl = oneLine(interaction.fields.getTextInputValue('sl') || '');
+      const tpsRaw = oneLine(interaction.fields.getTextInputValue('tps') || '');
+      const timeframe = oneLine(interaction.fields.getTextInputValue('timeframe') || '');
       const rationale = interaction.fields.getTextInputValue('reason') || '';
 
       let tp1 = '', tp2 = '', tp3 = '';
       if (tpsRaw) {
-        const parts = tpsRaw.split('|').map(s => s.trim()).filter(Boolean);
-        tp1 = parts[0] || '';
-        tp2 = parts[1] || '';
-        tp3 = parts[2] || '';
+        const parts = tpsRaw.split('|').map(s => oneLine(s));
+        [tp1, tp2, tp3] = [parts[0] || '', parts[1] || '', parts[2] || ''];
       }
 
       signal.entry = entry;
@@ -358,7 +339,6 @@ client.on('interactionCreate', async (interaction) => {
       await msg.edit({ embeds: [buildEmbed(signal)], components: components(signal.id) });
 
       await interaction.reply({ content: 'Signal updated.', flags: 64 });
-
       await updateSummary(signal.channelId);
       return;
     }
