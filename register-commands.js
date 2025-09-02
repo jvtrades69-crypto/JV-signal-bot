@@ -32,7 +32,7 @@ const guildCommands = [
   new SlashCommandBuilder()
     .setName('signal')
     .setDescription('Post a trading signal (manual fill).')
-    // REQUIRED — must be first:
+    // REQUIRED:
     .addStringOption(o => o.setName('asset').setDescription('BTC / ETH / SOL').setRequired(true).addChoices(
       { name: 'BTC', value: 'btc' }, { name: 'ETH', value: 'eth' }, { name: 'SOL', value: 'sol' }
     ))
@@ -42,7 +42,7 @@ const guildCommands = [
     .addStringOption(o => o.setName('entry').setDescription('Entry').setRequired(true))
     .addStringOption(o => o.setName('sl').setDescription('Stop loss').setRequired(true))
     .addAttachmentOption(o => o.setName('image').setDescription('Chart image').setRequired(true))
-    // OPTIONAL — after all required:
+    // OPTIONAL:
     .addStringOption(o => o.setName('timeframe').setDescription('15m / 1H / 4H (optional)'))
     .addStringOption(o => o.setName('tp1').setDescription('TP1 (optional)'))
     .addNumberOption(o => o.setName('tp1_close_pct').setDescription('TP1 close %').addChoices(...pct))
@@ -55,7 +55,7 @@ const guildCommands = [
     .addChannelOption(o => o.setName('channel').setDescription('Channel to post into').addChannelTypes(ChannelType.GuildText))
     .toJSON(),
 
-  // /signal-update — all optional, order doesn’t matter but we keep it tidy
+  // /signal-update — add status_note so you can type your exact sentence
   new SlashCommandBuilder()
     .setName('signal-update')
     .setDescription('Update an existing signal by ID or message link.')
@@ -80,6 +80,7 @@ const guildCommands = [
     .addStringOption(o => o.setName('reason').setDescription('Reason'))
     .addAttachmentOption(o => o.setName('image').setDescription('Replace chart image'))
     .addStringOption(o => o.setName('status').setDescription('Status').addChoices(...status))
+    .addStringOption(o => o.setName('status_note').setDescription('Status note (your exact words)'))
     .addStringOption(o => o.setName('result').setDescription('If closing, result').addChoices(...result))
     .addNumberOption(o => o.setName('r').setDescription('If closing, R multiple e.g., 2.0'))
     .toJSON()
