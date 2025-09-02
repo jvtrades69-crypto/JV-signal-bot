@@ -2,7 +2,8 @@ import {
   Client, GatewayIntentBits, Partials, Events,
   PermissionsBitField, ChannelType,
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  ModalBuilder, TextInputBuilder, TextInputStyle
+  ModalBuilder, TextInputBuilder, TextInputStyle,
+  SlashCommandBuilder
 } from 'discord.js';
 import 'dotenv/config';
 import fs from 'fs-extra';
@@ -56,7 +57,6 @@ function userAllowed(interaction) {
 
 /* ========== Helpers (format) ========== */
 const dirEmoji = d => (d?.toLowerCase() === 'short' ? ':red_circle:' : ':green_circle:');
-const code = t => `\`${t}\``;
 function norm(n) {
   if (n == null) return n;
   const s = String(n).replace(/[, ]/g, '');
@@ -80,7 +80,7 @@ function buildContent(s, roleMentionAtBottom = true) {
     '',
     `:round_pushpin: Status : ${s.statusNote ? s.statusNote : s.status}`,
     '',
-  ].filter(v => v !== null);  // keep "" so spacing survives
+  ].filter(v => v !== null);  // keep "" for blank lines
 
   if (roleMentionAtBottom && MENTION_ROLE_ID?.trim()) lines.push(`<@&${MENTION_ROLE_ID}>`);
   return lines.join('\n');
@@ -91,43 +91,96 @@ const rowFor = id => new ActionRowBuilder().addComponents(
   new ButtonBuilder().setCustomId(`sig_close_${id}`).setLabel('✅ Close').setStyle(ButtonStyle.Danger),
 );
 
-/* ========== Boards (optional) ========== */
-async function ensureBoard(guild, userId) {
-  if (!CURRENT_TRADES_CHANNEL_ID) return null;
-  const db = await loadDB();
-  const chan = await guild.channels.fetch(CURRENT_TRADES_CHANNEL_ID).catch(() => null);
-  if (!chan || chan.type !== ChannelType.GuildText) return null;
-  const info = db.boards[userId];
-  if (info?.messageId) return { channel: chan, messageId: info.messageId };
-  const tag = (await guild.members.fetch(userId)).user.tag;
-  const m = await chan.send({ content: `**${tag} — Current Trades**\n_No open trades._` });
-  db.boards[userId] = { messageId: m.id }; await saveDB(db);
-  return { channel: chan, messageId: m.id };
-}
-async function renderBoard(guild, userId) {
-  if (!CURRENT_TRADES_CHANNEL_ID) return;
-  const db = await loadDB();
-  const info = await ensureBoard(guild, userId);
-  if (!info) return;
-  const { channel, messageId } = info;
-  const open = Object.values(db.signals).filter(s =>
-    s.authorId === userId && !['Closed','Invalid'].includes(s.status)
-  ).sort((a,b)=>b.createdAt-a.createdAt);
-  const tag = (await guild.members.fetch(userId)).user.tag;
-  let content = `**${tag} — Current Trades**\n`;
-  content += open.length ? open.map(s =>
-    `• ${s.asset.toUpperCase()} | ${s.direction.toUpperCase()} — Entry ${code(norm(s.entry))}, SL ${code(norm(s.sl))}${s.tp1?`, TP1 ${code(norm(s.tp1))}`:''}\n  ↪️ ${s.statusNote ? s.statusNote : s.status} • ${s.messageLink}`
-  ).join('\n\n') : `_No open trades._`;
-  try { const msg = await channel.messages.fetch(messageId); await msg.edit({ content }); }
-  catch { const m = await channel.send({ content }); db.boards[userId] = { messageId: m.id }; await saveDB(db); }
-}
-
-/* ========== Bot ========== */
+/* ========== Bot Ready ========== */
 client.once('ready', () => console.log(`Logged in as ${client.user.tag}`));
 
+/* ========== Slash Commands ========== */
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
-    // Handle button: Close trade
+    /* ====== /signal ====== */
+    if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
+      if (!userAllowed(interaction)) {
+        await interaction.reply({ content: 'Not allowed.', ephemeral: true });
+        return;
+      }
+      await interaction.deferReply({ ephemeral: true });
+
+      const asset = interaction.options.getString('asset');
+      const direction = interaction.options.getString('direction');
+      const entry = interaction.options.getString('entry');
+      const sl = interaction.options.getString('sl');
+      const tp1 = interaction.options.getString('tp1');
+      const tp2 = interaction.options.getString('tp2');
+      const tp3 = interaction.options.getString('tp3');
+      const reason = interaction.options.getString('reason');
+      const image = interaction.options.getAttachment('chart');
+
+      const id = Date.now().toString();
+      const s = {
+        id,
+        authorId: interaction.user.id,
+        asset, direction, entry, sl, tp1, tp2, tp3, reason,
+        status: 'Active',
+        statusNote: 'Active',
+        createdAt: Date.now()
+      };
+
+      const content = buildContent(s, true);
+      const msg = await interaction.channel.send({
+        content,
+        files: image ? [image] : [],
+        components: [rowFor(id)]
+      });
+
+      s.messageLink = msg.url;
+      const db = await loadDB();
+      db.signals[id] = s; await saveDB(db);
+
+      await interaction.editReply({ content: 'Signal posted ✅' });
+      return;
+    }
+
+    /* ====== /signal-update ====== */
+    if (interaction.isChatInputCommand() && interaction.commandName === 'signal-update') {
+      if (!userAllowed(interaction)) {
+        await interaction.reply({ content: 'Not allowed.', ephemeral: true });
+        return;
+      }
+      await interaction.deferReply({ ephemeral: true });
+
+      const id = interaction.options.getString('id');
+      const db = await loadDB();
+      const s = db.signals[id];
+      if (!s) { await interaction.editReply('Signal not found'); return; }
+
+      const entry = interaction.options.getString('entry');
+      const sl = interaction.options.getString('sl');
+      const tp1 = interaction.options.getString('tp1');
+      const tp2 = interaction.options.getString('tp2');
+      const tp3 = interaction.options.getString('tp3');
+      const reason = interaction.options.getString('reason');
+      const status = interaction.options.getString('status');
+      const statusNote = interaction.options.getString('status_note');
+
+      if (entry) s.entry = entry;
+      if (sl) s.sl = sl;
+      if (tp1) s.tp1 = tp1;
+      if (tp2) s.tp2 = tp2;
+      if (tp3) s.tp3 = tp3;
+      if (reason) s.reason = reason;
+      if (status) s.status = status;
+      if (statusNote) s.statusNote = statusNote;
+
+      const channel = await interaction.guild.channels.fetch(interaction.channelId);
+      const msg = await channel.messages.fetch(s.messageLink.split('/').pop());
+      await msg.edit({ content: buildContent(s, true), components: [rowFor(s.id)] });
+
+      db.signals[id] = s; await saveDB(db);
+      await interaction.editReply('Signal updated ✅');
+      return;
+    }
+
+    /* ====== Button: Close ====== */
     if (interaction.isButton() && interaction.customId.startsWith('sig_close_')) {
       const id = interaction.customId.split('_')[2];
       const modal = new ModalBuilder()
@@ -136,27 +189,37 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const resultInput = new TextInputBuilder()
         .setCustomId('result')
-        .setLabel('Result: Win / Loss / BE / Manual') // ✅ shortened label
+        .setLabel('Result: Win / Loss / BE / Manual') // fixed label
         .setStyle(TextInputStyle.Short)
         .setRequired(true);
 
-      const rInput = new TextInputBuilder()
-        .setCustomId('rmultiple')
-        .setLabel('R multiple (e.g., 2.5)')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(false);
-
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(resultInput),
-        new ActionRowBuilder().addComponents(rInput),
-      );
-
+      modal.addComponents(new ActionRowBuilder().addComponents(resultInput));
       await interaction.showModal(modal);
       return;
     }
 
-    // ... keep your other slash command + button handlers ...
-    // this file now preserves spacing + fixes close label
+    // Handle modals (Close etc)
+    if (interaction.isModalSubmit()) {
+      if (interaction.customId.startsWith('sig_close_modal_')) {
+        const id = interaction.customId.split('_')[3];
+        const db = await loadDB();
+        const s = db.signals[id];
+        if (!s) { await interaction.reply({ content: 'Signal not found', ephemeral: true }); return; }
+
+        const result = interaction.fields.getTextInputValue('result');
+        s.status = 'Closed';
+        s.statusNote = result;
+
+        const channel = await interaction.guild.channels.fetch(interaction.channelId);
+        const msg = await channel.messages.fetch(s.messageLink.split('/').pop());
+        await msg.edit({ content: buildContent(s, true), components: [] });
+
+        db.signals[id] = s; await saveDB(db);
+        await interaction.reply({ content: 'Trade closed ✅', ephemeral: true });
+        return;
+      }
+    }
+
   } catch (e) {
     console.error('Handler error:', e);
     if (interaction.isRepliable()) {
