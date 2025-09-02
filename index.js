@@ -28,6 +28,7 @@ client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 });
 
+/** Permissions: owner, OWNER_ID, ALLOWED_ROLE_ID, or Admin */
 function canManage(interaction, signal) {
   if (!interaction || !signal) return false;
   const userId = interaction.user.id;
@@ -39,6 +40,7 @@ function canManage(interaction, signal) {
   return false;
 }
 
+/** Keep a per-channel summary message */
 async function updateSummary(channelId) {
   try {
     const channel = await client.channels.fetch(channelId);
@@ -74,26 +76,76 @@ async function updateSummary(channelId) {
   }
 }
 
+/** Build the create-signal modal */
+function buildCreateModal() {
+  const modal = new ModalBuilder()
+    .setCustomId('signal-create')
+    .setTitle('Create Trade Signal');
+
+  const asset = new TextInputBuilder()
+    .setCustomId('asset').setLabel('Asset (e.g., BTC, ETH)').setStyle(TextInputStyle.Short).setRequired(true);
+
+  const side = new TextInputBuilder()
+    .setCustomId('side').setLabel('Side (LONG or SHORT)').setStyle(TextInputStyle.Short).setRequired(true);
+
+  const entry = new TextInputBuilder()
+    .setCustomId('entry').setLabel('Entry (number or range)').setStyle(TextInputStyle.Short).setRequired(true);
+
+  const sl = new TextInputBuilder()
+    .setCustomId('sl').setLabel('SL (optional)').setStyle(TextInputStyle.Short).setRequired(false);
+
+  const tps = new TextInputBuilder()
+    .setCustomId('tps').setLabel('Targets (TP1 | TP2 | TP3)').setStyle(TextInputStyle.Short).setRequired(false);
+
+  const tf = new TextInputBuilder()
+    .setCustomId('timeframe').setLabel('Timeframe (e.g., 1H, 4H) — optional').setStyle(TextInputStyle.Short).setRequired(false);
+
+  const reason = new TextInputBuilder()
+    .setCustomId('reason').setLabel('Reason (optional, <= 1000 chars)').setStyle(TextInputStyle.Paragraph).setRequired(false);
+
+  return modal.addComponents(
+    new ActionRowBuilder().addComponents(asset),
+    new ActionRowBuilder().addComponents(side),
+    new ActionRowBuilder().addComponents(entry),
+    new ActionRowBuilder().addComponents(sl),
+    new ActionRowBuilder().addComponents(tps),
+    new ActionRowBuilder().addComponents(tf),
+    new ActionRowBuilder().addComponents(reason),
+  );
+}
+
 client.on('interactionCreate', async (interaction) => {
   try {
+    /** Slash command: open the modal */
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
-      // Use non-required getters and validate ourselves (avoids hard crash)
-      const asset = interaction.options.getString('asset');
-      const side = interaction.options.getString('side');        // LONG | SHORT
-      const entry = interaction.options.getString('entry');
-      const sl = interaction.options.getString('sl') || '';
-      const tp1 = interaction.options.getString('tp1') || '';
-      const tp2 = interaction.options.getString('tp2') || '';
-      const tp3 = interaction.options.getString('tp3') || '';
-      const timeframe = interaction.options.getString('timeframe') || '';
-      const rationale = interaction.options.getString('reason') || '';
-      const image = interaction.options.getAttachment('image');
+      await interaction.showModal(buildCreateModal());
+      return;
+    }
+
+    /** Create-signal modal submit */
+    if (interaction.isModalSubmit() && interaction.customId === 'signal-create') {
+      const get = (id) => interaction.fields.getTextInputValue(id) || '';
+      const asset = get('asset').trim().toUpperCase();
+      const sideRaw = get('side').trim().toUpperCase();
+      const side = sideRaw === 'LONG' ? 'LONG' : (sideRaw === 'SHORT' ? 'SHORT' : '');
+      const entry = get('entry').trim();
+      const sl = get('sl').trim();
+
+      const tpsRaw = get('tps');
+      let tp1 = '', tp2 = '', tp3 = '';
+      if (tpsRaw) {
+        const parts = tpsRaw.split('|').map(s => s.trim()).filter(Boolean);
+        [tp1, tp2, tp3] = [parts[0] || '', parts[1] || '', parts[2] || ''];
+      }
+
+      const timeframe = get('timeframe').trim();
+      const rationale = get('reason').trim();
 
       if (!asset || !side || !entry) {
-        const usage =
-          'Usage:\n' +
-          '`/signal asset:<BTC> side:<Long|Short> entry:<108,201> [sl:<..>] [tp1:<..>] [tp2:<..>] [tp3:<..>] [timeframe:<1H>] [reason:<text>]`';
-        await interaction.reply({ content: `Missing required options.\n${usage}`, ephemeral: true });
+        await interaction.reply({
+          content: 'Asset, Side, and Entry are required. Side must be LONG or SHORT.',
+          flags: 64
+        });
         return;
       }
 
@@ -102,7 +154,7 @@ client.on('interactionCreate', async (interaction) => {
         id,
         guildId: interaction.guildId,
         asset,
-        side,
+        side, // LONG | SHORT
         entry,
         sl,
         tp1, tp2, tp3,
@@ -112,13 +164,13 @@ client.on('interactionCreate', async (interaction) => {
         latestTpHit: null,
         ownerId: interaction.user.id,
         createdAt: Date.now(),
-        imageUrl: image ? image.url : null,
+        imageUrl: null, // images not supported via modal; can use Edit to add later if you want
       };
 
       const embed = buildEmbed(signal);
       const comps = components(id);
 
-      const channel = interaction.channel; // post where /signal was used
+      const channel = interaction.channel; // post in the same channel
       const msg = await channel.send({ embeds: [embed], components: comps });
 
       signal.messageId = msg.id;
@@ -127,13 +179,14 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.reply({
         content: `Signal posted here: https://discord.com/channels/${interaction.guildId}/${msg.channelId}/${msg.id}`,
-        flags: 64 // ephemeral replacement
+        flags: 64
       });
 
       await updateSummary(signal.channelId);
       return;
     }
 
+    /** Buttons: status / TP / edit / delete */
     if (interaction.isButton()) {
       const parts = interaction.customId.split('|');
       if (parts[0] !== 'signal') return;
@@ -176,7 +229,7 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.reply({ content: 'Invalid TP.', flags: 64 });
           return;
         }
-        signal.latestTpHit = tpNum;
+        signal.latestTpHit = tpNum; // latest only
         store.upsert(signal);
 
         const channel = await client.channels.fetch(signal.channelId);
@@ -251,6 +304,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
+    /** Edit-signal modal submit */
     if (interaction.isModalSubmit() && interaction.customId.startsWith('signal-edit|')) {
       const signalId = interaction.customId.split('|')[1];
       const signal = store.getById(signalId);
