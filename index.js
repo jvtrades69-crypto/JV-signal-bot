@@ -10,9 +10,9 @@ const {
 } = require('discord.js');
 const { v4: uuidv4 } = require('uuid');
 
-const config = require('./config');          // config.js in root
-const { buildEmbed, components, STATUS_META } = require('./embeds'); // embeds.js in root
-const store = require('./store');            // store.js in root
+const config = require('./config');
+const { buildEmbed, components, STATUS_META } = require('./embeds');
+const store = require('./store');
 
 if (!config.token) {
   console.error('[ERROR] Missing DISCORD_TOKEN in .env');
@@ -81,10 +81,9 @@ async function updateSummary(channelId) {
 
 client.on('interactionCreate', async (interaction) => {
   try {
-    // Slash Command: /signal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
       const asset = interaction.options.getString('asset', true);
-      const side = interaction.options.getString('side', true); // LONG | SHORT
+      const side = interaction.options.getString('side', true);
       const entry = interaction.options.getString('entry', true);
       const sl = interaction.options.getString('sl') || '';
       const tp1 = interaction.options.getString('tp1') || '';
@@ -115,7 +114,7 @@ client.on('interactionCreate', async (interaction) => {
       const embed = buildEmbed(signal);
       const comps = components(id);
 
-      const channel = interaction.channel; // post in the same channel where command was run
+      const channel = interaction.channel; // post where /signal was used
       const msg = await channel.send({ embeds: [embed], components: comps });
 
       signal.messageId = msg.id;
@@ -128,7 +127,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // Handle buttons (status / TP / edit / delete)
     if (interaction.isButton()) {
       const parts = interaction.customId.split('|');
       if (parts[0] !== 'signal') return;
@@ -165,7 +163,7 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      if (action === 'tp') {
+      if (action === 'tp')) {
         const tpNum = parts[3];
         if (!['1', '2', '3'].includes(tpNum)) {
           await interaction.reply({ content: 'Invalid TP.', ephemeral: true });
@@ -246,7 +244,6 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // Handle modal submit (edit)
     if (interaction.isModalSubmit() && interaction.customId.startsWith('signal-edit|')) {
       const signalId = interaction.customId.split('|')[1];
       const signal = store.getById(signalId);
