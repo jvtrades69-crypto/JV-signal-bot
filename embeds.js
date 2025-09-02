@@ -1,88 +1,41 @@
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 
-/** Colors + status metadata */
-const COLORS = {
-  long: 0x00cc66,     // green for Long
-  short: 0xff3b30,    // red for Short
-  neutral: 0x5865F2,
-  running_valid: 0x00cc66,
-  running_be: 0xffc107,
-  stopped_out: 0xff3b30,
-  stopped_be: 0x99aab5,
-};
-
 const STATUS_META = {
-  RUNNING_VALID: { label: 'Running (Valid entry)', color: COLORS.running_valid, reentry: 'Yes' },
-  RUNNING_BE:    { label: 'Running (BE — No re-entry)', color: COLORS.running_be, reentry: 'No' },
-  STOPPED_OUT:   { label: 'Stopped Out', color: COLORS.stopped_out, reentry: 'No' },
-  STOPPED_BE:    { label: 'Stopped at Breakeven', color: COLORS.stopped_be, reentry: 'No' },
+  RUNNING_VALID: { label: 'trade is still running', active: 'YES', reentry: 'Yes', be: false },
+  RUNNING_BE:    { label: 'trade is still running', active: 'YES', reentry: 'No ( SL set to breakeven )', be: true },
+  STOPPED_OUT:   { label: 'trade has stopped out', active: 'NO', reentry: 'No', be: false },
+  STOPPED_BE:    { label: 'trade stopped at breakeven', active: 'NO', reentry: 'No ( SL set to breakeven )', be: true },
 };
 
-/** Helper: inline code block */
-const code = (v) => '```' + String(v) + '```';
-
-/** Build the exact description layout you requested */
-function buildDescription(signal) {
-  // 📊 Trade Details block
-  const details = [];
-  details.push('📊 **Trade Details**');
-  details.push(`Entry: ${signal.entry ? code(signal.entry) : '—'}`);
-  details.push(`SL: ${signal.sl ? code(signal.sl) : '—'}`);
-
-  // Targets
-  const tps = [signal.tp1, signal.tp2, signal.tp3].filter(Boolean);
-  if (tps.length) {
-    // Show each TP on its own line if provided
-    if (signal.tp1) details.push(`TP1: ${code(signal.tp1)}`);
-    if (signal.tp2) details.push(`TP2: ${code(signal.tp2)}`);
-    if (signal.tp3) details.push(`TP3: ${code(signal.tp3)}`);
-  } else {
-    details.push('TPs: —');
-  }
-
-  if (signal.timeframe) details.push(`Timeframe: ${code(signal.timeframe)}`);
-
-  // 📝 Reasoning (optional)
-  const parts = [];
-  parts.push(details.join('\n'));
-
-  if (signal.rationale && signal.rationale.trim() !== '') {
-    parts.push('\n📝 **Reasoning**');
-    parts.push(signal.rationale.trim().slice(0, 1000));
-  }
-
-  // 📍 Status block
-  const status = STATUS_META[signal.status] ?? STATUS_META.RUNNING_VALID;
-  const running = (signal.status === 'RUNNING_VALID' || signal.status === 'RUNNING_BE');
-
-  const latest = signal.latestTpHit ? ` TP${signal.latestTpHit} hit` : '';
-  const activeLine = running
-    ? `Active: **YES** — trade is still running${latest}`
-    : `Active: **NO** — ${status.label}`;
-
-  const reentryLine = `Valid for Re-entry: **${status.reentry}**` +
-    (status.reentry === 'No' ? ' (SL set to breakeven)' : '');
-
-  const statusLines = ['\n📍 **Status**', activeLine, reentryLine];
-  parts.push(statusLines.join('\n'));
-
-  return parts.join('\n');
-}
-
-/** Build the final embed using a single description string (no Discord "fields") */
 function buildEmbed(signal) {
-  const sideIsLong = signal.side === 'LONG';
-  const sideEmoji = sideIsLong ? '🟢' : '🔴';
-  const baseColor = sideIsLong ? COLORS.long : COLORS.short;
-  const statusMeta = STATUS_META[signal.status] ?? STATUS_META.RUNNING_VALID;
-  const color = statusMeta.color || baseColor;
+  const status = STATUS_META[signal.status] ?? STATUS_META.RUNNING_VALID;
+  const sideEmoji = signal.side === 'LONG' ? '🟢' : '🔴';
 
-  const title = `$${String(signal.asset || '').toUpperCase()} | ${sideIsLong ? 'Long' : 'Short'} ${sideEmoji}`;
+  // 📊 Trade Details
+  let desc = `**📊 Trade Details**\n`;
+  desc += `Entry: ${fmt(signal.entry)}\n`;
+  desc += `Stop Loss: ${fmt(signal.sl)}\n`;
+  if (signal.tp1) desc += `TP1: ${fmt(signal.tp1)}\n`;
+  if (signal.tp2) desc += `TP2: ${fmt(signal.tp2)}\n`;
+  if (signal.tp3) desc += `TP3: ${fmt(signal.tp3)}\n`;
+  desc += `\n`;
+
+  // 📝 Reasoning
+  if (signal.rationale) {
+    desc += `**📝 Reasoning**\n${signal.rationale.slice(0, 1000)}\n\n`;
+  }
+
+  // 📍 Status (compact format)
+  let statusText = `**📍 Status**\n`;
+  statusText += `Active : **${status.active}** - ${status.label}`;
+  if (signal.latestTpHit) statusText += ` TP${signal.latestTpHit} hit`;
+  statusText += `\nvalid for Re-entry: ${status.reentry}`;
+  desc += statusText;
 
   const embed = new EmbedBuilder()
-    .setTitle(title)
-    .setColor(color)
-    .setDescription(buildDescription(signal))
+    .setTitle(`${signal.asset.toUpperCase()} | ${signal.side === 'LONG' ? 'Long' : 'Short'} ${sideEmoji}`)
+    .setColor(signal.side === 'LONG' ? 0x00cc66 : 0xff3b30)
+    .setDescription(desc)
     .setFooter({ text: `Signal • ID: ${signal.id}` })
     .setTimestamp(new Date(signal.createdAt || Date.now()));
 
@@ -90,7 +43,10 @@ function buildEmbed(signal) {
   return embed;
 }
 
-/** Buttons stay the same */
+function fmt(v) {
+  return v && String(v).trim() !== '' ? v : '-';
+}
+
 function components(signalId) {
   return [
     new ActionRowBuilder().addComponents(
