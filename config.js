@@ -8,10 +8,15 @@ function requireEnv(name) {
 }
 
 module.exports = {
+  // Required
   token: requireEnv('DISCORD_TOKEN'),
   clientId: requireEnv('CLIENT_ID'),
   guildId: requireEnv('GUILD_ID'),
-  signalChannelId: requireEnv('SIGNAL_CHANNEL_ID'),
+
+  // Optional: keeping for backward compatibility, but NOT required anymore
+  signalChannelId: process.env.SIGNAL_CHANNEL_ID || '',
+
+  // Optional permissions
   ownerId: process.env.OWNER_ID || '',
   allowedRoleId: process.env.ALLOWED_ROLE_ID || '',
 };
