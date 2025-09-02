@@ -7,11 +7,14 @@ const {
   TextInputBuilder,
   TextInputStyle,
   ActionRowBuilder,
+  WebhookClient,
+  ButtonBuilder,
+  ButtonStyle,
+  ComponentType,
 } = require('discord.js');
 const { v4: uuidv4 } = require('uuid');
 
 const config = require('./config');
-const { buildEmbed, components, STATUS_META } = require('./embeds');
 const store = require('./store');
 
 if (!config.token) {
@@ -28,6 +31,10 @@ client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 });
 
+/* ---------- helpers ---------- */
+
+const oneLine = (s) => (s || '').replace(/\s+/g, ' ').trim();
+
 function canManage(interaction, signal) {
   if (!interaction || !signal) return false;
   const uid = interaction.user.id;
@@ -39,12 +46,80 @@ function canManage(interaction, signal) {
   return false;
 }
 
+async function getOrCreateWebhook(channel) {
+  const webhooks = await channel.fetchWebhooks();
+  let hook = webhooks.find(w => w.name === config.webhookName);
+  if (!hook) {
+    // requires Manage Webhooks permission
+    hook = await channel.createWebhook({
+      name: config.webhookName,
+      avatar: channel.guild?.iconURL({ size: 128 }) || undefined
+    });
+  }
+  return hook;
+}
+
+function renderPlain(signal) {
+  const sideEmoji = signal.side === 'LONG' ? '🟢' : '🔴';
+  const lines = [];
+
+  lines.push(`${signal.asset.toUpperCase()} | ${signal.side === 'LONG' ? 'Long' : 'Short'} ${sideEmoji}`);
+  lines.push('');
+  lines.push('📊 Trade Details');
+  lines.push(`Entry: ${signal.entry || '-'}`);
+  lines.push(`Stop Loss: ${signal.sl || '-'}`);
+  if (signal.tp1) lines.push(`TP1: ${signal.tp1}`);
+  if (signal.tp2) lines.push(`TP2: ${signal.tp2}`);
+  if (signal.tp3) lines.push(`TP3: ${signal.tp3}`);
+  lines.push('');
+  if (signal.rationale && signal.rationale.trim() !== '') {
+    lines.push('📝 Reasoning');
+    lines.push(signal.rationale.trim().slice(0, 1000));
+    lines.push('');
+  }
+  // Compact status exactly as requested
+  const statusMap = {
+    RUNNING_VALID: { active: 'YES', runningText: 'trade is still running', reentry: 'Yes' },
+    RUNNING_BE:    { active: 'YES', runningText: 'trade is still running', reentry: 'No ( SL set to breakeven )' },
+    STOPPED_OUT:   { active: 'NO',  runningText: 'trade has stopped out', reentry: 'No' },
+    STOPPED_BE:    { active: 'NO',  runningText: 'trade stopped at breakeven', reentry: 'No ( SL set to breakeven )' },
+  };
+  const st = statusMap[signal.status] || statusMap.RUNNING_VALID;
+
+  lines.push('📍 Status');
+  let first = `Active : ${st.active} - ${st.runningText}`;
+  if (signal.latestTpHit) first += ` tp${signal.latestTpHit} hit`;
+  lines.push(first);
+  lines.push(`valid for Re-entry: ${st.reentry}`);
+
+  return lines.join('\n');
+}
+
+function controlComponents(signalId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`signal|${signalId}|status|RUNNING_VALID`).setLabel('Running (Valid)').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`signal|${signalId}|status|RUNNING_BE`).setLabel('Running (BE)').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`signal|${signalId}|status|STOPPED_OUT`).setLabel('Stopped Out').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`signal|${signalId}|status|STOPPED_BE`).setLabel('Stopped BE').setStyle(ButtonStyle.Secondary)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`signal|${signalId}|tp|1`).setLabel('🎯 TP1 Hit').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`signal|${signalId}|tp|2`).setLabel('🎯 TP2 Hit').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`signal|${signalId}|tp|3`).setLabel('🎯 TP3 Hit').setStyle(ButtonStyle.Primary)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`signal|${signalId}|edit`).setLabel('Edit').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`signal|${signalId}|delete`).setLabel('Delete').setStyle(ButtonStyle.Danger)
+    )
+  ];
+}
+
 async function updateSummary(channelId) {
   try {
     const channel = await client.channels.fetch(channelId);
     const all = store.listAll().filter(s => s.channelId === channelId);
     const active = all.filter(s => s.status === 'RUNNING_VALID' || s.status === 'RUNNING_BE');
-
     const header = '📈 **Current Trades**';
     let content = '';
     if (active.length === 0) {
@@ -58,7 +133,6 @@ async function updateSummary(channelId) {
       });
       content = `${header}\n${lines.join('\n')}`;
     }
-
     const existingId = store.getSummaryMessageId(channelId);
     if (existingId) {
       try {
@@ -73,6 +147,8 @@ async function updateSummary(channelId) {
     console.error('updateSummary error:', e);
   }
 }
+
+/* ---------- interactions ---------- */
 
 function buildCreateModal() {
   const modal = new ModalBuilder()
@@ -108,17 +184,15 @@ function buildCreateModal() {
   );
 }
 
-const oneLine = (s) => (s || '').replace(/\s+/g, ' ').trim();
-
 client.on('interactionCreate', async (interaction) => {
   try {
-    // Slash command -> open modal
+    // /signal -> open modal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
       await interaction.showModal(buildCreateModal());
       return;
     }
 
-    // Modal submit -> create signal
+    // Create submit
     if (interaction.isModalSubmit() && interaction.customId === 'signal-create') {
       const asset = oneLine(interaction.fields.getTextInputValue('asset')).toUpperCase();
       const sideRaw = oneLine(interaction.fields.getTextInputValue('side')).toUpperCase();
@@ -139,140 +213,100 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       const id = uuidv4();
+      const channel = interaction.channel;
+      const webhook = await getOrCreateWebhook(channel);
+      const hookClient = new WebhookClient({ id: webhook.id, token: webhook.token });
+
       const signal = {
         id,
         guildId: interaction.guildId,
-        asset,
-        side,
-        entry,
-        sl,
-        tp1, tp2, tp3,
-        timeframe: '',
-        rationale: '',
+        channelId: channel.id,
+        asset, side, entry, sl, tp1, tp2, tp3,
+        timeframe: '', rationale: '',
         status: 'RUNNING_VALID',
         latestTpHit: null,
         ownerId: interaction.user.id,
         createdAt: Date.now(),
-        imageUrl: null,
+        webhookId: webhook.id,
+        webhookToken: webhook.token,
+        messageId: null
       };
 
-      const embed = buildEmbed(signal);
-      const comps = components(id);
+      const sent = await hookClient.send({
+        content: renderPlain(signal),
+        allowedMentions: { parse: [] }
+      });
 
-      const channel = interaction.channel;
-      const msg = await channel.send({ embeds: [embed], components: comps });
-
-      signal.messageId = msg.id;
-      signal.channelId = msg.channelId;
+      signal.messageId = sent.id;
       store.upsert(signal);
 
-      await interaction.reply({ content: `Signal posted here: https://discord.com/channels/${interaction.guildId}/${msg.channelId}/${msg.id}`, flags: 64 });
+      await interaction.reply({
+        content: 'Controls (only you can see):',
+        components: controlComponents(signal.id),
+        flags: 64
+      });
+
       await updateSummary(signal.channelId);
       return;
     }
 
-    // Buttons: status / TP / edit / delete
+    // Buttons
     if (interaction.isButton()) {
-      const parts = interaction.customId.split('|');
-      if (parts[0] !== 'signal') return;
-
-      const signalId = parts[1];
-      const action = parts[2];
+      const [prefix, signalId, action, extra] = interaction.customId.split('|');
+      if (prefix !== 'signal') return;
 
       let signal = store.getById(signalId);
+      if (!signal) signal = store.getByMessageId(interaction.message?.id);
       if (!signal) {
-        // Fallback: try map by message ID (if storage was reset)
-        signal = store.getByMessageId(interaction.message?.id);
-      }
-      if (!signal) {
-        await interaction.reply({ content: 'Signal not found (storage reset or message is stale). Create a new one.', flags: 64 });
+        await interaction.reply({ content: 'Signal not found (storage reset or message is stale).', flags: 64 });
         return;
       }
-
       if (!canManage(interaction, signal)) {
         await interaction.reply({ content: 'You do not have permission to manage this signal.', flags: 64 });
         return;
       }
 
+      const hook = new WebhookClient({ id: signal.webhookId, token: signal.webhookToken });
+
       if (action === 'status') {
-        const newStatus = parts[3];
-        if (!STATUS_META[newStatus]) {
-          await interaction.reply({ content: 'Invalid status.', flags: 64 });
-          return;
+        const newStatus = extra;
+        if (!['RUNNING_VALID','RUNNING_BE','STOPPED_OUT','STOPPED_BE'].includes(newStatus)) {
+          await interaction.reply({ content: 'Invalid status.', flags: 64 }); return;
         }
         signal.status = newStatus;
         store.upsert(signal);
-
-        const channel = await client.channels.fetch(signal.channelId);
-        const msg = await channel.messages.fetch(signal.messageId);
-        await msg.edit({ embeds: [buildEmbed(signal)], components: components(signal.id) });
-        await interaction.reply({ content: `Status updated.`, flags: 64 });
-
+        await hook.editMessage(signal.messageId, { content: renderPlain(signal) });
+        await interaction.reply({ content: 'Status updated.', flags: 64 });
         await updateSummary(signal.channelId);
         return;
       }
 
       if (action === 'tp') {
-        const tpNum = parts[3];
-        if (!['1', '2', '3'].includes(tpNum)) {
-          await interaction.reply({ content: 'Invalid TP.', flags: 64 });
-          return;
+        if (!['1','2','3'].includes(extra)) {
+          await interaction.reply({ content: 'Invalid TP.', flags: 64 }); return;
         }
-        signal.latestTpHit = tpNum;
+        signal.latestTpHit = extra;
         store.upsert(signal);
-
-        const channel = await client.channels.fetch(signal.channelId);
-        const msg = await channel.messages.fetch(signal.messageId);
-        await msg.edit({ embeds: [buildEmbed(signal)], components: components(signal.id) });
-        await interaction.reply({ content: `Marked TP${tpNum} hit.`, flags: 64 });
-
+        await hook.editMessage(signal.messageId, { content: renderPlain(signal) });
+        await interaction.reply({ content: `Marked TP${extra} hit.`, flags: 64 });
         await updateSummary(signal.channelId);
         return;
       }
 
       if (action === 'edit') {
-        const modal = new ModalBuilder()
-          .setCustomId(`signal-edit|${signal.id}`)
-          .setTitle('Edit Signal');
+        const modal = new ModalBuilder().setCustomId(`signal-edit|${signal.id}`).setTitle('Edit Signal');
 
-        const entryInput = new TextInputBuilder()
-          .setCustomId('entry')
-          .setLabel('Entry')
-          .setPlaceholder('e.g., 108,201 or 108,100–108,300')
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true)
-          .setValue(signal.entry || '');
-
-        const slInput = new TextInputBuilder()
-          .setCustomId('sl')
-          .setLabel('Stop Loss')
-          .setPlaceholder('e.g., 100,201')
-          .setStyle(TextInputStyle.Short)
-          .setRequired(false)
-          .setValue(signal.sl || '');
-
-        const tpsInput = new TextInputBuilder()
-          .setCustomId('tps')
-          .setLabel('Targets (TP1 | TP2 | TP3)')
-          .setPlaceholder('e.g., 110,000 | 121,201')
-          .setStyle(TextInputStyle.Short)
-          .setRequired(false)
+        const entryInput = new TextInputBuilder().setCustomId('entry').setLabel('Entry')
+          .setPlaceholder('e.g., 108,201 or 108,100–108,300').setStyle(TextInputStyle.Short).setRequired(true).setValue(signal.entry || '');
+        const slInput = new TextInputBuilder().setCustomId('sl').setLabel('Stop Loss')
+          .setPlaceholder('e.g., 100,201').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.sl || '');
+        const tpsInput = new TextInputBuilder().setCustomId('tps').setLabel('Targets (TP1 | TP2 | TP3)')
+          .setPlaceholder('e.g., 110,000 | 121,201').setStyle(TextInputStyle.Short).setRequired(false)
           .setValue([signal.tp1, signal.tp2, signal.tp3].filter(Boolean).join(' | '));
-
-        const tfInput = new TextInputBuilder()
-          .setCustomId('timeframe')
-          .setLabel('Timeframe (e.g., 1H, 4H)')
-          .setPlaceholder('e.g., 1H')
-          .setStyle(TextInputStyle.Short)
-          .setRequired(false)
-          .setValue(signal.timeframe || '');
-
-        const reasonInput = new TextInputBuilder()
-          .setCustomId('reason')
-          .setLabel('Reason (<= 1000 chars)')
-          .setPlaceholder('Short notes about the setup')
-          .setStyle(TextInputStyle.Paragraph)
-          .setRequired(false)
+        const tfInput = new TextInputBuilder().setCustomId('timeframe').setLabel('Timeframe (e.g., 1H, 4H)')
+          .setPlaceholder('e.g., 1H').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.timeframe || '');
+        const reasonInput = new TextInputBuilder().setCustomId('reason').setLabel('Reason (<= 1000 chars)')
+          .setPlaceholder('Short notes about the setup').setStyle(TextInputStyle.Paragraph).setRequired(false)
           .setValue(signal.rationale ? signal.rationale.slice(0, 1000) : '');
 
         const row1 = new ActionRowBuilder().addComponents(entryInput);
@@ -280,19 +314,19 @@ client.on('interactionCreate', async (interaction) => {
         const row3 = new ActionRowBuilder().addComponents(tpsInput);
         const row4 = new ActionRowBuilder().addComponents(tfInput);
         const row5 = new ActionRowBuilder().addComponents(reasonInput);
-
         modal.addComponents(row1, row2, row3, row4, row5);
+
         await interaction.showModal(modal);
         return;
       }
 
       if (action === 'delete') {
-        const channel = await client.channels.fetch(signal.channelId);
-        const msg = await channel.messages.fetch(signal.messageId);
-        await msg.delete().catch(() => {});
+        try {
+          await new WebhookClient({ id: signal.webhookId, token: signal.webhookToken })
+            .deleteMessage(signal.messageId);
+        } catch {}
         store.removeById(signal.id);
         await interaction.reply({ content: 'Signal deleted.', flags: 64 });
-
         await updateSummary(signal.channelId);
         return;
       }
@@ -303,14 +337,8 @@ client.on('interactionCreate', async (interaction) => {
       const signalId = interaction.customId.split('|')[1];
       let signal = store.getById(signalId);
       if (!signal) signal = store.getByMessageId(interaction.message?.id);
-      if (!signal) {
-        await interaction.reply({ content: 'Signal not found.', flags: 64 });
-        return;
-      }
-      if (!canManage(interaction, signal)) {
-        await interaction.reply({ content: 'You do not have permission to edit this signal.', flags: 64 });
-        return;
-      }
+      if (!signal) { await interaction.reply({ content: 'Signal not found.', flags: 64 }); return; }
+      if (!canManage(interaction, signal)) { await interaction.reply({ content: 'No permission.', flags: 64 }); return; }
 
       const entry = oneLine(interaction.fields.getTextInputValue('entry'));
       const sl = oneLine(interaction.fields.getTextInputValue('sl') || '');
@@ -334,9 +362,8 @@ client.on('interactionCreate', async (interaction) => {
 
       store.upsert(signal);
 
-      const channel = await client.channels.fetch(signal.channelId);
-      const msg = await channel.messages.fetch(signal.messageId);
-      await msg.edit({ embeds: [buildEmbed(signal)], components: components(signal.id) });
+      await new WebhookClient({ id: signal.webhookId, token: signal.webhookToken })
+        .editMessage(signal.messageId, { content: renderPlain(signal) });
 
       await interaction.reply({ content: 'Signal updated.', flags: 64 });
       await updateSummary(signal.channelId);
