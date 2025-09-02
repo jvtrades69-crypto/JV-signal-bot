@@ -76,32 +76,41 @@ async function updateSummary(channelId) {
   }
 }
 
-/** Build the create-signal modal */
+/** Build the create-signal modal (max 5 inputs — Discord limit) */
 function buildCreateModal() {
   const modal = new ModalBuilder()
     .setCustomId('signal-create')
     .setTitle('Create Trade Signal');
 
   const asset = new TextInputBuilder()
-    .setCustomId('asset').setLabel('Asset (e.g., BTC, ETH)').setStyle(TextInputStyle.Short).setRequired(true);
+    .setCustomId('asset')
+    .setLabel('Asset (e.g., BTC, ETH)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true);
 
   const side = new TextInputBuilder()
-    .setCustomId('side').setLabel('Side (LONG or SHORT)').setStyle(TextInputStyle.Short).setRequired(true);
+    .setCustomId('side')
+    .setLabel('Side (LONG or SHORT)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true);
 
   const entry = new TextInputBuilder()
-    .setCustomId('entry').setLabel('Entry (number or range)').setStyle(TextInputStyle.Short).setRequired(true);
+    .setCustomId('entry')
+    .setLabel('Entry (number or range)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true);
 
   const sl = new TextInputBuilder()
-    .setCustomId('sl').setLabel('SL (optional)').setStyle(TextInputStyle.Short).setRequired(false);
+    .setCustomId('sl')
+    .setLabel('SL (optional)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false);
 
   const tps = new TextInputBuilder()
-    .setCustomId('tps').setLabel('Targets (TP1 | TP2 | TP3)').setStyle(TextInputStyle.Short).setRequired(false);
-
-  const tf = new TextInputBuilder()
-    .setCustomId('timeframe').setLabel('Timeframe (e.g., 1H, 4H) — optional').setStyle(TextInputStyle.Short).setRequired(false);
-
-  const reason = new TextInputBuilder()
-    .setCustomId('reason').setLabel('Reason (optional, <= 1000 chars)').setStyle(TextInputStyle.Paragraph).setRequired(false);
+    .setCustomId('tps')
+    .setLabel('Targets (TP1 | TP2 | TP3)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false);
 
   return modal.addComponents(
     new ActionRowBuilder().addComponents(asset),
@@ -109,8 +118,6 @@ function buildCreateModal() {
     new ActionRowBuilder().addComponents(entry),
     new ActionRowBuilder().addComponents(sl),
     new ActionRowBuilder().addComponents(tps),
-    new ActionRowBuilder().addComponents(tf),
-    new ActionRowBuilder().addComponents(reason),
   );
 }
 
@@ -138,9 +145,6 @@ client.on('interactionCreate', async (interaction) => {
         [tp1, tp2, tp3] = [parts[0] || '', parts[1] || '', parts[2] || ''];
       }
 
-      const timeframe = get('timeframe').trim();
-      const rationale = get('reason').trim();
-
       if (!asset || !side || !entry) {
         await interaction.reply({
           content: 'Asset, Side, and Entry are required. Side must be LONG or SHORT.',
@@ -158,13 +162,13 @@ client.on('interactionCreate', async (interaction) => {
         entry,
         sl,
         tp1, tp2, tp3,
-        timeframe,
-        rationale,
+        timeframe: '',         // can add later via Edit
+        rationale: '',         // can add later via Edit
         status: 'RUNNING_VALID',
         latestTpHit: null,
         ownerId: interaction.user.id,
         createdAt: Date.now(),
-        imageUrl: null, // images not supported via modal; can use Edit to add later if you want
+        imageUrl: null,        // not via modal; add later via Edit if needed
       };
 
       const embed = buildEmbed(signal);
@@ -287,6 +291,7 @@ client.on('interactionCreate', async (interaction) => {
         const row4 = new ActionRowBuilder().addComponents(tfInput);
         const row5 = new ActionRowBuilder().addComponents(reasonInput);
 
+        // NB: Edit modal uses 5 rows (max). If you later add image here, replace one field.
         modal.addComponents(row1, row2, row3, row4, row5);
         await interaction.showModal(modal);
         return;
