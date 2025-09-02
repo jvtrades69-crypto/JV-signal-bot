@@ -10,12 +10,12 @@ const {
 } = require('discord.js');
 const { v4: uuidv4 } = require('uuid');
 
-const config = require('./config');          // expects config.js in project root
-const { buildEmbed, components, STATUS_META } = require('./embeds'); // expects embeds.js in root
-const store = require('./store');            // expects store.js in root
+const config = require('./config');          // config.js in root
+const { buildEmbed, components, STATUS_META } = require('./embeds'); // embeds.js in root
+const store = require('./store');            // store.js in root
 
-if (!config.token || !config.signalChannelId) {
-  console.error('[ERROR] Missing DISCORD_TOKEN or SIGNAL_CHANNEL_ID in .env');
+if (!config.token) {
+  console.error('[ERROR] Missing DISCORD_TOKEN in .env');
   process.exit(1);
 }
 
@@ -28,7 +28,6 @@ client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 });
 
-/** Permission check: owner of signal, OWNER_ID, ALLOWED_ROLE_ID, or Admin */
 function canManage(interaction, signal) {
   if (!interaction || !signal) return false;
   const userId = interaction.user.id;
@@ -45,7 +44,6 @@ function canManage(interaction, signal) {
   return false;
 }
 
-/** Post or update the "Current Trades" summary message in the signal channel */
 async function updateSummary(channelId) {
   try {
     const channel = await client.channels.fetch(channelId);
@@ -96,24 +94,19 @@ client.on('interactionCreate', async (interaction) => {
       const rationale = interaction.options.getString('reason') || '';
       const image = interaction.options.getAttachment('image');
 
-      if (!config.signalChannelId) {
-        await interaction.reply({ content: 'Signal channel not configured. Set SIGNAL_CHANNEL_ID in .env.', ephemeral: true });
-        return;
-      }
-
       const id = uuidv4();
       const signal = {
         id,
         guildId: interaction.guildId,
         asset,
-        side, // LONG/SHORT
+        side,
         entry,
         sl,
         tp1, tp2, tp3,
         timeframe,
         rationale,
         status: 'RUNNING_VALID',
-        latestTpHit: null,          // holds "1" | "2" | "3" for latest TP pressed
+        latestTpHit: null,
         ownerId: interaction.user.id,
         createdAt: Date.now(),
         imageUrl: image ? image.url : null,
@@ -122,22 +115,22 @@ client.on('interactionCreate', async (interaction) => {
       const embed = buildEmbed(signal);
       const comps = components(id);
 
-      const channel = await client.channels.fetch(config.signalChannelId);
+      const channel = interaction.channel; // post in the same channel where command was run
       const msg = await channel.send({ embeds: [embed], components: comps });
 
       signal.messageId = msg.id;
       signal.channelId = msg.channelId;
       store.upsert(signal);
 
-      await interaction.reply({ content: `Signal posted: https://discord.com/channels/${interaction.guildId}/${msg.channelId}/${msg.id}`, ephemeral: true });
+      await interaction.reply({ content: `Signal posted here: https://discord.com/channels/${interaction.guildId}/${msg.channelId}/${msg.id}`, ephemeral: true });
 
       await updateSummary(signal.channelId);
       return;
     }
 
-    // Buttons (status / TP / edit / delete)
+    // Handle buttons (status / TP / edit / delete)
     if (interaction.isButton()) {
-      const parts = interaction.customId.split('|'); // signal|<id>|status|RUNNING_VALID  or  signal|<id>|tp|2
+      const parts = interaction.customId.split('|');
       if (parts[0] !== 'signal') return;
 
       const signalId = parts[1];
@@ -154,7 +147,6 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      // Status switcher
       if (action === 'status') {
         const newStatus = parts[3];
         if (!STATUS_META[newStatus]) {
@@ -173,14 +165,13 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      // TP buttons (latest only)
       if (action === 'tp') {
         const tpNum = parts[3];
         if (!['1', '2', '3'].includes(tpNum)) {
           await interaction.reply({ content: 'Invalid TP.', ephemeral: true });
           return;
         }
-        signal.latestTpHit = tpNum; // latest replaces previous
+        signal.latestTpHit = tpNum;
         store.upsert(signal);
 
         const channel = await client.channels.fetch(signal.channelId);
@@ -192,7 +183,6 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      // Edit modal
       if (action === 'edit') {
         const modal = new ModalBuilder()
           .setCustomId(`signal-edit|${signal.id}`)
@@ -244,7 +234,6 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      // Delete
       if (action === 'delete') {
         const channel = await client.channels.fetch(signal.channelId);
         const msg = await channel.messages.fetch(signal.messageId);
@@ -257,7 +246,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // Modal submit (Edit)
+    // Handle modal submit (edit)
     if (interaction.isModalSubmit() && interaction.customId.startsWith('signal-edit|')) {
       const signalId = interaction.customId.split('|')[1];
       const signal = store.getById(signalId);
