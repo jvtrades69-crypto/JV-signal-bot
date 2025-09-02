@@ -31,16 +31,11 @@ client.once('ready', () => {
 function canManage(interaction, signal) {
   if (!interaction || !signal) return false;
   const userId = interaction.user.id;
-
   if (signal.ownerId === userId) return true;
   if (config.ownerId && userId === config.ownerId) return true;
-
   const member = interaction.member;
   if (member?.permissions?.has(PermissionFlagsBits.Administrator)) return true;
-
-  if (config.allowedRoleId) {
-    return Boolean(member?.roles?.cache?.has(config.allowedRoleId));
-  }
+  if (config.allowedRoleId) return Boolean(member?.roles?.cache?.has(config.allowedRoleId));
   return false;
 }
 
@@ -81,11 +76,11 @@ async function updateSummary(channelId) {
 
 client.on('interactionCreate', async (interaction) => {
   try {
-    // Slash Command: /signal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
-      const asset = interaction.options.getString('asset', true);
-      const side = interaction.options.getString('side', true); // LONG | SHORT
-      const entry = interaction.options.getString('entry', true);
+      // Use non-required getters and validate ourselves (avoids hard crash)
+      const asset = interaction.options.getString('asset');
+      const side = interaction.options.getString('side');        // LONG | SHORT
+      const entry = interaction.options.getString('entry');
       const sl = interaction.options.getString('sl') || '';
       const tp1 = interaction.options.getString('tp1') || '';
       const tp2 = interaction.options.getString('tp2') || '';
@@ -93,6 +88,14 @@ client.on('interactionCreate', async (interaction) => {
       const timeframe = interaction.options.getString('timeframe') || '';
       const rationale = interaction.options.getString('reason') || '';
       const image = interaction.options.getAttachment('image');
+
+      if (!asset || !side || !entry) {
+        const usage =
+          'Usage:\n' +
+          '`/signal asset:<BTC> side:<Long|Short> entry:<108,201> [sl:<..>] [tp1:<..>] [tp2:<..>] [tp3:<..>] [timeframe:<1H>] [reason:<text>]`';
+        await interaction.reply({ content: `Missing required options.\n${usage}`, ephemeral: true });
+        return;
+      }
 
       const id = uuidv4();
       const signal = {
@@ -115,8 +118,7 @@ client.on('interactionCreate', async (interaction) => {
       const embed = buildEmbed(signal);
       const comps = components(id);
 
-      // Post in the same channel where the command was used
-      const channel = interaction.channel;
+      const channel = interaction.channel; // post where /signal was used
       const msg = await channel.send({ embeds: [embed], components: comps });
 
       signal.messageId = msg.id;
@@ -125,16 +127,15 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.reply({
         content: `Signal posted here: https://discord.com/channels/${interaction.guildId}/${msg.channelId}/${msg.id}`,
-        ephemeral: true
+        flags: 64 // ephemeral replacement
       });
 
       await updateSummary(signal.channelId);
       return;
     }
 
-    // Buttons: status / TP / edit / delete
     if (interaction.isButton()) {
-      const parts = interaction.customId.split('|'); // signal|<id>|status|RUNNING_VALID  OR  signal|<id>|tp|2
+      const parts = interaction.customId.split('|');
       if (parts[0] !== 'signal') return;
 
       const signalId = parts[1];
@@ -142,19 +143,19 @@ client.on('interactionCreate', async (interaction) => {
 
       const signal = store.getById(signalId);
       if (!signal) {
-        await interaction.reply({ content: 'Signal not found or storage missing.', ephemeral: true });
+        await interaction.reply({ content: 'Signal not found or storage missing.', flags: 64 });
         return;
       }
 
       if (!canManage(interaction, signal)) {
-        await interaction.reply({ content: 'You do not have permission to manage this signal.', ephemeral: true });
+        await interaction.reply({ content: 'You do not have permission to manage this signal.', flags: 64 });
         return;
       }
 
       if (action === 'status') {
         const newStatus = parts[3];
         if (!STATUS_META[newStatus]) {
-          await interaction.reply({ content: 'Invalid status.', ephemeral: true });
+          await interaction.reply({ content: 'Invalid status.', flags: 64 });
           return;
         }
         signal.status = newStatus;
@@ -163,26 +164,25 @@ client.on('interactionCreate', async (interaction) => {
         const channel = await client.channels.fetch(signal.channelId);
         const msg = await channel.messages.fetch(signal.messageId);
         await msg.edit({ embeds: [buildEmbed(signal)], components: components(signal.id) });
-        await interaction.reply({ content: `Status updated to **${STATUS_META[newStatus].label}**.`, ephemeral: true });
+        await interaction.reply({ content: `Status updated to **${STATUS_META[newStatus].label}**.`, flags: 64 });
 
         await updateSummary(signal.channelId);
         return;
       }
 
-      if (action === 'tp') { // <-- fixed: removed stray ')'
+      if (action === 'tp') {
         const tpNum = parts[3];
         if (!['1', '2', '3'].includes(tpNum)) {
-          await interaction.reply({ content: 'Invalid TP.', ephemeral: true });
+          await interaction.reply({ content: 'Invalid TP.', flags: 64 });
           return;
         }
-        // "latest" behavior
         signal.latestTpHit = tpNum;
         store.upsert(signal);
 
         const channel = await client.channels.fetch(signal.channelId);
         const msg = await channel.messages.fetch(signal.messageId);
         await msg.edit({ embeds: [buildEmbed(signal)], components: components(signal.id) });
-        await interaction.reply({ content: `Marked **TP${tpNum} hit**.`, ephemeral: true });
+        await interaction.reply({ content: `Marked **TP${tpNum} hit**.`, flags: 64 });
 
         await updateSummary(signal.channelId);
         return;
@@ -244,23 +244,22 @@ client.on('interactionCreate', async (interaction) => {
         const msg = await channel.messages.fetch(signal.messageId);
         await msg.delete().catch(() => {});
         store.removeById(signal.id);
-        await interaction.reply({ content: 'Signal deleted.', ephemeral: true });
+        await interaction.reply({ content: 'Signal deleted.', flags: 64 });
 
         await updateSummary(signal.channelId);
         return;
       }
     }
 
-    // Modal submit
     if (interaction.isModalSubmit() && interaction.customId.startsWith('signal-edit|')) {
       const signalId = interaction.customId.split('|')[1];
       const signal = store.getById(signalId);
       if (!signal) {
-        await interaction.reply({ content: 'Signal not found.', ephemeral: true });
+        await interaction.reply({ content: 'Signal not found.', flags: 64 });
         return;
       }
       if (!canManage(interaction, signal)) {
-        await interaction.reply({ content: 'You do not have permission to edit this signal.', ephemeral: true });
+        await interaction.reply({ content: 'You do not have permission to edit this signal.', flags: 64 });
         return;
       }
 
@@ -292,7 +291,7 @@ client.on('interactionCreate', async (interaction) => {
       const msg = await channel.messages.fetch(signal.messageId);
       await msg.edit({ embeds: [buildEmbed(signal)], components: components(signal.id) });
 
-      await interaction.reply({ content: 'Signal updated.', ephemeral: true });
+      await interaction.reply({ content: 'Signal updated.', flags: 64 });
 
       await updateSummary(signal.channelId);
       return;
@@ -302,7 +301,7 @@ client.on('interactionCreate', async (interaction) => {
     console.error('interactionCreate error:', err);
     try {
       if (interaction.isRepliable()) {
-        await interaction.reply({ content: 'An error occurred. Check bot logs.', ephemeral: true });
+        await interaction.reply({ content: 'An error occurred. Check bot logs.', flags: 64 });
       }
     } catch {}
   }
