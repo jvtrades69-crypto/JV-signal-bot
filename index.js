@@ -8,7 +8,6 @@ import 'dotenv/config';
 import fs from 'fs-extra';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import fetch from 'node-fetch';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -65,7 +64,6 @@ function norm(n) {
   return Number(s).toLocaleString('en-US', { maximumFractionDigits: 8 });
 }
 function buildContent(s, roleMentionAtBottom = true) {
-  // EXACT format you asked for, with blank lines preserved
   const header = `**${s.asset.toUpperCase()} | ${s.direction.toUpperCase()}** ${dirEmoji(s.direction)}`;
   const lines = [
     header,
@@ -82,7 +80,7 @@ function buildContent(s, roleMentionAtBottom = true) {
     '',
     `:round_pushpin: Status : ${s.statusNote ? s.statusNote : s.status}`,
     '',
-  ].filter(v => v !== null);  // KEEP "" so blank lines survive
+  ].filter(v => v !== null);  // keep "" so spacing survives
 
   if (roleMentionAtBottom && MENTION_ROLE_ID?.trim()) lines.push(`<@&${MENTION_ROLE_ID}>`);
   return lines.join('\n');
@@ -129,8 +127,36 @@ client.once('ready', () => console.log(`Logged in as ${client.user.tag}`));
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
-    /* ... keep your command handlers, button handlers, and modals from the previous version ... */
-    /* The ONLY difference is buildContent now preserves "" lines */
+    // Handle button: Close trade
+    if (interaction.isButton() && interaction.customId.startsWith('sig_close_')) {
+      const id = interaction.customId.split('_')[2];
+      const modal = new ModalBuilder()
+        .setCustomId(`sig_close_modal_${id}`)
+        .setTitle('Close Trade');
+
+      const resultInput = new TextInputBuilder()
+        .setCustomId('result')
+        .setLabel('Result: Win / Loss / BE / Manual') // ✅ shortened label
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const rInput = new TextInputBuilder()
+        .setCustomId('rmultiple')
+        .setLabel('R multiple (e.g., 2.5)')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false);
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(resultInput),
+        new ActionRowBuilder().addComponents(rInput),
+      );
+
+      await interaction.showModal(modal);
+      return;
+    }
+
+    // ... keep your other slash command + button handlers ...
+    // this file now preserves spacing + fixes close label
   } catch (e) {
     console.error('Handler error:', e);
     if (interaction.isRepliable()) {
