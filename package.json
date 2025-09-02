@@ -1,15 +1,12 @@
 {
   "name": "jv-signal-bot",
-  "version": "1.1.0",
-  "description": "JV Trades Discord Signal Bot — status buttons, TP hit buttons, edit modal, summary message, and JSON persistence.",
-  "main": "src/index.js",
+  "version": "1.2.0",
+  "description": "JV Trades Discord Signal Bot — works in any channel, TP buttons, edit modal, summary message, JSON persistence.",
+  "main": "index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "register": "node src/commands/registerCommands.js"
+    "start": "node index.js",
+    "register": "node register-commands.js"
   },
-  "keywords": ["discord", "trading", "signals", "jvtrades"],
-  "author": "JV Trades",
-  "license": "MIT",
   "engines": { "node": ">=18" },
   "dependencies": {
     "discord.js": "^14.16.3",
