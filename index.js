@@ -81,9 +81,10 @@ async function updateSummary(channelId) {
 
 client.on('interactionCreate', async (interaction) => {
   try {
+    // Slash Command: /signal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
       const asset = interaction.options.getString('asset', true);
-      const side = interaction.options.getString('side', true);
+      const side = interaction.options.getString('side', true); // LONG | SHORT
       const entry = interaction.options.getString('entry', true);
       const sl = interaction.options.getString('sl') || '';
       const tp1 = interaction.options.getString('tp1') || '';
@@ -114,21 +115,26 @@ client.on('interactionCreate', async (interaction) => {
       const embed = buildEmbed(signal);
       const comps = components(id);
 
-      const channel = interaction.channel; // post where /signal was used
+      // Post in the same channel where the command was used
+      const channel = interaction.channel;
       const msg = await channel.send({ embeds: [embed], components: comps });
 
       signal.messageId = msg.id;
       signal.channelId = msg.channelId;
       store.upsert(signal);
 
-      await interaction.reply({ content: `Signal posted here: https://discord.com/channels/${interaction.guildId}/${msg.channelId}/${msg.id}`, ephemeral: true });
+      await interaction.reply({
+        content: `Signal posted here: https://discord.com/channels/${interaction.guildId}/${msg.channelId}/${msg.id}`,
+        ephemeral: true
+      });
 
       await updateSummary(signal.channelId);
       return;
     }
 
+    // Buttons: status / TP / edit / delete
     if (interaction.isButton()) {
-      const parts = interaction.customId.split('|');
+      const parts = interaction.customId.split('|'); // signal|<id>|status|RUNNING_VALID  OR  signal|<id>|tp|2
       if (parts[0] !== 'signal') return;
 
       const signalId = parts[1];
@@ -163,12 +169,13 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      if (action === 'tp')) {
+      if (action === 'tp') { // <-- fixed: removed stray ')'
         const tpNum = parts[3];
         if (!['1', '2', '3'].includes(tpNum)) {
           await interaction.reply({ content: 'Invalid TP.', ephemeral: true });
           return;
         }
+        // "latest" behavior
         signal.latestTpHit = tpNum;
         store.upsert(signal);
 
@@ -244,6 +251,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
+    // Modal submit
     if (interaction.isModalSubmit() && interaction.customId.startsWith('signal-edit|')) {
       const signalId = interaction.customId.split('|')[1];
       const signal = store.getById(signalId);
