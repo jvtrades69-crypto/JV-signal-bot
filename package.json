@@ -1,7 +1,7 @@
 {
   "name": "jv-signal-bot",
-  "version": "2.0.0",
-  "description": "JV Trades Discord Signal Bot — compact embed style, modal input, TP buttons, status controls, per-channel summary, robust storage.",
+  "version": "3.0.0",
+  "description": "JV Trades Discord Signal Bot — plain-text webhook style with ephemeral controls, robust storage.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
