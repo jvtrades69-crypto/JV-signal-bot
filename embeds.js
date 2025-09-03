@@ -1,103 +1,66 @@
-// embeds.js
-// Pure formatting helpers. Return markdown strings that Discord renders nicely.
-
-function safeNum(x) {
-  if (x === 0) return "0";
-  if (x === null || typeof x === "undefined") return "-";
-  return String(x);
+// Renders plain-text blocks (keeps your exact layout)
+function padIf(text) {
+  return text ? String(text) : "-";
 }
 
-function sideDot(side) {
-  if (!side) return "🟢";
-  const s = String(side).toLowerCase();
-  return s === "short" ? "🔴" : "🟢";
+function titleLine(asset, side, statusIcon) {
+  // Exactly ONE blank line between title and details
+  return `**${asset} | ${side} ${statusIcon}**\n`;
 }
 
-function boldTitle(text) {
-  return `**${text}**`;
+function statusText(signal) {
+  const active = signal.active !== false;
+  const runningBE = signal.status === "running-be";
+  const stopped = signal.status === "stopped";
+  const stoppedBE = signal.status === "stopped-be";
+
+  if (stopped)   return "📍 **Status : Inactive 🟥** - SL set to breakeven\nValid for re-entry: Yes";
+  if (stoppedBE) return "📍 **Status : Inactive 🟥** - SL set to breakeven\nValid for re-entry: Yes";
+  if (runningBE) return "📍 **Status : Active 🟩** - trade is still running\nValid for re-entry: No ( SL set to breakeven )";
+  return "📍 **Status : Active 🟩** - trade is still running\nValid for re-entry: Yes";
 }
 
-/**
- * Big single-signal card.
- * Expected minimal fields on `signal`:
- *   asset, side, entry, sl, tp1, tp2, tp3, reason, active, statusNote, validForReentry
- * Missing fields are rendered cleanly.
- */
-function renderSignalEmbed(signal) {
-  const asset = (signal.asset || "").toUpperCase();
-  const side = (signal.side || "").toUpperCase();
-  const dot = sideDot(signal.side);
+function renderSignalEmbed(signal, roleMention) {
+  const icon = "🟢"; // (you can map based on side if you want)
+  const title = titleLine(signal.asset, signal.side, icon);
 
-  const entry = safeNum(signal.entry);
-  const sl = safeNum(signal.sl);
+  const lines = [];
+  lines.push(title); // includes trailing newline
+  lines.push("📊 **Trade Details**");
+  lines.push(`Entry: ${padIf(signal.entry)}`);
+  lines.push(`SL: ${padIf(signal.sl)}`);
+  if (signal.tp1) lines.push(`TP1: ${signal.tp1}`);
+  if (signal.tp2) lines.push(`TP2: ${signal.tp2}`);
+  if (signal.tp3) lines.push(`TP3: ${signal.tp3}`);
+  lines.push(""); // blank line
 
-  const tpParts = [];
-  if (signal.tp1) tpParts.push(`TP1: ${safeNum(signal.tp1)}${signal.tp1Pct ? ` (${signal.tp1Pct}%)` : ""}`);
-  if (signal.tp2) tpParts.push(`TP2: ${safeNum(signal.tp2)}${signal.tp2Pct ? ` (${signal.tp2Pct}%)` : ""}`);
-  if (signal.tp3) tpParts.push(`TP3: ${safeNum(signal.tp3)}${signal.tp3Pct ? ` (${signal.tp3Pct}%)` : ""}`);
+  lines.push("📝 **Reasoning**");
+  lines.push(signal.reason ? signal.reason : "-");
+  lines.push(""); // blank
 
-  const reason = signal.reason ? String(signal.reason) : "-";
-
-  const activeWord = signal.active ? "Active 🟩 - trade is still running" : "Inactive 🟥 - SL set to breakeven";
-  const statusLine = signal.statusNote ? `${activeWord}\n${signal.statusNote}` : activeWord;
-
-  const reentry = signal.validForReentry ? "Yes" : "No";
-
-  // EXACT spacing: 1 blank line after the big title, then sections.
-  const lines = [
-    // Big title
-    `${boldTitle(`${asset} | ${side}`)} ${dot}`,
-    "",
-    // Trade details
-    "📊 " + boldTitle("Trade Details"),
-    `Entry: ${entry}`,
-    `SL: ${sl}`,
-    ...(tpParts.length ? tpParts : []),
-    "",
-    // Reasoning
-    "📝 " + boldTitle("Reasoning"),
-    reason,
-    "",
-    // Status
-    "📍 " + boldTitle("Status"),
-    `${statusLine}`,
-    `Valid for re-entry: ${reentry}`,
-    "",
-    // trailing line removed on join to avoid double spacing
-  ];
-
-  return lines.join("\n").trim();
-}
-
-/**
- * Compact summary for the "JV Current Active Trades" message.
- * `trades` is an array of signal-like objects.
- * `title` is the header (we keep it bolded, not huge).
- */
-function renderSummaryEmbed(trades, title = "JV Current Active Trades 📊") {
-  if (!trades || trades.length === 0) {
-    return `**${title}**\n• There are currently no ongoing trades valid for entry — stay posted for future trades.`;
+  lines.push(statusText(signal));
+  if (roleMention) {
+    lines.push("");
+    lines.push(roleMention);
   }
 
-  // one compact line per trade, numbered, with “jump” link expected to be added by caller if desired
-  const items = trades.map((t, i) => {
-    const asset = (t.asset || "").toUpperCase();
-    const side = (t.side || "").toUpperCase();
-    const dot = sideDot(t.side);
-    const entry = safeNum(t.entry);
-    const sl = safeNum(t.sl);
+  return lines.join("\n");
+}
 
-    const head = `${i + 1}. ${asset} ${side} ${dot}`;
-    const body = [
-      `➡️ Entry: ${entry}`,
-      `🛑 Stop Loss: ${sl}`,
-      ...(t.tp1 ? [`🎯 TP1: ${safeNum(t.tp1)}`] : []),
-    ].join("\n");
-
-    return `${head}\n${body}`;
+function renderSummaryEmbed(trades, title) {
+  if (!trades?.length) {
+    return `**${title}**\n• There are currently no ongoing trades valid for entry — stay posted for future trades.`;
+  }
+  const out = [`**${title}**`];
+  trades.forEach((t, i) => {
+    const emoji = "🟢";
+    out.push(`${i + 1}. ${t.asset} ${t.side} ${emoji} — [jump](https://discord.com/channels/${t.guildId || ""}/${t.channelId || ""}/${t.messageId || ""})`);
+    out.push(`➡️ Entry: ${padIf(t.entry)}`);
+    out.push(`🛑 Stop Loss: ${padIf(t.sl)}`);
+    if (t.tp1) out.push(`🎯 TP1: ${t.tp1}`);
+    out.push(""); // spacer between trades
   });
-
-  return `**${title}**\n${items.join("\n\n")}`;
+  return out.join("\n");
 }
 
 module.exports = {
