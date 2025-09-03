@@ -28,10 +28,6 @@ const client = new Client({
   partials: [Partials.Channel],
 });
 
-client.once('ready', () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-});
-
 /* ---------------- state ---------------- */
 const pickState = new Map();     // userId -> { asset, side, channelId }
 const draftState = new Map();    // userId -> { asset, side, entry, sl, reason, extraRole, channelId }
@@ -84,10 +80,9 @@ function renderTrade(signal) {
   const sideEmoji = signal.side === 'LONG' ? '🟢' : '🔴';
   const lines = [];
 
-  // Title + finger spacer
+  // Title + clean spacer (two blank lines, no emoji)
   lines.push(`# ${signal.asset.toUpperCase()} | ${signal.side === 'LONG' ? 'Long' : 'Short'} ${sideEmoji}`);
   lines.push('');
-  lines.push('👉');
   lines.push('');
 
   // Details
@@ -342,6 +337,18 @@ function draftPromptRows() {
 
 /* ---------------- interactions ---------------- */
 
+client.once('ready', async () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+  // Ensure the summary shows “no trades” even before first signal
+  try {
+    if (config.currentTradesChannelId) {
+      await updateSummary(config.currentTradesChannelId);
+    }
+  } catch (e) {
+    console.error('initial updateSummary failed:', e);
+  }
+});
+
 client.on('interactionCreate', async (interaction) => {
   try {
     // /signal command -> start pick
@@ -351,7 +358,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // pick selections (asset/side) — do NOT open modal here
+    // pick selections (asset/side)
     if (interaction.isStringSelectMenu && interaction.isStringSelectMenu() && interaction.customId.startsWith('pick|')) {
       const which = interaction.customId.split('|')[1];
       const pick = pickState.get(interaction.user.id) || { channelId: interaction.channelId };
@@ -361,7 +368,7 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.update({
         content: 'Pick Asset & Side, then Continue:',
-        components: buildPickComponents(interaction.user.id), // Continue enabled when both chosen
+        components: buildPickComponents(interaction.user.id),
       });
       return;
     }
@@ -448,27 +455,25 @@ client.on('interactionCreate', async (interaction) => {
       signal.messageId = sent.id;
       store.upsert(signal);
 
-      // controls with private thread + fallback
+      // PRIVATE controls thread only; if it fails, tell creator ephemerally
       try {
-        if (config.privateControls) {
-          const me = await channel.guild.members.fetch(interaction.user.id);
-          const thread = await channel.threads.create({
-            name: `Controls • ${signal.asset} ${signal.side} • ${interaction.user.username}`,
-            autoArchiveDuration: 1440,
-            type: ChannelType.PrivateThread,
-            invitable: false,
-            startMessage: sent,
-          });
-          await thread.members.add(me.id).catch(() => {});
-          await thread.send({ content: 'Your controls:', components: controls(signal) });
-        } else {
-          const msg = await channel.messages.fetch(signal.messageId);
-          await msg.reply({ content: 'Controls:', components: controls(signal) });
-        }
-      } catch {
+        const me = await channel.guild.members.fetch(interaction.user.id);
+        const thread = await channel.threads.create({
+          name: `Controls • ${signal.asset} ${signal.side} • ${interaction.user.username}`,
+          autoArchiveDuration: 1440,
+          type: ChannelType.PrivateThread,
+          invitable: false,
+          startMessage: sent,
+        });
+        await thread.members.add(me.id).catch(() => {});
+        await thread.send({ content: 'Your controls:', components: controls(signal) });
+      } catch (e) {
+        console.error('controls-thread error:', e);
         try {
-          const msg = await channel.messages.fetch(signal.messageId);
-          await msg.reply({ content: 'Controls:', components: controls(signal) });
+          await interaction.followUp({
+            content: 'Could not create a private control thread. Check bot permissions (Create Private Threads / Manage Threads).',
+            flags: 64,
+          });
         } catch {}
       }
 
@@ -526,27 +531,25 @@ client.on('interactionCreate', async (interaction) => {
       signal.messageId = sent.id;
       store.upsert(signal);
 
-      // controls with private thread + fallback
+      // PRIVATE controls thread only; if it fails, tell creator ephemerally
       try {
-        if (config.privateControls) {
-          const me = await channel.guild.members.fetch(interaction.user.id);
-          const thread = await channel.threads.create({
-            name: `Controls • ${signal.asset} ${signal.side} • ${interaction.user.username}`,
-            autoArchiveDuration: 1440,
-            type: ChannelType.PrivateThread,
-            invitable: false,
-            startMessage: sent,
-          });
-          await thread.members.add(me.id).catch(() => {});
-          await thread.send({ content: 'Your controls:', components: controls(signal) });
-        } else {
-          const msg = await channel.messages.fetch(signal.messageId);
-          await msg.reply({ content: 'Controls:', components: controls(signal) });
-        }
-      } catch {
+        const me = await channel.guild.members.fetch(interaction.user.id);
+        const thread = await channel.threads.create({
+          name: `Controls • ${signal.asset} ${signal.side} • ${interaction.user.username}`,
+          autoArchiveDuration: 1440,
+          type: ChannelType.PrivateThread,
+          invitable: false,
+          startMessage: sent,
+        });
+        await thread.members.add(me.id).catch(() => {});
+        await thread.send({ content: 'Your controls:', components: controls(signal) });
+      } catch (e) {
+        console.error('controls-thread error:', e);
         try {
-          const msg = await channel.messages.fetch(signal.messageId);
-          await msg.reply({ content: 'Controls:', components: controls(signal) });
+          await interaction.followUp({
+            content: 'Could not create a private control thread. Check bot permissions (Create Private Threads / Manage Threads).',
+            flags: 64,
+          });
         } catch {}
       }
 
