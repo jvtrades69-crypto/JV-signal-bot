@@ -1,339 +1,344 @@
+import 'dotenv/config';
+import { Client, REST, Routes, GatewayIntentBits, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, StringSelectMenuBuilder } from 'discord.js';
+import fs from 'fs-extra';
+
+// ---------- CONFIG ----------
 const {
-  Client,
-  GatewayIntentBits,
-  Partials,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  ChannelType,
-  PermissionsBitField,
-} = require("discord.js");
-const { v4: uuidv4 } = require("uuid");
+  DISCORD_TOKEN,
+  APPLICATION_ID,
+  GUILD_ID,
+  CURRENT_TRADES_CHANNEL_ID,
+  TRADER_ROLE_ID,
+  BRAND_NAME = 'JV Trades'
+} = process.env;
 
-const config = require("./config");     // must export: token, guildId, currentTradesChannelId, mentionRoleId, ownerUserId
-const store  = require("./store");      // helpers implemented below
-const embeds = require("./embeds");     // formatting helpers implemented below
-
-if (!config.token) {
-  console.error("[ERROR] Missing DISCORD_TOKEN / token in config.js");
+if (!DISCORD_TOKEN || !APPLICATION_ID || !GUILD_ID || !CURRENT_TRADES_CHANNEL_ID) {
+  console.error('Missing env vars. Check .env');
   process.exit(1);
 }
 
+// No privileged intents needed (fixes “Used disallowed intents”)
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ],
-  partials: [Partials.Channel, Partials.Message],
+  intents: [GatewayIntentBits.Guilds]
 });
 
-client.once("ready", () => {
+// ---------- SIMPLE DB (JSON FILE) ----------
+const DATA_DIR = './data';
+const DB_PATH = `${DATA_DIR}/trades.json`;
+
+await fs.ensureDir(DATA_DIR);
+if (!(await fs.pathExists(DB_PATH))) await fs.writeJson(DB_PATH, { trades: {} }, { spaces: 2 });
+
+const db = {
+  read: async () => (await fs.readJson(DB_PATH)),
+  write: async (data) => fs.writeJson(DB_PATH, data, { spaces: 2 }),
+  getTrade: async (id) => (await db.read()).trades[id],
+  setTrade: async (id, trade) => {
+    const data = await db.read();
+    data.trades[id] = trade;
+    await db.write(data);
+  },
+  deleteTrade: async (id) => {
+    const data = await db.read();
+    delete data.trades[id];
+    await db.write(data);
+  }
+};
+
+// ---------- COMMAND REGISTRATION ----------
+const commands = [
+  new SlashCommandBuilder()
+    .setName('trade')
+    .setDescription('Create or manage trades')
+    .addSubcommand(sub =>
+      sub.setName('new')
+        .setDescription('Create a new trade card')
+        .addStringOption(o => o.setName('asset').setDescription('e.g. BTC, ETH, SOL, NQ, ES').setRequired(true))
+        .addStringOption(o => o.setName('direction').setDescription('long/short').addChoices({name:'Long', value:'long'},{name:'Short', value:'short'}).setRequired(true))
+        .addStringOption(o => o.setName('entry').setDescription('Entry price').setRequired(true))
+        .addStringOption(o => o.setName('sl').setDescription('Stop loss').setRequired(true))
+        .addStringOption(o => o.setName('tp1').setDescription('TP1').setRequired(false))
+        .addStringOption(o => o.setName('tp2').setDescription('TP2').setRequired(false))
+        .addStringOption(o => o.setName('tp3').setDescription('TP3').setRequired(false))
+        .addStringOption(o => o.setName('reason').setDescription('Optional reason/notes').setRequired(false))
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.SendMessages)
+    .toJSON()
+];
+
+async function registerCommands() {
+  const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+  await rest.put(Routes.applicationGuildCommands(APPLICATION_ID, GUILD_ID), { body: commands });
+  console.log('✅ Slash commands registered.');
+}
+
+// ---------- UI HELPERS ----------
+const dirEmoji = (d) => d === 'long' ? '🟢' : '🔴';
+const titleLine = (a, d, active=true, be=false) =>
+  `$${a.toUpperCase()} | ${d.toUpperCase()} ${dirEmoji(d)} ${active ? '(Active)' : '(Closed)'}${be ? ' — Stops @ BE ✅' : ''}`;
+
+function buildEmbed({ asset, direction, entry, sl, tps=[], reason, ownerTag, active=true, be=false, createdAt, nextIndex }) {
+  const embed = new EmbedBuilder()
+    .setColor(direction === 'long' ? 0x25B0FF : 0xFF0000)
+    .setTitle(titleLine(asset, direction, active, be))
+    .addFields(
+      { name: 'Entry', value: entry, inline: true },
+      { name: 'SL', value: sl, inline: true },
+      { name: 'Next', value: nextIndex !== null && nextIndex < tps.length ? `TP${nextIndex+1} ${tps[nextIndex]}` : '—', inline: true },
+      { name: 'Targets', value: (tps.length ? tps.map((v,i)=>`TP${i+1}: ${v}`).join(' • ') : '—') },
+    )
+    .setFooter({ text: `${BRAND_NAME} • ${ownerTag}` })
+    .setTimestamp(createdAt ?? new Date());
+  if (reason) embed.addFields({ name: 'Reason', value: reason });
+  return embed;
+}
+
+function controlRow(tradeId, disabled=false) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`upd_${tradeId}`).setLabel('Update').setStyle(ButtonStyle.Secondary).setDisabled(disabled),
+    new ButtonBuilder().setCustomId(`tp1_${tradeId}`).setLabel('TP1 Hit').setStyle(ButtonStyle.Primary).setDisabled(disabled),
+    new ButtonBuilder().setCustomId(`tp2_${tradeId}`).setLabel('TP2 Hit').setStyle(ButtonStyle.Primary).setDisabled(disabled),
+    new ButtonBuilder().setCustomId(`tp3_${tradeId}`).setLabel('TP3 Hit').setStyle(ButtonStyle.Primary).setDisabled(disabled),
+    new ButtonBuilder().setCustomId(`be_${tradeId}`).setLabel('Stops → BE').setStyle(ButtonStyle.Success).setDisabled(disabled)
+  );
+}
+function controlRow2(tradeId, disabled=false) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`partial_${tradeId}`).setLabel('Partial').setStyle(ButtonStyle.Secondary).setDisabled(disabled),
+    new ButtonBuilder().setCustomId(`addtp_${tradeId}`).setLabel('Add TP').setStyle(ButtonStyle.Secondary).setDisabled(disabled),
+    new ButtonBuilder().setCustomId(`close_${tradeId}`).setLabel('Close Trade').setStyle(ButtonStyle.Danger).setDisabled(disabled)
+  );
+}
+
+function partialMenu(tradeId) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`partialmenu_${tradeId}`)
+      .setPlaceholder('Select partial close %')
+      .addOptions(
+        { label: '25%', value: '25' },
+        { label: '50%', value: '50' },
+        { label: '75%', value: '75' },
+        { label: 'Custom…', value: 'custom' }
+      )
+  );
+}
+
+// ---------- PERMISSION CHECK ----------
+function isAllowed(interaction, ownerId) {
+  if (interaction.user.id === ownerId) return true;
+  if (interaction.guild?.ownerId === interaction.user.id) return true;
+  if (TRADER_ROLE_ID && interaction.member?.roles?.valueOf()?.has?.(TRADER_ROLE_ID)) return true;
+  return false;
+}
+
+// ---------- RUNTIME ----------
+client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 });
 
-/* ------------------------------------------------------------
-   Summary message (single message in CURRENT_TRADES_CHANNEL_ID)
-------------------------------------------------------------- */
-async function rebuildSummaryMessage() {
-  const channelId = config.currentTradesChannelId;
-  if (!channelId) return;
-
-  let channel;
+client.on('interactionCreate', async (interaction) => {
   try {
-    channel = await client.channels.fetch(channelId);
-  } catch (e) {
-    console.error("[summary] Cannot fetch summary channel:", e);
-    return;
-  }
-  if (!channel?.isTextBased?.()) {
-    console.error("[summary] Channel is not text-based");
-    return;
-  }
+    // Slash command: /trade new
+    if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === 'trade' && interaction.options.getSubcommand() === 'new') {
+        // Role/permission gate to create trades
+        if (!isAllowed(interaction, interaction.user.id)) {
+          return interaction.reply({ content: 'You are not allowed to create trades.', ephemeral: true });
+        }
 
-  const trades = store.listActive(); // only active & valid for re-entry
-  const content = embeds.renderSummaryEmbed(trades, "JV Current Active Trades 📊");
+        const asset = interaction.options.getString('asset', true);
+        const direction = interaction.options.getString('direction', true);
+        const entry = interaction.options.getString('entry', true);
+        const sl = interaction.options.getString('sl', true);
+        const tp1 = interaction.options.getString('tp1');
+        const tp2 = interaction.options.getString('tp2');
+        const tp3 = interaction.options.getString('tp3');
+        const reason = interaction.options.getString('reason') ?? '';
 
-  const existingId = store.getSummaryMessageId();
-  if (existingId) {
-    try {
-      const msg = await channel.messages.fetch(existingId);
-      await msg.edit({ content });
-      return;
-    } catch (e) {
-      // fall-through to sending a fresh one if old message is gone
-      if (e?.code !== 10008) console.warn("[summary] Edit failed, sending new:", e?.message);
-    }
-  }
+        const tps = [tp1, tp2, tp3].filter(Boolean);
+        const channel = await client.channels.fetch(CURRENT_TRADES_CHANNEL_ID);
 
-  try {
-    const sent = await channel.send({ content });
-    store.setSummaryMessageId(sent.id);
-  } catch (e) {
-    console.error("[summary] Send failed:", e);
-  }
-}
+        // Draft initial embed
+        const trade = {
+          id: '', // fill after send
+          asset, direction, entry, sl, tps,
+          reason,
+          ownerId: interaction.user.id,
+          ownerTag: interaction.user.tag,
+          active: true,
+          be: false,
+          createdAt: new Date(),
+          nextIndex: tps.length ? 0 : null, // first unhit tp
+          partials: [] // {percent, at, note}
+        };
 
-/* ------------------------------------------------------------
-   Helpers
-------------------------------------------------------------- */
-function isOwner(userId) {
-  return String(userId) === String(config.ownerUserId);
-}
+        const msg = await channel.send({
+          embeds: [buildEmbed(trade)],
+          components: [controlRow('tmp'), controlRow2('tmp')]
+        });
 
-function statusBadge(signal) {
-  const green = "🟩";
-  const red   = "🟥";
-  const active = signal.active !== false;
-  const be    = signal.status === "stopped-be";
-  const stopped = signal.status === "stopped";
-  if (stopped) return `${red}`;
-  if (be)      return `${green}`; // still active but BE
-  return `${green}`;
-}
+        // Update with IDs + buttons bound to id
+        trade.id = msg.id;
+        const jump = `https://discord.com/channels/${interaction.guildId}/${msg.channelId}/${msg.id}`;
+        const embed = buildEmbed({ ...trade });
+        embed.addFields({ name: 'Link', value: `[jump](${jump})` });
+        await msg.edit({ embeds: [embed], components: [controlRow(trade.id), controlRow2(trade.id)] });
 
-async function postSignalCard(interaction, signal) {
-  const roleMention = config.mentionRoleId ? `<@&${config.mentionRoleId}>` : "";
-  const content = embeds.renderSignalEmbed(signal, roleMention);
-
-  // Post main card where slash command was used
-  const sent = await interaction.channel.send({ content });
-
-  // Create private owner controls thread on that message
-  let thread;
-  try {
-    thread = await sent.startThread({
-      name: `controls-${signal.id.slice(0, 6)}`,
-      autoArchiveDuration: 1440,
-      reason: "Owner controls",
-      type: ChannelType.PrivateThread,
-    });
-  } catch (e) {
-    console.warn("[thread] Private thread creation failed, trying public:", e?.message);
-    thread = await sent.startThread({
-      name: `controls-${signal.id.slice(0, 6)}`,
-      autoArchiveDuration: 1440,
-      reason: "Owner controls",
-    });
-  }
-
-  // Post control panel (only owner should see; thread is private)
-  const row1 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`tp1:${signal.id}`).setLabel("🎯 TP1 Hit").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`tp2:${signal.id}`).setLabel("🎯 TP2 Hit").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`tp3:${signal.id}`).setLabel("🎯 TP3 Hit").setStyle(ButtonStyle.Primary),
-  );
-  const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`run-valid:${signal.id}`).setLabel("Running (Valid)").setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`run-be:${signal.id}`).setLabel("Running (BE)").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`stopped:${signal.id}`).setLabel("Stopped Out").setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId(`stopped-be:${signal.id}`).setLabel("Stopped BE").setStyle(ButtonStyle.Secondary)
-  );
-  const row3 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`delete:${signal.id}`).setLabel("Delete").setStyle(ButtonStyle.Danger)
-  );
-
-  await thread.send({ content: "**Your controls:**", components: [row1, row2, row3] });
-
-  // Persist linkage for updates & deletions
-  store.updateSignal(signal.id, {
-    messageId: sent.id,
-    channelId: sent.channelId,
-    threadId: thread?.id || null,
-  });
-
-  await rebuildSummaryMessage();
-}
-
-async function updateMainCard(signal) {
-  if (!signal.messageId || !signal.channelId) return;
-  try {
-    const channel = await client.channels.fetch(signal.channelId);
-    const msg = await channel.messages.fetch(signal.messageId);
-    const roleMention = config.mentionRoleId ? `<@&${config.mentionRoleId}>` : "";
-    const newContent = embeds.renderSignalEmbed(signal, roleMention);
-    await msg.edit({ content: newContent });
-  } catch (e) {
-    console.warn("[updateMainCard] edit failed:", e?.message);
-  }
-}
-
-/* ------------------------------------------------------------
-   Slash command: /signal  (opens modal)
-------------------------------------------------------------- */
-client.on("interactionCreate", async (interaction) => {
-  try {
-    /* ----- slash command ----- */
-    if (interaction.isChatInputCommand && interaction.commandName === "signal") {
-      if (!isOwner(interaction.user.id)) {
-        await interaction.reply({ content: "Only the owner can post signals.", ephemeral: true });
-        return;
+        await db.setTrade(trade.id, trade);
+        return interaction.reply({ content: `Trade posted in <#${CURRENT_TRADES_CHANNEL_ID}>`, ephemeral: true });
       }
-
-      const modal = new ModalBuilder()
-        .setCustomId("signal_modal")
-        .setTitle("Create Trade Signal");
-
-      const asset = new TextInputBuilder()
-        .setCustomId("asset")
-        .setLabel("Asset (BTC/ETH/SOL or custom)")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
-
-      const side = new TextInputBuilder()
-        .setCustomId("side")
-        .setLabel("Side (Long/Short)")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
-
-      const entry = new TextInputBuilder()
-        .setCustomId("entry")
-        .setLabel("Entry (e.g., 108,201 or range 108,100–108,300)")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
-
-      const sl = new TextInputBuilder()
-        .setCustomId("sl")
-        .setLabel("SL (e.g., 100,201)")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
-
-      const reason = new TextInputBuilder()
-        .setCustomId("reason")
-        .setLabel("Reason (optional)")
-        .setStyle(TextInputStyle.Paragraph)
-        .setRequired(false);
-
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(asset),
-        new ActionRowBuilder().addComponents(side),
-        new ActionRowBuilder().addComponents(entry),
-        new ActionRowBuilder().addComponents(sl),
-        new ActionRowBuilder().addComponents(reason),
-      );
-
-      await interaction.showModal(modal);
-      return;
     }
 
-    /* ----- modal submission -> create signal ----- */
-    if (interaction.isModalSubmit() && interaction.customId === "signal_modal") {
-      if (!isOwner(interaction.user.id)) {
-        await interaction.reply({ content: "Only the owner can post signals.", ephemeral: true });
-        return;
-      }
-
-      const id = uuidv4();
-      const asset  = interaction.fields.getTextInputValue("asset")?.trim() || "BTC";
-      const side   = interaction.fields.getTextInputValue("side")?.trim();
-      const entry  = interaction.fields.getTextInputValue("entry")?.trim();
-      const sl     = interaction.fields.getTextInputValue("sl")?.trim();
-      const reason = interaction.fields.getTextInputValue("reason")?.trim();
-
-      const signal = {
-        id,
-        authorId: interaction.user.id,
-        asset,
-        side,
-        entry,
-        sl,
-        tp1: null,
-        tp2: null,
-        tp3: null,
-        reason: reason || null,
-        active: true,
-        status: "running-valid",      // running-valid | running-be | stopped | stopped-be
-        validForReentry: true,        // controls appearance in summary
-        createdAt: Date.now(),
-      };
-
-      store.saveSignal(signal);
-      await interaction.reply({ content: "Signal posted!", ephemeral: true });
-      await postSignalCard(interaction, signal);
-      return;
-    }
-
-    /* ----- button controls in private thread ----- */
+    // Buttons
     if (interaction.isButton()) {
-      const [action, id] = interaction.customId.split(":");
-      const s = store.getSignal(id);
-      if (!s) {
-        await interaction.reply({ content: "Signal not found.", ephemeral: true });
-        return;
+      const [action, tradeId] = interaction.customId.split('_');
+      const trade = await db.getTrade(tradeId);
+      if (!trade) return interaction.reply({ content: 'Trade not found.', ephemeral: true });
+
+      if (!isAllowed(interaction, trade.ownerId)) {
+        return interaction.reply({ content: 'Only the trade owner (or permitted role) can do that.', ephemeral: true });
       }
-      if (!isOwner(interaction.user.id)) {
-        await interaction.reply({ content: "Only the owner can use these controls.", ephemeral: true });
-        return;
+      if (!trade.active && action !== 'close') {
+        return interaction.reply({ content: 'Trade is already closed.', ephemeral: true });
       }
 
-      if (action === "tp1" || action === "tp2" || action === "tp3") {
-        // Just append a note in status line; you can extend to record percentages etc.
-        s.lastTp = action.toUpperCase();
-        store.updateSignal(s.id, s);
-        await updateMainCard(s);
-        await interaction.reply({ content: `${action.toUpperCase()} marked ✅`, ephemeral: true });
-        return;
+      if (action === 'be') {
+        trade.be = true; // stays active
+        await db.setTrade(trade.id, trade);
+        const channel = await client.channels.fetch(CURRENT_TRADES_CHANNEL_ID);
+        const msg = await channel.messages.fetch(trade.id);
+        await msg.edit({ embeds: [buildEmbed(trade)], components: [controlRow(trade.id), controlRow2(trade.id)] });
+        return interaction.reply({ content: 'Stops moved to Breakeven ✅ (trade remains active).', ephemeral: true });
       }
 
-      if (action === "run-valid") {
-        store.updateSignal(s.id, { status: "running-valid", active: true, validForReentry: true });
-        await updateMainCard(store.getSignal(s.id));
-        await rebuildSummaryMessage();
-        await interaction.reply({ content: "Marked Running (Valid).", ephemeral: true });
-        return;
-      }
-      if (action === "run-be") {
-        store.updateSignal(s.id, { status: "running-be", active: true, validForReentry: false });
-        await updateMainCard(store.getSignal(s.id));
-        await rebuildSummaryMessage();
-        await interaction.reply({ content: "Marked Running (BE).", ephemeral: true });
-        return;
-      }
-      if (action === "stopped") {
-        store.updateSignal(s.id, { status: "stopped", active: false, validForReentry: false });
-        await updateMainCard(store.getSignal(s.id));
-        await rebuildSummaryMessage();
-        await interaction.reply({ content: "Marked Stopped Out.", ephemeral: true });
-        return;
-      }
-      if (action === "stopped-be") {
-        store.updateSignal(s.id, { status: "stopped-be", active: false, validForReentry: false });
-        await updateMainCard(store.getSignal(s.id));
-        await rebuildSummaryMessage();
-        await interaction.reply({ content: "Marked Stopped (BE).", ephemeral: true });
-        return;
-      }
-      if (action === "delete") {
-        // delete main message
-        if (s.channelId && s.messageId) {
-          try {
-            const ch = await client.channels.fetch(s.channelId);
-            const m  = await ch.messages.fetch(s.messageId);
-            await m.delete();
-          } catch (e) { /* ignore */ }
+      if (action.startsWith('tp')) {
+        const idx = Number(action.replace('tp','')) - 1;
+        if (idx >= 0 && idx < trade.tps.length) {
+          // mark that TP as hit by advancing nextIndex
+          if (trade.nextIndex !== null && idx >= trade.nextIndex) trade.nextIndex = idx + 1 < trade.tps.length ? idx + 1 : null;
+          await db.setTrade(trade.id, trade);
+          const channel = await client.channels.fetch(CURRENT_TRADES_CHANNEL_ID);
+          const msg = await channel.messages.fetch(trade.id);
+          await msg.edit({ embeds: [buildEmbed(trade)], components: [controlRow(trade.id), controlRow2(trade.id)] });
+          return interaction.reply({ content: `Marked TP${idx+1} as hit.`, ephemeral: true });
         }
-        // delete thread
-        if (s.threadId) {
-          try {
-            const th = await client.channels.fetch(s.threadId);
-            await th.delete();
-          } catch (e) { /* ignore */ }
-        }
-        store.deleteSignal(s.id);
-        await rebuildSummaryMessage();
-        await interaction.reply({ content: "Signal deleted.", ephemeral: true });
-        return;
+      }
+
+      if (action === 'partial') {
+        return interaction.reply({ content: 'Select a partial close %', components: [partialMenu(trade.id)], ephemeral: true });
+      }
+
+      if (action === 'addtp') {
+        const modal = new ModalBuilder().setCustomId(`addtpmodal_${trade.id}`).setTitle('Add Take Profit');
+        const tpField = new TextInputBuilder().setCustomId('tpv').setLabel('New TP value').setStyle(TextInputStyle.Short).setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(tpField));
+        return interaction.showModal(modal);
+      }
+
+      if (action === 'upd') {
+        const modal = new ModalBuilder().setCustomId(`updmodal_${trade.id}`).setTitle('Update Trade');
+        const eField = new TextInputBuilder().setCustomId('entry').setLabel('Entry (leave blank to keep)').setStyle(TextInputStyle.Short).setRequired(false);
+        const sField = new TextInputBuilder().setCustomId('sl').setLabel('SL (leave blank to keep)').setStyle(TextInputStyle.Short).setRequired(false);
+        const rField = new TextInputBuilder().setCustomId('reason').setLabel('Reason (optional)').setStyle(TextInputStyle.Paragraph).setRequired(false);
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(eField),
+          new ActionRowBuilder().addComponents(sField),
+          new ActionRowBuilder().addComponents(rField)
+        );
+        return interaction.showModal(modal);
+      }
+
+      if (action === 'close') {
+        trade.active = false;
+        await db.setTrade(trade.id, trade);
+        const channel = await client.channels.fetch(CURRENT_TRADES_CHANNEL_ID);
+        const msg = await channel.messages.fetch(trade.id);
+        await msg.edit({ embeds: [buildEmbed(trade)], components: [controlRow(trade.id, true), controlRow2(trade.id, true)] });
+        return interaction.reply({ content: 'Trade closed.', ephemeral: true });
       }
     }
+
+    // Select menu for partials
+    if (interaction.isStringSelectMenu()) {
+      const [name, tradeId] = interaction.customId.split('_');
+      if (name !== 'partialmenu') return;
+      const trade = await db.getTrade(tradeId);
+      if (!trade) return interaction.reply({ content: 'Trade not found.', ephemeral: true });
+      if (!isAllowed(interaction, trade.ownerId)) return interaction.reply({ content: 'Not allowed.', ephemeral: true });
+
+      const val = interaction.values[0];
+      if (val === 'custom') {
+        const modal = new ModalBuilder().setCustomId(`partialmodal_${trade.id}`).setTitle('Custom Partial %');
+        const pField = new TextInputBuilder().setCustomId('pct').setLabel('Enter % (1-99)').setStyle(TextInputStyle.Short).setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(pField));
+        return interaction.showModal(modal);
+      } else {
+        const percent = Number(val);
+        trade.partials.push({ percent, at: new Date(), note: `Partial ${percent}%` });
+        await db.setTrade(trade.id, trade);
+        return interaction.update({ content: `Partial ${percent}% recorded.`, components: [], ephemeral: true });
+      }
+    }
+
+    // Modals
+    if (interaction.isModalSubmit()) {
+      const [mtype, tradeId] = interaction.customId.split('_');
+      const trade = await db.getTrade(tradeId);
+      if (!trade) return interaction.reply({ content: 'Trade not found.', ephemeral: true });
+      if (!isAllowed(interaction, trade.ownerId)) return interaction.reply({ content: 'Not allowed.', ephemeral: true });
+
+      if (mtype === 'updmodal') {
+        const newEntry = interaction.fields.getTextInputValue('entry')?.trim();
+        const newSL = interaction.fields.getTextInputValue('sl')?.trim();
+        const newReason = interaction.fields.getTextInputValue('reason')?.trim();
+
+        if (newEntry) trade.entry = newEntry;
+        if (newSL) trade.sl = newSL;
+        if (newReason !== undefined) trade.reason = newReason;
+
+        await db.setTrade(trade.id, trade);
+        const channel = await client.channels.fetch(CURRENT_TRADES_CHANNEL_ID);
+        const msg = await channel.messages.fetch(trade.id);
+        await msg.edit({ embeds: [buildEmbed(trade)], components: [controlRow(trade.id), controlRow2(trade.id)] });
+        return interaction.reply({ content: 'Trade updated.', ephemeral: true });
+      }
+
+      if (mtype === 'addtpmodal') {
+        const tpv = interaction.fields.getTextInputValue('tpv')?.trim();
+        if (tpv) {
+          trade.tps.push(tpv);
+          if (trade.nextIndex === null) trade.nextIndex = trade.tps.length - 1;
+          await db.setTrade(trade.id, trade);
+          const channel = await client.channels.fetch(CURRENT_TRADES_CHANNEL_ID);
+          const msg = await channel.messages.fetch(trade.id);
+          await msg.edit({ embeds: [buildEmbed(trade)], components: [controlRow(trade.id), controlRow2(trade.id)] });
+          return interaction.reply({ content: `Added TP${trade.tps.length}: ${tpv}`, ephemeral: true });
+        }
+      }
+
+      if (mtype === 'partialmodal') {
+        const pct = Number(interaction.fields.getTextInputValue('pct'));
+        if (isNaN(pct) || pct <= 0 || pct >= 100) return interaction.reply({ content: 'Enter a value between 1 and 99.', ephemeral: true });
+        trade.partials.push({ percent: pct, at: new Date(), note: `Partial ${pct}%` });
+        await db.setTrade(trade.id, trade);
+        return interaction.reply({ content: `Partial ${pct}% recorded.`, ephemeral: true });
+      }
+    }
+
   } catch (err) {
-    console.error("interactionCreate error:", err);
-    if (interaction?.replied === false && interaction?.deferred === false) {
-      try { await interaction.reply({ content: "An error occurred.", ephemeral: true }); } catch {}
+    console.error(err);
+    if (interaction.isRepliable()) {
+      try { await interaction.reply({ content: `Error: ${String(err.message || err)}`, ephemeral: true }); } catch {}
     }
   }
 });
 
-client.login(config.token);
+// CLI: register-only mode
+if (process.argv[2] === 'register') {
+  await registerCommands();
+  process.exit(0);
+}
+
+await registerCommands();
+client.login(DISCORD_TOKEN);
