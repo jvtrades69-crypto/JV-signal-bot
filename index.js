@@ -59,12 +59,16 @@ async function getOrCreateWebhook(channel) {
   return hook;
 }
 
+/** Render the *trade post* in your plain-text style */
 function renderPlain(signal) {
   const sideEmoji = signal.side === 'LONG' ? '🟢' : '🔴';
   const lines = [];
 
-  lines.push(`${signal.asset.toUpperCase()} | ${signal.side === 'LONG' ? 'Long' : 'Short'} ${sideEmoji}`);
+  // Big title
+  lines.push(`# ${signal.asset.toUpperCase()} | ${signal.side === 'LONG' ? 'Long' : 'Short'} ${sideEmoji}`);
   lines.push('');
+
+  // Details
   lines.push('📊 Trade Details');
   lines.push(`Entry: ${signal.entry || '-'}`);
   lines.push(`SL: ${signal.sl || '-'}`);
@@ -83,6 +87,7 @@ function renderPlain(signal) {
   }
   lines.push('');
 
+  // Reason (optional)
   if (signal.rationale && signal.rationale.trim() !== '') {
     lines.push('📝 Reasoning');
     lines.push(signal.rationale.trim().slice(0, 1000));
@@ -90,7 +95,7 @@ function renderPlain(signal) {
   }
 
   // Status formatting (your spec)
-  const active = signal.closedAt ? false : true;
+  const active = !signal.closedAt;
   if (active) {
     const reentry = (signal.status === 'RUNNING_BE') ? 'No ( SL set to breakeven )' : 'Yes';
     let first = `📍 Status : Active 🟩 - trade is still running`;
@@ -102,6 +107,7 @@ function renderPlain(signal) {
     lines.push(`Valid for re-entry: No`);
   }
 
+  // Role tag
   if (config.tradeSignalRoleId) {
     lines.push('');
     lines.push(`<@&${config.tradeSignalRoleId}>`);
@@ -110,6 +116,7 @@ function renderPlain(signal) {
   return lines.join('\n');
 }
 
+/** Build the single-line control rows */
 function statusControls(signalId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`signal|${signalId}|status|RUNNING_VALID`).setLabel('Running (Valid)').setStyle(ButtonStyle.Success),
@@ -117,7 +124,6 @@ function statusControls(signalId) {
     new ButtonBuilder().setCustomId(`signal|${signalId}|close|X`).setLabel('Close Trade').setStyle(ButtonStyle.Danger),
   );
 }
-
 function tpHitControls(signalId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`signal|${signalId}|tp|1`).setLabel('🎯 TP1 Hit').setStyle(ButtonStyle.Primary),
@@ -125,7 +131,6 @@ function tpHitControls(signalId) {
     new ButtonBuilder().setCustomId(`signal|${signalId}|tp|3`).setLabel('🎯 TP3 Hit').setStyle(ButtonStyle.Primary),
   );
 }
-
 function manageControls(signalId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`signal|${signalId}|reason|edit`).setLabel('Add/Update Reason').setStyle(ButtonStyle.Secondary),
@@ -133,7 +138,6 @@ function manageControls(signalId) {
     new ButtonBuilder().setCustomId(`signal|${signalId}|delete|X`).setLabel('Delete').setStyle(ButtonStyle.Danger),
   );
 }
-
 function tpPercentSelectRow(signalId, which, hasPrice) {
   if (!hasPrice) return null;
   const menu = new StringSelectMenuBuilder()
@@ -148,7 +152,6 @@ function tpPercentSelectRow(signalId, which, hasPrice) {
     );
   return new ActionRowBuilder().addComponents(menu);
 }
-
 function buildControlComponents(signal) {
   const rows = [];
   rows.push(statusControls(signal.id));
@@ -163,32 +166,49 @@ function buildControlComponents(signal) {
   return rows;
 }
 
+/** Which trades qualify for the summary */
+function isSummaryEligible(signal) {
+  // Show only trades that are still open AND valid for re-entry
+  if (signal.closedAt) return false;
+  // RUNNING_VALID => re-entry yes, RUNNING_BE => re-entry no
+  return signal.status === 'RUNNING_VALID';
+}
+
+/** Render the *summary* with your exact format */
 async function updateSummary(forChannelId) {
   try {
     const summaryChannelId = config.currentTradesChannelId || forChannelId;
     if (!summaryChannelId) return;
 
     const channel = await client.channels.fetch(summaryChannelId);
-    const all = store.listAll().filter(s => s.channelId === forChannelId || s.channelId === summaryChannelId);
-    const active = all.filter(s => !s.closedAt);
+    const all = store.listAll();
+    const active = all.filter(isSummaryEligible);
 
-    const header = '📈 **Current Trades**';
+    const header = '# JV Current Trades 📊';
     let content = '';
-    if (active.length === 0) {
-      content = `${header}\n_No current trades running._`;
-    } else {
-      const lines = active.map(s => {
-        const name = `$${s.asset.toUpperCase()} • ${s.side === 'LONG' ? 'Long' : 'Short'}`;
-        const targets = [s.tp1, s.tp2, s.tp3].filter(Boolean);
-        let next = '';
-        if (!s.latestTpHit && targets[0]) next = ` • Next: TP1 ${targets[0]}`;
-        else if (s.latestTpHit === '1' && s.tp2) next = ` • Next: TP2 ${s.tp2}`;
-        else if (s.latestTpHit === '2' && s.tp3) next = ` • Next: TP3 ${s.tp3}`;
 
-        const latest = s.latestTpHit ? ` • TP${s.latestTpHit} hit` : '';
-        return `• ${name} — Entry ${s.entry} | SL ${s.sl || '-'}${latest}${next} — [jump](https://discord.com/channels/${s.guildId}/${s.channelId}/${s.messageId})`;
+    if (active.length === 0) {
+      content = `${header}\n- There are current no ongoing trades valid for entry`;
+    } else {
+      // Numbered blocks
+      const blocks = active.map((s, idx) => {
+        const base = `${idx + 1}. ${s.asset.toUpperCase()} ${s.side === 'LONG' ? 'Long 🟢' : 'Short 🔴'} — [jump](https://discord.com/channels/${s.guildId}/${s.channelId}/${s.messageId})`;
+
+        // Determine next TP + label
+        let tpLabel = '';
+        let tpValue = '';
+        if (!s.latestTpHit && s.tp1) { tpLabel = 'Take Profit 1'; tpValue = s.tp1; }
+        else if (s.latestTpHit === '1' && s.tp2) { tpLabel = 'Take Profit 2'; tpValue = s.tp2; }
+        else if (s.latestTpHit === '2' && s.tp3) { tpLabel = 'Take Profit 3'; tpValue = s.tp3; }
+
+        const entryLine = `➡️ Entry: ${s.entry || '-'}`;
+        const slLine = `🛑 Stop Loss: ${s.sl || '-'}`;
+        const tpLine = tpValue ? `🎯 ${tpLabel}: ${tpValue}` : null;
+
+        return [base, entryLine, slLine, tpLine].filter(Boolean).join('\n');
       });
-      content = `${header}\n${lines.join('\n')}`;
+
+      content = `${header}\n\n${blocks.join('\n\n')}`;
     }
 
     const existingId = store.getSummaryMessageId(summaryChannelId);
@@ -197,7 +217,9 @@ async function updateSummary(forChannelId) {
         const msg = await channel.messages.fetch(existingId);
         await msg.edit(content);
         return;
-      } catch {}
+      } catch {
+        // If fetch/edit failed (deleted?), fall through to create new
+      }
     }
     const newMsg = await channel.send(content);
     store.setSummaryMessageId(summaryChannelId, newMsg.id);
@@ -210,7 +232,7 @@ async function updateSummary(forChannelId) {
 
 const pendingPick = new Map(); // key: userId, value: { asset, side, channelId }
 
-/** Build the dropdown UI. Continue is *enabled* only when both are chosen. */
+/** Build the dropdown UI */
 function buildPickComponents(userId) {
   const pick = pendingPick.get(userId) || {};
   const assetMenu = new StringSelectMenuBuilder()
@@ -245,6 +267,7 @@ function buildPickComponents(userId) {
 }
 
 function buildCreateModal(preset) {
+  // 5 inputs (Discord modal limit); Reason handled via separate modal/button
   const modal = new ModalBuilder().setCustomId('signal-create').setTitle(`Create ${preset.asset || ''} ${preset.side || ''} Signal`);
 
   const entry = new TextInputBuilder()
@@ -286,12 +309,12 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.reply({
         content: 'Pick Asset & Side, then Continue:',
         components: buildPickComponents(interaction.user.id),
-        flags: 64,
+        flags: 64, // ephemeral
       });
       return;
     }
 
-    // Pre-pick selections — auto-open modal once both chosen
+    // Pre-pick selections — auto-open modal once both chosen (no "Opening form…" update that would consume it)
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('pick|')) {
       const kind = interaction.customId.split('|')[1];
       const pick = pendingPick.get(interaction.user.id) || { channelId: interaction.channelId };
@@ -306,13 +329,11 @@ client.on('interactionCreate', async (interaction) => {
       pendingPick.set(interaction.user.id, pick);
 
       if (pick.asset && pick.side) {
-        // Clean up the ephemeral picker UI and open modal
-        await interaction.update({ content: 'Opening form…', components: [] });
         await interaction.showModal(buildCreateModal(pick));
         return;
       }
 
-      // Not both yet: just refresh the components (enables Continue if both picked)
+      // Not both yet: just refresh so Continue enables/disables correctly
       await interaction.update({
         content: 'Pick Asset & Side, then Continue:',
         components: buildPickComponents(interaction.user.id),
@@ -320,7 +341,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // Continue button (still supported as a fallback)
+    // Continue button (fallback path)
     if (interaction.isButton() && interaction.customId === 'pick|continue') {
       const pick = pendingPick.get(interaction.user.id);
       if (!pick?.channelId || !(pick.asset && pick.side)) {
@@ -330,7 +351,6 @@ client.on('interactionCreate', async (interaction) => {
         });
         return;
       }
-      await interaction.update({ content: 'Opening form…', components: [] });
       await interaction.showModal(buildCreateModal(pick));
       return;
     }
@@ -376,11 +396,12 @@ client.on('interactionCreate', async (interaction) => {
         closedAt: null,
       };
 
+      // Post clean plaintext via webhook
       const sent = await hookClient.send({ content: renderPlain(signal), allowedMentions: { parse: ['roles'] } });
       signal.messageId = sent.id;
       store.upsert(signal);
 
-      // Controls together with the message
+      // Controls placed "together"
       try {
         if (config.privateControls) {
           const me = await channel.guild.members.fetch(interaction.user.id);
@@ -401,6 +422,7 @@ client.on('interactionCreate', async (interaction) => {
         console.warn('Controls placement failed:', e?.message);
       }
 
+      // Ephemeral confirmation
       await interaction.reply({ content: 'Signal posted.', flags: 64 });
       pendingPick.delete(interaction.user.id);
 
@@ -408,11 +430,190 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // CONTROL BUTTONS / SELECTS / MODALS (unchanged from previous build) ...
+    // ----- Controls: buttons / selects / modals -----
 
-    // --- snip: everything below here is the same as your last working version ---
-    // Keep all handlers for status/tp/close, tppct select & custom modal, reason modal, edit fields, etc.
-    // (No changes were required to those parts for this picker fix.)
+    if (interaction.isButton() && interaction.customId.startsWith('signal|')) {
+      const [, signalId, action, extra] = interaction.customId.split('|');
+
+      let signal = store.getById(signalId);
+      if (!signal) signal = store.getByMessageId(interaction.message?.id);
+      if (!signal) return await interaction.reply({ content: 'Signal not found.', flags: 64 });
+      if (!canManage(interaction, signal)) return await interaction.reply({ content: 'No permission.', flags: 64 });
+
+      const hook = new WebhookClient({ id: signal.webhookId, token: signal.webhookToken });
+
+      if (action === 'status') {
+        signal.status = extra; // RUNNING_VALID or RUNNING_BE
+        store.upsert(signal);
+        await hook.editMessage(signal.messageId, { content: renderPlain(signal) });
+        await interaction.reply({ content: 'Status updated.', flags: 64 });
+        await updateSummary(signal.channelId);
+        return;
+      }
+
+      if (action === 'tp') {
+        if (!['1', '2', '3'].includes(extra)) return await interaction.reply({ content: 'Invalid TP.', flags: 64 });
+        signal.latestTpHit = extra;
+        store.upsert(signal);
+        await hook.editMessage(signal.messageId, { content: renderPlain(signal) });
+        await interaction.reply({ content: `Marked TP${extra} hit.`, flags: 64 });
+        await updateSummary(signal.channelId);
+        return;
+      }
+
+      if (action === 'close') {
+        signal.closedAt = Date.now();
+        store.upsert(signal);
+        await hook.editMessage(signal.messageId, { content: renderPlain(signal) });
+        await interaction.reply({ content: 'Trade closed.', flags: 64 });
+        await updateSummary(signal.channelId);
+        return;
+      }
+
+      if (action === 'reason') {
+        const modal = new ModalBuilder().setCustomId(`reason-edit|${signal.id}`).setTitle('Add / Update Reason');
+        const input = new TextInputBuilder()
+          .setCustomId('reason').setLabel('Reason (optional)').setPlaceholder('Notes about this setup')
+          .setStyle(TextInputStyle.Paragraph).setRequired(false).setValue(signal.rationale || '');
+        return await interaction.showModal(modal.addComponents(new ActionRowBuilder().addComponents(input)));
+      }
+
+      if (action === 'edit') {
+        const modal = new ModalBuilder().setCustomId(`signal-edit|${signal.id}`).setTitle('Edit Fields');
+        const entry = new TextInputBuilder().setCustomId('entry').setLabel('Entry')
+          .setPlaceholder('e.g., 108,201 or 108,100–108,300').setStyle(TextInputStyle.Short).setRequired(true)
+          .setValue(signal.entry || '');
+        const sl = new TextInputBuilder().setCustomId('sl').setLabel('SL')
+          .setPlaceholder('e.g., 100,201').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.sl || '');
+        const tp1 = new TextInputBuilder().setCustomId('tp1').setLabel('TP1 (optional)')
+          .setPlaceholder('e.g., 110,000').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.tp1 || '');
+        const tp2 = new TextInputBuilder().setCustomId('tp2').setLabel('TP2 (optional)')
+          .setPlaceholder('e.g., 121,201').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.tp2 || '');
+        const tp3 = new TextInputBuilder().setCustomId('tp3').setLabel('TP3 (optional)')
+          .setPlaceholder('e.g., 132,500').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.tp3 || '');
+        return await interaction.showModal(
+          modal.addComponents(
+            new ActionRowBuilder().addComponents(entry),
+            new ActionRowBuilder().addComponents(sl),
+            new ActionRowBuilder().addComponents(tp1),
+            new ActionRowBuilder().addComponents(tp2),
+            new ActionRowBuilder().addComponents(tp3),
+          )
+        );
+      }
+
+      if (action === 'delete') {
+        try {
+          await new WebhookClient({ id: signal.webhookId, token: signal.webhookToken }).deleteMessage(signal.messageId);
+        } catch {}
+        store.removeById(signal.id);
+        await interaction.reply({ content: 'Signal deleted.', flags: 64 });
+        await updateSummary(signal.channelId);
+        return;
+      }
+    }
+
+    // TP % select & custom modal
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('signal|')) {
+      const [, signalId, kind, which] = interaction.customId.split('|');
+
+      let signal = store.getById(signalId);
+      if (!signal) signal = store.getByMessageId(interaction.message?.id);
+      if (!signal) return await interaction.reply({ content: 'Signal not found.', flags: 64 });
+      if (!canManage(interaction, signal)) return await interaction.reply({ content: 'No permission.', flags: 64 });
+
+      const choice = interaction.values[0];
+      if (kind !== 'tppct' || !['1', '2', '3'].includes(which)) {
+        return await interaction.reply({ content: 'Invalid selection.', flags: 64 });
+      }
+
+      if (choice === 'custom') {
+        const modal = new ModalBuilder().setCustomId(`tppct-custom|${signal.id}|${which}`).setTitle(`TP${which} % (1–100)`);
+        const input = new TextInputBuilder().setCustomId('pct').setLabel('Percent out').setPlaceholder('e.g., 33')
+          .setStyle(TextInputStyle.Short).setRequired(true);
+        return await interaction.showModal(modal.addComponents(new ActionRowBuilder().addComponents(input)));
+      }
+
+      if (choice === 'clear') signal[`tp${which}Pct`] = null;
+      else signal[`tp${which}Pct`] = parseInt(choice, 10);
+
+      store.upsert(signal);
+      await new WebhookClient({ id: signal.webhookId, token: signal.webhookToken })
+        .editMessage(signal.messageId, { content: renderPlain(signal) });
+
+      await interaction.update({ components: buildControlComponents(signal) });
+      await updateSummary(signal.channelId);
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('tppct-custom|')) {
+      const [, signalId, which] = interaction.customId.split('|');
+      let signal = store.getById(signalId);
+      if (!signal) signal = store.getByMessageId(interaction.message?.id);
+      if (!signal) return await interaction.reply({ content: 'Signal not found.', flags: 64 });
+      if (!canManage(interaction, signal)) return await interaction.reply({ content: 'No permission.', flags: 64 });
+
+      const val = parseInt(oneLine(interaction.fields.getTextInputValue('pct')), 10);
+      if (!(val >= 1 && val <= 100)) return await interaction.reply({ content: 'Enter a number between 1 and 100.', flags: 64 });
+
+      signal[`tp${which}Pct`] = val;
+      store.upsert(signal);
+      await new WebhookClient({ id: signal.webhookId, token: signal.webhookToken })
+        .editMessage(signal.messageId, { content: renderPlain(signal) });
+
+      await interaction.reply({ content: `Set TP${which} to ${val}%.`, flags: 64 });
+      await updateSummary(signal.channelId);
+      return;
+    }
+
+    // Reason modal submit
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('reason-edit|')) {
+      const [, signalId] = interaction.customId.split('|');
+      let signal = store.getById(signalId);
+      if (!signal) signal = store.getByMessageId(interaction.message?.id);
+      if (!signal) return await interaction.reply({ content: 'Signal not found.', flags: 64 });
+      if (!canManage(interaction, signal)) return await interaction.reply({ content: 'No permission.', flags: 64 });
+
+      const reason = interaction.fields.getTextInputValue('reason') || '';
+      signal.rationale = reason;
+      store.upsert(signal);
+
+      await new WebhookClient({ id: signal.webhookId, token: signal.webhookToken })
+        .editMessage(signal.messageId, { content: renderPlain(signal) });
+
+      await interaction.reply({ content: 'Reason updated.', flags: 64 });
+      await updateSummary(signal.channelId);
+      return;
+    }
+
+    // Edit fields (entry/sl/tp1-3)
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('signal-edit|')) {
+      const [, signalId] = interaction.customId.split('|');
+      let signal = store.getById(signalId);
+      if (!signal) signal = store.getByMessageId(interaction.message?.id);
+      if (!signal) return await interaction.reply({ content: 'Signal not found.', flags: 64 });
+      if (!canManage(interaction, signal)) return await interaction.reply({ content: 'No permission.', flags: 64 });
+
+      const entry = oneLine(interaction.fields.getTextInputValue('entry'));
+      const sl = oneLine(interaction.fields.getTextInputValue('sl') || '');
+      const tp1 = oneLine(interaction.fields.getTextInputValue('tp1') || '');
+      const tp2 = oneLine(interaction.fields.getTextInputValue('tp2') || '');
+      const tp3 = oneLine(interaction.fields.getTextInputValue('tp3') || '');
+
+      signal.entry = entry;
+      signal.sl = sl;
+      signal.tp1 = tp1;
+      signal.tp2 = tp2;
+      signal.tp3 = tp3;
+
+      store.upsert(signal);
+      await new WebhookClient({ id: signal.webhookId, token: signal.webhookToken })
+        .editMessage(signal.messageId, { content: renderPlain(signal) });
+
+      await interaction.reply({ content: 'Fields updated.', flags: 64 });
+      await updateSummary(signal.channelId);
+      return;
+    }
 
   } catch (err) {
     console.error('interactionCreate error:', err);
