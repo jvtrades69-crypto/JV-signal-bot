@@ -1,30 +1,34 @@
 // index.js
-// JV Signal Bot — private controls thread, single summary message, custom "Other…" asset, tidy formatting.
+// Discord.js v14
+require('dotenv').config();
 
 const {
   Client,
   GatewayIntentBits,
   Partials,
   PermissionFlagsBits,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  StringSelectMenuBuilder,
-  ChannelType,
-  WebhookClient,
 } = require('discord.js');
 
-const config = require('./config');
-const store  = require('./store');
+const {
+  saveSignal,
+  getSignal,
+  deleteSignal,
+  listAll,
+  getSummaryMessageId,
+  setSummaryMessageId,
+} = require('./store');
 
-if (!config?.token) {
-  console.error('[ERROR] Missing DISCORD_TOKEN in .env');
-  process.exit(1);
-}
+const config = require('./config'); // only used for OWNER/ROLE checks if you keep them
 
+// ---------- Client ----------
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
   partials: [Partials.Channel],
@@ -34,492 +38,444 @@ client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 });
 
-/* ---------------- Helpers ---------------- */
-
-const SUMMARY_HEADER_BOLD = '**📊 JV Current Active Trades 📊**';
-const STATIC_NAME        = 'JV Trades';   // webhook display name
-const STATIC_AVATAR_URL  = null;          // set to a static URL if you want; otherwise owner avatar is used
-
-function nowISO() { return new Date().toISOString(); }
-
-function titleFor(signal) {
-  const dot = signal.side === 'LONG' ? '🟢' : '🔴';
-  return `**${signal.asset.toUpperCase()} | ${signal.side === 'LONG' ? 'Long' : 'Short'} ${dot}**`;
+// ---------------------------------------------------------------------
+// Helpers: message formatting (signal) – matches the style you asked for
+// ---------------------------------------------------------------------
+function bigTitle(asset, side, dot) {
+  // one blank line after the title (exactly one)
+  return `**${asset} | ${side} ${dot}**\n`;
 }
 
-function blockTradeDetails(signal) {
-  // exactly 1 blank line is added by the caller between sections
-  const lines = [
-    '📊 **Trade Details**',
-    `Entry: ${signal.entry ?? '-'}`,
-    `SL: ${signal.sl ?? '-'}`,
-  ];
-  if (signal.tp1) lines.push(`TP1: ${signal.tp1}`);
-  if (signal.tp2) lines.push(`TP2: ${signal.tp2}`);
-  if (signal.tp3) lines.push(`TP3: ${signal.tp3}`);
+function formatSignalBody(sig) {
+  const lines = [];
+
+  // Title
+  const dot = (sig.side || '').toLowerCase() === 'long' ? '🟢' : '🔴';
+  lines.push(bigTitle(sig.asset, sig.side, dot));
+
+  // Trade details
+  lines.push('📊 **Trade Details**');
+  lines.push(`Entry: ${sig.entry ?? '-'}`);
+  lines.push(`SL: ${sig.sl ?? '-'}`);
+  if (sig.tp1) lines.push(`TP1: ${sig.tp1}`);
+  if (sig.tp2) lines.push(`TP2: ${sig.tp2}`);
+  if (sig.tp3) lines.push(`TP3: ${sig.tp3}`);
+  lines.push(''); // gap
+
+  // Reason (optional)
+  if (sig.reason && sig.reason.trim().length) {
+    lines.push('📝 **Reasoning**');
+    lines.push(sig.reason.trim());
+    lines.push('');
+  }
+
+  // Status
+  const activeLabel = sig.active ? 'Active 🟩 - trade is still running' : 'Inactive 🟥 - SL set to breakeven';
+  const reentry = sig.validForReentry ? 'Yes' : 'No';
+  lines.push('📍 **Status**');
+  if (sig.tpHitLabel) lines.push(`${activeLabel}\n${sig.tpHitLabel}`);
+  else lines.push(activeLabel);
+  lines.push(`Valid for re-entry: ${reentry}`);
+
+  // trailing tag role if any
+  if (sig.tagRoleId) {
+    lines.push('');
+    lines.push(`<@&${sig.tagRoleId}>`);
+  }
+
   return lines.join('\n');
 }
 
-function blockReason(signal) {
-  if (!signal.reason) return '';
-  return `📒 **Reasoning**\n${signal.reason}`;
-}
+// ---------------------------------------------------------------------
+// Summary (Current Active Trades) – always one message (no duplicates)
+// ---------------------------------------------------------------------
+function buildSummaryContent(signals) {
+  // Title bold only
+  let out = `**JV Current Active Trades 📊**\n`;
 
-function blockStatus(signal) {
-  const activeYesNo = signal.closedAt
-    ? 'Inactive 🟥 - SL set to breakeven'
-    : 'Active 🟩 - trade is still running';
-  const valid = signal.status === 'RUNNING_VALID' ? 'Yes' : 'No';
-  return `📍 **Status**\n${activeYesNo}\nValid for re-entry: ${valid}`;
-}
-
-function controls(signal) {
-  const rows = [];
-
-  rows.push(
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`ctrl|tp1|${signal.id}`).setLabel('🎯 TP1 Hit').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`ctrl|tp2|${signal.id}`).setLabel('🎯 TP2 Hit').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`ctrl|tp3|${signal.id}`).setLabel('🎯 TP3 Hit').setStyle(ButtonStyle.Primary),
-    ),
-  );
-
-  rows.push(
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`ctrl|running_valid|${signal.id}`).setLabel('Running (Valid)').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`ctrl|running_be|${signal.id}`).setLabel('Running (BE)').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`ctrl|stopped_out|${signal.id}`).setLabel('Stopped Out').setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId(`ctrl|stopped_be|${signal.id}`).setLabel('Stopped BE').setStyle(ButtonStyle.Secondary),
-    ),
-  );
-
-  rows.push(
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`ctrl|delete|${signal.id}`).setLabel('Delete').setStyle(ButtonStyle.Danger),
-    ),
-  );
-
-  return rows;
-}
-
-async function getOrCreateWebhook(channel, preferredName = 'JV Trades', avatarURL = null) {
-  const hooks = await channel.fetchWebhooks().catch(() => null);
-  if (hooks) {
-    const existing = hooks.find(h => h.name === preferredName);
-    if (existing) return existing;
+  if (!signals.length) {
+    out += `• There are currently no ongoing trades valid for entry — stay posted for future trades.\n`;
+    return out;
   }
-  const created = await channel.createWebhook({ name: preferredName, avatar: avatarURL || undefined }).catch(() => null);
-  return created;
-}
 
-async function getOwnerAvatar(guild) {
-  try {
-    if (!config.ownerId) return null;
-    const m = await guild.members.fetch(config.ownerId);
-    return m?.displayAvatarURL({ size: 128 }) || m?.user?.displayAvatarURL({ size: 128 }) || null;
-  } catch {
-    return null;
-  }
-}
+  signals.forEach((s, i) => {
+    const dot = (s.side || '').toLowerCase() === 'long' ? '🟢' : '🔴';
+    const first = `${i + 1}. ${s.asset} ${s.side} ${dot} — [jump](https://discord.com/channels/${s.guildId}/${s.channelId}/${s.messageId})`;
+    const entry = `➡️ Entry: ${s.entry ?? '-'}`;
+    const sl = `🛑 Stop Loss: ${s.sl ?? '-'}`;
+    const tps = [];
+    if (s.tp1) tps.push(`🎯 TP1: ${s.tp1}`);
+    if (s.tp2) tps.push(`🎯 TP2: ${s.tp2}`);
+    if (s.tp3) tps.push(`🎯 TP3: ${s.tp3}`);
 
-async function createPrivateControlsThread(signal, channel, userId) {
-  const me = await channel.guild.members.fetch(userId);
-  const thread = await channel.threads.create({
-    name: `Controls • ${signal.asset} ${signal.side} • ${me.displayName || me.user.username}`,
-    autoArchiveDuration: 1440,
-    type: ChannelType.PrivateThread,
-    invitable: false,
+    out += `\n${first}\n${entry}\n${sl}\n${tps.join('\n')}\n`;
   });
-  await thread.members.add(me.id).catch(() => {});
-  const msg = await thread.send({ content: 'Your controls:', components: controls(signal) });
-  return `https://discord.com/channels/${signal.guildId}/${thread.id}/${msg.id}`;
+
+  return out.trim() + '\n';
 }
 
-/* --------- Asset/Side pick (ephemeral) --------- */
+async function upsertSummaryMessage(channel, content) {
+  const channelId = channel.id;
+  const storedId = getSummaryMessageId(channelId);
 
-const pickState = new Map(); // userId -> { channelId, asset, assetWasCustom, side }
+  if (storedId) {
+    try {
+      const msg = await channel.messages.fetch(storedId);
+      await msg.edit({ content });
+      return;
+    } catch {
+      // fall through: send fresh
+    }
+  }
 
-function modalAssetCustom() {
-  const modal = new ModalBuilder().setCustomId('asset-custom').setTitle('Custom Asset');
-  const field = new TextInputBuilder()
-    .setCustomId('asset')
-    .setLabel('Asset / Symbol')
-    .setPlaceholder('e.g., BTC, ETH, SOL, DOGE/USDT')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setMaxLength(20);
-  return modal.addComponents(new ActionRowBuilder().addComponents(field));
+  const newMsg = await channel.send({ content });
+  setSummaryMessageId(channelId, newMsg.id);
+
+  if (storedId && storedId !== newMsg.id) {
+    try {
+      const old = await channel.messages.fetch(storedId);
+      await old.delete().catch(() => {});
+    } catch {}
+  }
 }
 
-// 5 rows max → Entry, SL, TP1, TP2, Reason  (TP3 can be adjusted later with an edit flow if needed)
-function modalSignalForm(titleText) {
-  const modal = new ModalBuilder().setCustomId('signal-create-b').setTitle(titleText);
+async function refreshCurrentTradesSummary(client, channelId) {
+  if (!channelId) return;
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel) return;
 
-  const entry = new TextInputBuilder()
-    .setCustomId('entry')
-    .setLabel('Entry (required)')
-    .setPlaceholder('e.g., 108,201 or 108,100–108,300')
-    .setRequired(true)
-    .setStyle(TextInputStyle.Short);
-
-  const sl = new TextInputBuilder()
-    .setCustomId('sl')
-    .setLabel('SL (optional)')
-    .setPlaceholder('e.g., 100,201')
-    .setRequired(false)
-    .setStyle(TextInputStyle.Short);
-
-  const tp1 = new TextInputBuilder()
-    .setCustomId('tp1')
-    .setLabel('TP1 (optional)')
-    .setPlaceholder('e.g., 110,000')
-    .setRequired(false)
-    .setStyle(TextInputStyle.Short);
-
-  const tp2 = new TextInputBuilder()
-    .setCustomId('tp2')
-    .setLabel('TP2 (optional)')
-    .setPlaceholder('e.g., 121,201')
-    .setRequired(false)
-    .setStyle(TextInputStyle.Short);
-
-  const reason = new TextInputBuilder()
-    .setCustomId('reason')
-    .setLabel('Reason (optional)')
-    .setPlaceholder('Notes about this setup')
-    .setRequired(false)
-    .setStyle(TextInputStyle.Paragraph);
-
-  return modal
-    .addComponents(new ActionRowBuilder().addComponents(entry))
-    .addComponents(new ActionRowBuilder().addComponents(sl))
-    .addComponents(new ActionRowBuilder().addComponents(tp1))
-    .addComponents(new ActionRowBuilder().addComponents(tp2))
-    .addComponents(new ActionRowBuilder().addComponents(reason));
+  // Your rule: hide signals that aren't valid for re-entry (e.g., SL BE or closed)
+  const active = listAll().filter(s => s.validForReentry !== false);
+  const content = buildSummaryContent(active);
+  await upsertSummaryMessage(channel, content);
 }
 
-function buildPickComponents(userId) {
-  const pick = pickState.get(userId) || {};
-
-  const assetMenu = new StringSelectMenuBuilder()
-    .setCustomId('pick|asset')
-    .setPlaceholder(
-      pick.assetWasCustom && pick.asset ? `Asset: ${pick.asset}` : 'Pick Asset (or choose Other…)'
-    )
-    .addOptions(
-      { label: 'BTC', value: 'BTC', default: pick.asset === 'BTC' },
-      { label: 'ETH', value: 'ETH', default: pick.asset === 'ETH' },
-      { label: 'SOL', value: 'SOL', default: pick.asset === 'SOL' },
-      { label: 'Other…', value: 'OTHER', default: pick.assetWasCustom === true }
-    );
-
-  const sideMenu = new StringSelectMenuBuilder()
-    .setCustomId('pick|side')
-    .setPlaceholder('Pick Side')
-    .addOptions(
-      { label: 'Long', value: 'LONG', default: pick.side === 'LONG' },
-      { label: 'Short', value: 'SHORT', default: pick.side === 'SHORT' },
-    );
-
-  const nextBtn = new ButtonBuilder()
-    .setCustomId('pick|continue')
-    .setLabel('Continue')
-    .setStyle(ButtonStyle.Primary)
-    .setDisabled(!(pick.asset && pick.side));
-
-  return [
-    new ActionRowBuilder().addComponents(assetMenu),
-    new ActionRowBuilder().addComponents(sideMenu),
-    new ActionRowBuilder().addComponents(nextBtn),
-  ];
+// ---------------------------------------------------------------------
+// Owner check (if you want it). Otherwise, comment it out.
+// ---------------------------------------------------------------------
+function isOwner(interaction) {
+  const ownerId = process.env.OWNER_USER_ID || config?.ownerId;
+  return ownerId ? interaction.user.id === ownerId : true;
 }
 
-/* ----------------- Interactions ----------------- */
-
+// ---------------------------------------------------------------------
+// Slash command: /signal → step 1 select asset & side
+// ---------------------------------------------------------------------
 client.on('interactionCreate', async (interaction) => {
   try {
-    // /signal
-    if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
-      pickState.set(interaction.user.id, { channelId: interaction.channelId });
+    // ----- Slash command -----
+    if (interaction.isChatInputCommand && interaction.commandName === 'signal') {
+      if (!isOwner(interaction)) {
+        return interaction.reply({ content: 'Only the owner can use this.', ephemeral: true });
+      }
+
+      // Asset select (+ free text via “Other…”)
+      const assetSelect = new StringSelectMenuBuilder()
+        .setCustomId('sig.asset')
+        .setPlaceholder('Pick Asset (or choose Other…)')
+        .addOptions(
+          new StringSelectMenuOptionBuilder().setLabel('BTC').setValue('BTC'),
+          new StringSelectMenuOptionBuilder().setLabel('ETH').setValue('ETH'),
+          new StringSelectMenuOptionBuilder().setLabel('SOL').setValue('SOL'),
+          new StringSelectMenuOptionBuilder().setLabel('Other…').setValue('OTHER'),
+        );
+
+      const sideSelect = new StringSelectMenuBuilder()
+        .setCustomId('sig.side')
+        .setPlaceholder('Pick Side')
+        .addOptions(
+          new StringSelectMenuOptionBuilder().setLabel('Long').setValue('Long'),
+          new StringSelectMenuOptionBuilder().setLabel('Short').setValue('Short'),
+        );
+
+      const row1 = new ActionRowBuilder().addComponents(assetSelect);
+      const row2 = new ActionRowBuilder().addComponents(sideSelect);
+      const row3 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('sig.continue').setLabel('Continue').setStyle(ButtonStyle.Primary),
+      );
+
       await interaction.reply({
         content: 'Pick Asset & Side, then Continue:',
-        components: buildPickComponents(interaction.user.id),
+        components: [row1, row2, row3],
         ephemeral: true,
       });
       return;
     }
 
-    // asset select
-    if (interaction.isStringSelectMenu() && interaction.customId === 'pick|asset') {
-      const pick = pickState.get(interaction.user.id) || { channelId: interaction.channelId };
-      if (interaction.values[0] === 'OTHER') {
-        pick.assetWasCustom = true;
-        pickState.set(interaction.user.id, pick);
-        await interaction.showModal(modalAssetCustom());
-        return;
+    // ----- Selects / Continue -----
+    if (interaction.isStringSelectMenu()) {
+      if (interaction.customId === 'sig.asset' || interaction.customId === 'sig.side') {
+        // Just acknowledge so the selection is kept visible
+        return interaction.deferUpdate();
       }
-      pick.asset = interaction.values[0];
-      pick.assetWasCustom = false;
-      pickState.set(interaction.user.id, pick);
-      await interaction.update({ content: 'Pick Asset & Side, then Continue:', components: buildPickComponents(interaction.user.id) });
-      return;
     }
 
-    // side select
-    if (interaction.isStringSelectMenu() && interaction.customId === 'pick|side') {
-      const pick = pickState.get(interaction.user.id) || { channelId: interaction.channelId };
-      pick.side = interaction.values[0];
-      pickState.set(interaction.user.id, pick);
-      await interaction.update({ content: 'Pick Asset & Side, then Continue:', components: buildPickComponents(interaction.user.id) });
-      return;
-    }
+    if (interaction.isButton() && interaction.customId === 'sig.continue') {
+      // Get the message components the user just interacted with
+      const parentMsg = await interaction.message.fetch();
+      const comps = parentMsg.components;
 
-    // custom asset modal submit
-    if (interaction.isModalSubmit() && interaction.customId === 'asset-custom') {
-      let symbol = interaction.fields.getTextInputValue('asset') || '';
-      symbol = symbol.toUpperCase().trim().replace(/\s+/g, '');
-      symbol = symbol.replace(/[^A-Z0-9/.\-]/g, '').slice(0, 20);
-      if (!symbol) return interaction.reply({ content: 'Please enter a valid asset symbol.', ephemeral: true });
+      const assetVal = comps[0]?.components[0]?.values?.[0];
+      const sideVal = comps[1]?.components[0]?.values?.[0];
 
-      const pick = pickState.get(interaction.user.id) || { channelId: interaction.channelId };
-      pick.asset = symbol;
-      pick.assetWasCustom = true;
-      pickState.set(interaction.user.id, pick);
-
-      await interaction.reply({ content: 'Pick Asset & Side, then Continue:', components: buildPickComponents(interaction.user.id), ephemeral: true });
-      return;
-    }
-
-    // continue → open form
-    if (interaction.isButton() && interaction.customId === 'pick|continue') {
-      const pick = pickState.get(interaction.user.id);
-      if (!pick?.asset || !pick?.side) {
-        return interaction.reply({ content: 'Pick an asset and side first.', ephemeral: true });
-      }
-      const title = `Create ${pick.asset} ${pick.side} Signal`;
-      await interaction.showModal(modalSignalForm(title));
-      return;
-    }
-
-    // create signal form submit
-    if (interaction.isModalSubmit() && interaction.customId === 'signal-create-b') {
-      const pick = pickState.get(interaction.user.id);
-      if (!pick?.asset || !pick?.side) {
-        return interaction.reply({ content: 'Session expired. Run /signal again.', ephemeral: true });
+      if (!assetVal || !sideVal) {
+        return interaction.reply({ content: 'Pick both Asset and Side first.', ephemeral: true });
       }
 
-      const entry  = interaction.fields.getTextInputValue('entry')?.trim() || '';
-      const sl     = interaction.fields.getTextInputValue('sl')?.trim() || '';
-      const tp1    = interaction.fields.getTextInputValue('tp1')?.trim() || '';
-      const tp2    = interaction.fields.getTextInputValue('tp2')?.trim() || '';
-      const reason = interaction.fields.getTextInputValue('reason')?.trim() || '';
+      // If "OTHER", we’ll ask for the custom asset in the modal
+      const assetIsOther = assetVal === 'OTHER';
 
-      const channel = await client.channels.fetch(pick.channelId);
-      const guildId = channel.guildId;
+      // Build modal for Entry/SL/TPs/Reason/Role
+      const modal = new ModalBuilder()
+        .setCustomId(`sig.modal.${assetVal}.${sideVal}`)
+        .setTitle(`Create ${assetIsOther ? 'CUSTOM' : assetVal} ${sideVal.toUpperCase()} Signal`);
 
-      const signal = {
-        id: require('crypto').randomUUID(),
-        guildId,
-        channelId: channel.id,
-        messageId: null,
-        createdBy: interaction.user.id,
-        asset: pick.asset,
-        side: pick.side,
+      const customAsset = new TextInputBuilder()
+        .setCustomId('assetCustom')
+        .setLabel('Custom Asset (only if you picked Other…)')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false);
+
+      const entry = new TextInputBuilder()
+        .setCustomId('entry')
+        .setLabel('Entry (e.g., 108,201 or 108,100–108,300)')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const sl = new TextInputBuilder()
+        .setCustomId('sl')
+        .setLabel('SL (e.g., 100,201)')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false);
+
+      const tp = new TextInputBuilder()
+        .setCustomId('tp')
+        .setLabel('Targets (optional, e.g., "TP1 110,000 | TP2 121,201")')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(false);
+
+      const reason = new TextInputBuilder()
+        .setCustomId('reason')
+        .setLabel('Reason (optional)')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(false);
+
+      const role = new TextInputBuilder()
+        .setCustomId('extraRole')
+        .setLabel('Extra role to tag (optional, paste @Role or ID)')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false);
+
+      const rows = [
+        new ActionRowBuilder().addComponents(customAsset),
+        new ActionRowBuilder().addComponents(entry),
+        new ActionRowBuilder().addComponents(sl),
+        new ActionRowBuilder().addComponents(tp),
+        new ActionRowBuilder().addComponents(reason),
+      ];
+
+      // Discord limits modals to 5 fields; if you want the extraRole too,
+      // you can swap it with reason or include it in TP text (your call).
+      // Here we keep reason and omit extraRole due to the 5-field limit.
+
+      await interaction.showModal(modal.setComponents(rows));
+      return;
+    }
+
+    // ----- Modal submit: create the signal message -----
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('sig.modal.')) {
+      const parts = interaction.customId.split('.');
+      const assetVal = parts[2]; // BTC/ETH/SOL/OTHER
+      const sideVal = parts[3];  // Long/Short
+
+      const customAsset = interaction.fields.getTextInputValue('assetCustom')?.trim();
+      const entry = interaction.fields.getTextInputValue('entry')?.trim();
+      const sl = interaction.fields.getTextInputValue('sl')?.trim();
+      const tp = interaction.fields.getTextInputValue('tp')?.trim();
+      const reason = interaction.fields.getTextInputValue('reason')?.trim();
+
+      // Parse TPs (simple parse: look for lines with TP1/TP2/TP3)
+      let tp1, tp2, tp3;
+      if (tp) {
+        const lines = tp.split(/\r?\n/).map(s => s.trim());
+        for (const ln of lines) {
+          const m1 = ln.match(/TP1[^0-9]*([\d,.\-]+)/i);
+          const m2 = ln.match(/TP2[^0-9]*([\d,.\-]+)/i);
+          const m3 = ln.match(/TP3[^0-9]*([\d,.\-]+)/i);
+          if (m1) tp1 = m1[1];
+          if (m2) tp2 = m2[1];
+          if (m3) tp3 = m3[1];
+        }
+      }
+
+      const assetFinal = assetVal === 'OTHER' ? (customAsset || 'OTHER') : assetVal;
+
+      // Create the signal message in the current channel
+      const sig = {
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        messageId: null, // set after we send
+        asset: assetFinal,
+        side: sideVal,
         entry: entry || '-',
         sl: sl || '-',
-        tp1: tp1 || '',
-        tp2: tp2 || '',
-        tp3: '',                // omitted in modal due to 5-row limit
-        reason,
-        createdAt: new Date().toISOString(),
-        closedAt: null,
-        status: 'RUNNING_VALID', // RUNNING_VALID | RUNNING_BE | STOPPED_OUT | STOPPED_BE | CLOSED
-        latestTpHit: null        // '1' | '2' | '3'
+        tp1,
+        tp2,
+        tp3,
+        reason: reason || '',
+        tagRoleId: process.env.MENTION_ROLE_ID || null, // your default mention role for signals
+        active: true,
+        validForReentry: true,
+        tpHitLabel: '', // shown in status line when e.g. "TP1 hit"
+        ownerId: interaction.user.id,
       };
 
-      // content with single-blank-line spacing between sections
-      const sections = [
-        titleFor(signal),
-        blockTradeDetails(signal),
-      ];
-      if (signal.reason) sections.push(blockReason(signal));
-      sections.push(blockStatus(signal));
+      // Post message
+      const msg = await interaction.channel.send({ content: formatSignalBody(sig) });
+      sig.messageId = msg.id;
 
-      const mentionRole = config.mentionRoleId ? `<@&${config.mentionRoleId}>` : '';
-      if (mentionRole) sections.push(mentionRole);
+      // Save + ack
+      saveSignal(sig);
+      await interaction.reply({ content: 'Signal posted.', ephemeral: true });
 
-      const content = sections.join('\n\n');
-
-      // prefer webhook identity
-      let posted;
+      // Private controls thread (owner only)
       try {
-        const avatarToUse = STATIC_AVATAR_URL || await getOwnerAvatar(channel.guild);
-        const hook = await getOrCreateWebhook(channel, STATIC_NAME, avatarToUse);
-        const wc = new WebhookClient({ id: hook.id, token: hook.token });
-        posted = await wc.send({ content, username: STATIC_NAME, avatarURL: avatarToUse || undefined });
-      } catch {
-        posted = await channel.send(content);
-      }
-
-      signal.messageId = posted.id;
-      store.saveSignal(signal);
-
-      // private controls thread + link back
-      try {
-        const link = await createPrivateControlsThread(signal, channel, interaction.user.id);
-        await interaction.reply({ content: `Signal posted. Open your private controls thread → ${link}`, ephemeral: true });
-      } catch (e) {
-        console.error('controls-thread error:', e);
-        await interaction.reply({
-          content: 'Signal posted. (Could not create a private controls thread — check bot permissions: Create Private Threads, Send Messages in Threads, Manage Threads.)',
-          ephemeral: true,
+        const thread = await msg.startThread({
+          name: `controls-${sig.asset}-${sig.side}`.slice(0, 96),
+          autoArchiveDuration: 1440,
+          reason: 'Signal controls',
         });
+
+        // Restrict visibility: make it private if allowed in the server
+        // (If server doesn’t allow private threads, this will be public)
+        // NOTE: If you must ensure private-only, set channel perms accordingly in Discord.
+
+        const controls = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`ctl.run.valid:${sig.id}`).setLabel('Running (Valid)').setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId(`ctl.run.be:${sig.id}`).setLabel('Running (BE)').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId(`ctl.stop.out:${sig.id}`).setLabel('Stopped Out').setStyle(ButtonStyle.Danger),
+          new ButtonBuilder().setCustomId(`ctl.stop.be:${sig.id}`).setLabel('Stopped BE').setStyle(ButtonStyle.Secondary),
+        );
+        const tps = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`ctl.tp1:${sig.id}`).setLabel('🎯 TP1 Hit').setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId(`ctl.tp2:${sig.id}`).setLabel('🎯 TP2 Hit').setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId(`ctl.tp3:${sig.id}`).setLabel('🎯 TP3 Hit').setStyle(ButtonStyle.Primary),
+        );
+        const editDel = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`ctl.edit:${sig.id}`).setLabel('Edit').setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId(`ctl.delete:${sig.id}`).setLabel('Delete').setStyle(ButtonStyle.Danger),
+        );
+
+        await thread.send({ content: `Controls (only you can use): <@${sig.ownerId}>`, components: [controls, tps, editDel] });
+      } catch (e) {
+        console.error('Thread create failed:', e.message);
       }
 
-      await updateSummary(channel.id).catch(() => {});
+      // === keep summary to ONE message ===
+      await refreshCurrentTradesSummary(client, process.env.CURRENT_TRADES_CHANNEL_ID);
       return;
     }
 
-    // private thread controls
-    if (interaction.isButton() && interaction.customId.startsWith('ctrl|')) {
-      const [, action, id] = interaction.customId.split('|');
-      const signal = store.getSignal(id);
-      if (!signal) {
-        await interaction.reply({ content: 'Signal not found (maybe deleted).', ephemeral: true });
-        return;
+    // ----- Button controls (status / tps / delete) -----
+    if (interaction.isButton() && interaction.customId.startsWith('ctl.')) {
+      // Only the original signal owner or the configured owner can use
+      const ownerOk = isOwner(interaction);
+      // optional: allow the signal owner
+      const allowUserId = interaction.user.id;
+
+      const [ns, action, idPart] = interaction.customId.split(':'); // e.g. "ctl.tp1:<id>"
+      const sigId = idPart;
+      const sig = getSignal(sigId);
+      if (!sig) return interaction.reply({ content: 'Signal not found.', ephemeral: true });
+
+      if (!(ownerOk || allowUserId === sig.ownerId)) {
+        return interaction.reply({ content: 'Not allowed.', ephemeral: true });
       }
-      if (interaction.user.id !== signal.createdBy) {
-        await interaction.reply({ content: 'Only the signal owner can use these controls.', ephemeral: true });
-        return;
-      }
 
-      if (action === 'tp1') signal.latestTpHit = '1';
-      if (action === 'tp2') signal.latestTpHit = '2';
-      if (action === 'tp3') signal.latestTpHit = '3';
+      let editedBodyNeeded = false;
 
-      if (action === 'running_valid') signal.status = 'RUNNING_VALID';
-      if (action === 'running_be')     signal.status = 'RUNNING_BE';
-      if (action === 'stopped_out')    signal.status = 'STOPPED_OUT';
-      if (action === 'stopped_be')     signal.status = 'STOPPED_BE';
-
-      if (action === 'delete') {
+      if (action === 'run.valid') {
+        sig.active = true;
+        sig.validForReentry = true;
+        sig.tpHitLabel = '';
+        editedBodyNeeded = true;
+      } else if (action === 'run.be') {
+        sig.active = true;
+        sig.validForReentry = false; // you said: once SL to BE, Valid for re-entry: No
+        sig.tpHitLabel = '';
+        editedBodyNeeded = true;
+      } else if (action === 'stop.out') {
+        sig.active = false;
+        sig.validForReentry = false;
+        sig.tpHitLabel = '';
+        editedBodyNeeded = true;
+      } else if (action === 'stop.be') {
+        sig.active = false;
+        sig.validForReentry = false;
+        sig.tpHitLabel = '';
+        editedBodyNeeded = true;
+      } else if (action === 'tp1') {
+        sig.tpHitLabel = 'TP1 hit';
+        editedBodyNeeded = true;
+      } else if (action === 'tp2') {
+        sig.tpHitLabel = 'TP2 hit';
+        editedBodyNeeded = true;
+      } else if (action === 'tp3') {
+        sig.tpHitLabel = 'TP3 hit';
+        editedBodyNeeded = true;
+      } else if (action === 'edit') {
+        // Minimal inline edit example: toggle re-entry
+        sig.validForReentry = !sig.validForReentry;
+        editedBodyNeeded = true;
+      } else if (action === 'delete') {
+        // Delete original signal message
         try {
-          const ch = await client.channels.fetch(signal.channelId);
-          const msg = await ch.messages.fetch(signal.messageId);
-          await msg.delete().catch(() => {});
+          const ch = await client.channels.fetch(sig.channelId);
+          const m = await ch.messages.fetch(sig.messageId);
+          await m.delete().catch(() => {});
         } catch {}
-        store.deleteSignal(signal.id);
-        await interaction.reply({ content: 'Deleted.', ephemeral: true });
-        await updateSummary(signal.channelId).catch(() => {});
+        deleteSignal(sig.id);
+        await interaction.reply({ content: 'Signal deleted.', ephemeral: true });
+
+        // refresh summary (removes it if it was there)
+        await refreshCurrentTradesSummary(client, process.env.CURRENT_TRADES_CHANNEL_ID);
         return;
       }
 
-      store.saveSignal(signal);
-      await interaction.deferUpdate();
-      await updateSummary(signal.channelId).catch(() => {});
+      saveSignal(sig);
+
+      if (editedBodyNeeded) {
+        try {
+          const ch = await client.channels.fetch(sig.channelId);
+          const m = await ch.messages.fetch(sig.messageId);
+          await m.edit({ content: formatSignalBody(sig) });
+        } catch (e) {
+          console.error('Failed to edit signal message:', e.message);
+        }
+      }
+
+      await interaction.reply({ content: 'Updated.', ephemeral: true });
+
+      // === keep summary to ONE message ===
+      await refreshCurrentTradesSummary(client, process.env.CURRENT_TRADES_CHANNEL_ID);
       return;
     }
-
   } catch (err) {
     console.error('interactionCreate error:', err);
-    try { await interaction.reply({ content: 'An error occurred. Check bot logs.', ephemeral: true }); } catch {}
+    if (interaction?.replied || interaction?.deferred) {
+      try { await interaction.followUp({ content: 'An error occurred. Check bot logs.', ephemeral: true }); } catch {}
+    } else {
+      try { await interaction.reply({ content: 'An error occurred. Check bot logs.', ephemeral: true }); } catch {}
+    }
   }
 });
 
-/* -------------- Summary (single message) --------------- */
-
-function eligibleForSummary(s) {
-  if (s.closedAt) return false;
-  return s.status === 'RUNNING_VALID';
+// ---------------------------------------------------------------------
+// Login
+// ---------------------------------------------------------------------
+if (!process.env.DISCORD_TOKEN) {
+  console.error('[ERROR] Missing DISCORD_TOKEN in .env');
+  process.exit(1);
 }
-
-async function updateSummary(forChannelId) {
-  const summaryChannelId = config.currentTradesChannelId || forChannelId;
-  if (!summaryChannelId) return;
-
-  const channel = await client.channels.fetch(summaryChannelId);
-  const all = store.listAll();
-  const active = all.filter(eligibleForSummary);
-
-  let content;
-  if (active.length === 0) {
-    content = `${SUMMARY_HEADER_BOLD}
-• There are currently no ongoing trades valid for entry — stay posted for future trades.`;
-  } else {
-    const blocks = active.map((s, idx) => {
-      const jump = `https://discord.com/channels/${s.guildId}/${s.channelId}/${s.messageId}`;
-      const entry = `➡️ Entry: ${s.entry || '-'}`;
-      const sl    = `🛑 Stop Loss: ${s.sl || '-'}`;
-      let nextTp = '';
-      if (!s.latestTpHit && s.tp1)               nextTp = `🎯 TP1: ${s.tp1}`;
-      else if (s.latestTpHit === '1' && s.tp2)   nextTp = `🎯 TP2: ${s.tp2}`;
-      else if (s.latestTpHit === '2' && s.tp3)   nextTp = `🎯 TP3: ${s.tp3}`;
-      const title = `${idx + 1}. ${s.asset.toUpperCase()} ${s.side === 'LONG' ? 'Long 🟢' : 'Short 🔴'} — [jump](${jump})`;
-      return [title, entry, sl, nextTp].filter(Boolean).join('\n');
-    });
-    content = `${SUMMARY_HEADER_BOLD}\n\n${blocks.join('\n\n')}`;
-  }
-
-  // edit if we have a stored message id
-  let keepId = store.getSummaryMessageId(summaryChannelId);
-  if (keepId) {
-    try {
-      const msg = await channel.messages.fetch(keepId);
-      await msg.edit(content);
-      const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
-      recent?.filter(m => typeof m.content === 'string' && m.content.startsWith(SUMMARY_HEADER_BOLD) && m.id !== keepId)
-             ?.forEach(m => m.delete().catch(() => {}));
-      return;
-    } catch {
-      // fall through
-    }
-  }
-
-  // reuse an existing summary
-  let existing = null;
-  try {
-    const recent = await channel.messages.fetch({ limit: 50 });
-    existing = recent.find(m =>
-      typeof m.content === 'string' && m.content.startsWith(SUMMARY_HEADER_BOLD)
-    ) || null;
-  } catch {}
-
-  if (existing) {
-    await existing.edit(content);
-    store.setSummaryMessageId(summaryChannelId, existing.id);
-    try {
-      const recent = await channel.messages.fetch({ limit: 50 });
-      recent.filter(m =>
-        typeof m.content === 'string' &&
-        m.content.startsWith(SUMMARY_HEADER_BOLD) &&
-        m.id !== existing.id
-      ).forEach(m => m.delete().catch(() => {}));
-    } catch {}
-    return;
-  }
-
-  // create new (prefer webhook identity)
-  try {
-    const avatarToUse = STATIC_AVATAR_URL || await getOwnerAvatar(channel.guild);
-    const hook        = await getOrCreateWebhook(channel, 'JV Current Trades', avatarToUse);
-    const wc          = new WebhookClient({ id: hook.id, token: hook.token });
-    const sent        = await wc.send({ content, username: STATIC_NAME, avatarURL: avatarToUse || undefined });
-    store.setSummaryMessageId(summaryChannelId, sent.id);
-  } catch {
-    const sent = await channel.send(content);
-    store.setSummaryMessageId(summaryChannelId, sent.id);
-  }
-
-  // clean any duplicates
-  try {
-    const recent = await channel.messages.fetch({ limit: 50 });
-    recent.filter(m =>
-      typeof m.content === 'string' &&
-      m.content.startsWith(SUMMARY_HEADER_BOLD) &&
-      m.id !== store.getSummaryMessageId(summaryChannelId)
-    ).forEach(m => m.delete().catch(() => {}));
-  } catch {}
-}
-
-/* ---------------- Start ---------------- */
-client.login(config.token);
+client.login(process.env.DISCORD_TOKEN);
