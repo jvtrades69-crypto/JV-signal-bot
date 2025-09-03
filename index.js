@@ -196,7 +196,7 @@ async function getOwnerAvatar(guild) {
   } catch { return null; }
 }
 
-async function updateSummary(forChannelId, lastActor) {
+async function updateSummary(forChannelId) {
   try {
     const summaryChannelId = config.currentTradesChannelId || forChannelId;
     if (!summaryChannelId) return;
@@ -230,27 +230,19 @@ async function updateSummary(forChannelId, lastActor) {
       content = `${header}\n\n${blocks.join('\n\n')}`;
     }
 
-    // Use a webhook for the summary so we can set avatar (owner pfp)
-    const ownerAvatar = await getOwnerAvatar(channel.guild);
-    const summaryHook = await getOrCreateWebhook(channel, config.summaryWebhookName, ownerAvatar);
-
+    // Edit/create summary message (it might be a webhook message or a normal one)
     const existingId = store.getSummaryMessageId(summaryChannelId);
     if (existingId) {
       try {
         const msg = await channel.messages.fetch(existingId);
-        // edit via webhook client if it is a webhook message; else send a new one
-        try {
-          const hookClient = new WebhookClient({ id: summaryHook.id, token: summaryHook.token });
-          await hookClient.editMessage(existingId, { content });
-          return;
-        } catch {
-          await msg.edit(content);
-          return;
-        }
+        await msg.edit(content);
+        return;
       } catch {
         // fall through to create new
       }
     }
+    const ownerAvatar = await getOwnerAvatar(channel.guild);
+    const summaryHook = await getOrCreateWebhook(channel, config.summaryWebhookName, ownerAvatar);
     const hookClient = new WebhookClient({ id: summaryHook.id, token: summaryHook.token });
     const sent = await hookClient.send({
       content,
@@ -342,23 +334,22 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // pick selections (asset/side)
+    // pick selections (asset/side) — DO NOT open modal here (fix for showModal on select)
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('pick|')) {
       const which = interaction.customId.split('|')[1];
       const pick = pickState.get(interaction.user.id) || { channelId: interaction.channelId };
       if (which === 'asset') pick.asset = interaction.values[0];
-      if (which === 'side') pick.side = interaction.values[0];
+      if (which === 'side')  pick.side  = interaction.values[0];
       pickState.set(interaction.user.id, pick);
 
-      if (pick.asset && pick.side) {
-        await interaction.showModal(modalStepA(pick));
-        return;
-      }
-      await interaction.update({ content: 'Pick Asset & Side, then Continue:', components: buildPickComponents(interaction.user.id) });
+      await interaction.update({
+        content: 'Pick Asset & Side, then Continue:',
+        components: buildPickComponents(interaction.user.id), // Continue enables when both picked
+      });
       return;
     }
 
-    // continue button
+    // continue button -> open first modal (this path is safe to showModal)
     if (interaction.isButton() && interaction.customId === 'pick|continue') {
       const pick = pickState.get(interaction.user.id);
       if (!pick?.asset || !pick?.side) {
@@ -433,7 +424,7 @@ client.on('interactionCreate', async (interaction) => {
       signal.messageId = sent.id;
       store.upsert(signal);
 
-      // controls
+      // controls with private thread + fallback
       try {
         if (config.privateControls) {
           const me = await channel.guild.members.fetch(interaction.user.id);
@@ -450,8 +441,7 @@ client.on('interactionCreate', async (interaction) => {
           const msg = await channel.messages.fetch(signal.messageId);
           await msg.reply({ content: 'Controls:', components: controls(signal) });
         }
-      } catch (e) {
-        // hard fallback to public reply
+      } catch {
         try {
           const msg = await channel.messages.fetch(signal.messageId);
           await msg.reply({ content: 'Controls:', components: controls(signal) });
@@ -462,7 +452,7 @@ client.on('interactionCreate', async (interaction) => {
       draftState.delete(interaction.user.id);
 
       await interaction.reply({ content: 'Signal posted.', flags: 64 });
-      await updateSummary(channel.id, interaction.user.id);
+      await updateSummary(channel.id);
       return;
     }
 
@@ -482,7 +472,7 @@ client.on('interactionCreate', async (interaction) => {
         store.upsert(signal);
         await hook.editMessage(signal.messageId, { content: renderTrade(signal) });
         await interaction.reply({ content: 'Status updated.', flags: 64 });
-        await updateSummary(signal.channelId, interaction.user.id);
+        await updateSummary(signal.channelId);
         return;
       }
 
@@ -492,7 +482,7 @@ client.on('interactionCreate', async (interaction) => {
         store.upsert(signal);
         await hook.editMessage(signal.messageId, { content: renderTrade(signal) });
         await interaction.reply({ content: `Marked TP${extra} hit.`, flags: 64 });
-        await updateSummary(signal.channelId, interaction.user.id);
+        await updateSummary(signal.channelId);
         return;
       }
 
@@ -501,7 +491,7 @@ client.on('interactionCreate', async (interaction) => {
         store.upsert(signal);
         await hook.editMessage(signal.messageId, { content: renderTrade(signal) });
         await interaction.reply({ content: 'Trade closed.', flags: 64 });
-        await updateSummary(signal.channelId, interaction.user.id);
+        await updateSummary(signal.channelId);
         return;
       }
 
@@ -537,7 +527,7 @@ client.on('interactionCreate', async (interaction) => {
         } catch {}
         store.removeById(signal.id);
         await interaction.reply({ content: 'Signal deleted.', flags: 64 });
-        await updateSummary(signal.channelId, interaction.user.id);
+        await updateSummary(signal.channelId);
         return;
       }
     }
@@ -564,7 +554,7 @@ client.on('interactionCreate', async (interaction) => {
       store.upsert(signal);
       await new WebhookClient({ id: signal.webhookId, token: signal.webhookToken }).editMessage(signal.messageId, { content: renderTrade(signal) });
       await interaction.update({ components: controls(signal) });
-      await updateSummary(signal.channelId, interaction.user.id);
+      await updateSummary(signal.channelId);
       return;
     }
 
@@ -582,7 +572,7 @@ client.on('interactionCreate', async (interaction) => {
       store.upsert(signal);
       await new WebhookClient({ id: signal.webhookId, token: signal.webhookToken }).editMessage(signal.messageId, { content: renderTrade(signal) });
       await interaction.reply({ content: `Set TP${which} to ${val}%.`, flags: 64 });
-      await updateSummary(signal.channelId, interaction.user.id);
+      await updateSummary(signal.channelId);
       return;
     }
 
@@ -598,7 +588,7 @@ client.on('interactionCreate', async (interaction) => {
       store.upsert(signal);
       await new WebhookClient({ id: signal.webhookId, token: signal.webhookToken }).editMessage(signal.messageId, { content: renderTrade(signal) });
       await interaction.reply({ content: 'Reason updated.', flags: 64 });
-      await updateSummary(signal.channelId, interaction.user.id);
+      await updateSummary(signal.channelId);
       return;
     }
 
@@ -619,7 +609,7 @@ client.on('interactionCreate', async (interaction) => {
       store.upsert(signal);
       await new WebhookClient({ id: signal.webhookId, token: signal.webhookToken }).editMessage(signal.messageId, { content: renderTrade(signal) });
       await interaction.reply({ content: 'Fields updated.', flags: 64 });
-      await updateSummary(signal.channelId, interaction.user.id);
+      await updateSummary(signal.channelId);
       return;
     }
 
