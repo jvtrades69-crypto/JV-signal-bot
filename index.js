@@ -1,3 +1,6 @@
+// index.js
+// JV Signal Bot — private controls thread, single summary message, custom "Other…" asset, tidy formatting.
+
 const {
   Client,
   GatewayIntentBits,
@@ -7,328 +10,214 @@ const {
   TextInputBuilder,
   TextInputStyle,
   ActionRowBuilder,
-  WebhookClient,
   ButtonBuilder,
   ButtonStyle,
   StringSelectMenuBuilder,
   ChannelType,
+  WebhookClient,
 } = require('discord.js');
-const { v4: uuidv4 } = require('uuid');
 
 const config = require('./config');
 const store  = require('./store');
 
-if (!config.token) {
-  console.error('[ERROR] Missing DISCORD_TOKEN');
+if (!config?.token) {
+  console.error('[ERROR] Missing DISCORD_TOKEN in .env');
   process.exit(1);
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
   partials: [Partials.Channel],
 });
 
-/* ---------------- static identity snapshot ---------------- */
-let STATIC_NAME = null;
-let STATIC_AVATAR_URL = null;
-async function snapshotOwnerIdentity() {
-  try {
-    if (!config.ownerId) return;
-    const g = await client.guilds.fetch(config.guildId).catch(() => null);
-    if (!g) return;
-    const m = await g.members.fetch(config.ownerId).catch(() => null);
-    if (!m) return;
-    STATIC_NAME = m.displayName || m.user.username;
-    STATIC_AVATAR_URL = m.user.displayAvatarURL({ size: 128 });
-    console.log(`🆔 Using static identity -> name: ${STATIC_NAME}`);
-  } catch (e) {
-    console.warn('snapshotOwnerIdentity failed:', e?.message || e);
-  }
+client.once('ready', () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+});
+
+/* ---------------- Helpers ---------------- */
+
+const SUMMARY_HEADER_BOLD = '**📊 JV Current Active Trades 📊**';
+const STATIC_NAME        = 'JV Trades';   // webhook display name
+const STATIC_AVATAR_URL  = null;          // set to a static URL if you want; otherwise owner avatar is used
+
+function nowISO() { return new Date().toISOString(); }
+
+function titleFor(signal) {
+  const dot = signal.side === 'LONG' ? '🟢' : '🔴';
+  return `**${signal.asset.toUpperCase()} | ${signal.side === 'LONG' ? 'Long' : 'Short'} ${dot}**`;
 }
 
-/* ---------------- state ---------------- */
-const pickState  = new Map(); // userId -> { asset, side, channelId }
-const draftState = new Map(); // userId -> { asset, side, entry, sl, reason, extraRole, channelId }
-
-/* ---------------- helpers ---------------- */
-
-const oneLine = (s) => (s || '').replace(/\s+/g, ' ').trim();
-
-function canManage(interaction, signal) {
-  if (!interaction || !signal) return false;
-  const uid = interaction.user.id;
-  if (signal.ownerId === uid) return true;
-  if (config.ownerId && uid === config.ownerId) return true;
-  const member = interaction.member;
-  if (member?.permissions?.has(PermissionFlagsBits.Administrator)) return true;
-  if (config.allowedRoleId) return Boolean(member?.roles?.cache?.has(config.allowedRoleId));
-  return false;
-}
-
-async function getOrCreateWebhook(channel, name, avatarURL) {
-  const hooks = await channel.fetchWebhooks().catch(() => null);
-  let hook = hooks?.find((w) => w.name === name);
-  if (!hook) {
-    hook = await channel.createWebhook({
-      name,
-      avatar: avatarURL || channel.guild?.iconURL({ size: 128 }) || undefined,
-    });
-  }
-  return hook;
-}
-
-// Accepts: <@&id>, raw id, or plain role name (case-insensitive)
-function parseExtraRole(input, guild) {
-  if (!input) return null;
-
-  // mention like <@&123...>
-  const mention = input.match(/<@&(\d+)>/);
-  if (mention) return mention[1];
-
-  // raw id
-  const id = input.match(/\b\d{15,21}\b/);
-  if (id) return id[0];
-
-  // name lookup
-  const name = input.trim().toLowerCase();
-  if (guild && guild.roles?.cache?.size) {
-    const role = guild.roles.cache.find(r => r.name.toLowerCase() === name);
-    if (role) return role.id;
-  }
-  return null;
-}
-
-// Use roles-only allowedMentions to avoid “parse” conflicts
-function buildAllowedMentions(extraRoleId) {
-  const roles = [config.tradeSignalRoleId, extraRoleId].filter(Boolean);
-  return roles.length ? { roles } : { parse: [] };
-}
-
-/* -------- trade post rendering (plain text) -------- */
-
-function renderTrade(signal) {
-  const sideEmoji = signal.side === 'LONG' ? '🟢' : '🔴';
-  const lines = [];
-
-  // Big title with exactly ONE preserved gap (no emoji line)
-  lines.push(`# ${signal.asset.toUpperCase()} | ${signal.side === 'LONG' ? 'Long' : 'Short'} ${sideEmoji}`);
-  lines.push('\u200B');   // zero-width spacer -> renders as exactly one blank line
-
-  // Details
-  lines.push('📊 Trade Details');
-  lines.push(`Entry: ${signal.entry || '-'}`);
-  lines.push(`SL: ${signal.sl || '-'}`);
-
-  if (signal.tp1) {
-    const pct = signal.tp1Pct ? ` (${signal.tp1Pct}% out)` : '';
-    lines.push(`TP1: ${signal.tp1}${pct}`);
-  }
-  if (signal.tp2) {
-    const pct = signal.tp2Pct ? ` (${signal.tp2Pct}% out)` : '';
-    lines.push(`TP2: ${signal.tp2}${pct}`);
-  }
-  if (signal.tp3) {
-    const pct = signal.tp3Pct ? ` (${signal.tp3Pct}% out)` : '';
-    lines.push(`TP3: ${signal.tp3}${pct}`);
-  }
-  lines.push('');
-
-  if (signal.rationale && signal.rationale.trim() !== '') {
-    lines.push('📝 Reasoning');
-    lines.push(signal.rationale.trim().slice(0, 1000));
-    lines.push('');
-  }
-
-  const active = !signal.closedAt;
-  if (active) {
-    const reentry = (signal.status === 'RUNNING_BE') ? 'No ( SL set to breakeven )' : 'Yes';
-    let first = `📍 Status : Active 🟩 - trade is still running`;
-    if (signal.latestTpHit) first += `\nTP${signal.latestTpHit} hit`;
-    lines.push(first);
-    lines.push(`Valid for re-entry: ${reentry}`);
-  } else {
-    lines.push(`📍 Status : Inactive 🟥 - SL set to breakeven`);
-    lines.push(`Valid for re-entry: No`);
-  }
-
-  const mentions = [];
-  if (config.tradeSignalRoleId) mentions.push(`<@&${config.tradeSignalRoleId}>`);
-  if (signal.extraRoleId)      mentions.push(`<@&${signal.extraRoleId}>`);
-  if (mentions.length) {
-    lines.push('');
-    lines.push(mentions.join(' '));
-  }
-
+function blockTradeDetails(signal) {
+  // exactly 1 blank line is added by the caller between sections
+  const lines = [
+    '📊 **Trade Details**',
+    `Entry: ${signal.entry ?? '-'}`,
+    `SL: ${signal.sl ?? '-'}`,
+  ];
+  if (signal.tp1) lines.push(`TP1: ${signal.tp1}`);
+  if (signal.tp2) lines.push(`TP2: ${signal.tp2}`);
+  if (signal.tp3) lines.push(`TP3: ${signal.tp3}`);
   return lines.join('\n');
 }
 
-/* -------- buttons/controls -------- */
+function blockReason(signal) {
+  if (!signal.reason) return '';
+  return `📒 **Reasoning**\n${signal.reason}`;
+}
 
-function rowStatus(id) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`signal|${id}|status|RUNNING_VALID`).setLabel('Running (Valid)').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`signal|${id}|status|RUNNING_BE`).setLabel('Set BE').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`signal|${id}|close|X`).setLabel('Close Trade').setStyle(ButtonStyle.Danger),
-  );
+function blockStatus(signal) {
+  const activeYesNo = signal.closedAt
+    ? 'Inactive 🟥 - SL set to breakeven'
+    : 'Active 🟩 - trade is still running';
+  const valid = signal.status === 'RUNNING_VALID' ? 'Yes' : 'No';
+  return `📍 **Status**\n${activeYesNo}\nValid for re-entry: ${valid}`;
 }
-function rowTpHits(id) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`signal|${id}|tp|1`).setLabel('🎯 TP1 Hit').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`signal|${id}|tp|2`).setLabel('🎯 TP2 Hit').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`signal|${id}|tp|3`).setLabel('🎯 TP3 Hit').setStyle(ButtonStyle.Primary),
-  );
-}
-function rowManage(id) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`signal|${id}|reason|edit`).setLabel('Add/Update Reason').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`signal|${id}|edit|X`).setLabel('Edit Fields').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`signal|${id}|delete|X`).setLabel('Delete').setStyle(ButtonStyle.Danger),
-  );
-}
-function rowTpPct(id, which, hasPrice) {
-  if (!hasPrice) return null;
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId(`signal|${id}|tppct|${which}`)
-    .setPlaceholder(`TP${which} % out`)
-    .addOptions(
-      { label: '25%', value: '25' },
-      { label: '50%', value: '50' },
-      { label: '75%', value: '75' },
-      { label: 'Custom…', value: 'custom' },
-      { label: 'Clear',  value: 'clear'  },
-    );
-  return new ActionRowBuilder().addComponents(menu);
-}
+
 function controls(signal) {
   const rows = [];
-  rows.push(rowStatus(signal.id));
-  rows.push(rowTpHits(signal.id));
-  const r1 = rowTpPct(signal.id, '1', !!signal.tp1);
-  const r2 = rowTpPct(signal.id, '2', !!signal.tp2);
-  const r3 = rowTpPct(signal.id, '3', !!signal.tp3);
-  if (r1) rows.push(r1);
-  if (r2) rows.push(r2);
-  if (r3) rows.push(r3);
-  rows.push(rowManage(signal.id));
+
+  rows.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`ctrl|tp1|${signal.id}`).setLabel('🎯 TP1 Hit').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`ctrl|tp2|${signal.id}`).setLabel('🎯 TP2 Hit').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`ctrl|tp3|${signal.id}`).setLabel('🎯 TP3 Hit').setStyle(ButtonStyle.Primary),
+    ),
+  );
+
+  rows.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`ctrl|running_valid|${signal.id}`).setLabel('Running (Valid)').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`ctrl|running_be|${signal.id}`).setLabel('Running (BE)').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`ctrl|stopped_out|${signal.id}`).setLabel('Stopped Out').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`ctrl|stopped_be|${signal.id}`).setLabel('Stopped BE').setStyle(ButtonStyle.Secondary),
+    ),
+  );
+
+  rows.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`ctrl|delete|${signal.id}`).setLabel('Delete').setStyle(ButtonStyle.Danger),
+    ),
+  );
+
   return rows;
 }
 
-/* -------- summary (JV Current Active Trades) -------- */
-
-const SUMMARY_HEADER_BOLD = '**📊 JV Current Active Trades 📊**';
-
-function eligibleForSummary(s) {
-  if (s.closedAt) return false;
-  return s.status === 'RUNNING_VALID'; // only valid for re-entry
+async function getOrCreateWebhook(channel, preferredName = 'JV Trades', avatarURL = null) {
+  const hooks = await channel.fetchWebhooks().catch(() => null);
+  if (hooks) {
+    const existing = hooks.find(h => h.name === preferredName);
+    if (existing) return existing;
+  }
+  const created = await channel.createWebhook({ name: preferredName, avatar: avatarURL || undefined }).catch(() => null);
+  return created;
 }
 
 async function getOwnerAvatar(guild) {
   try {
     if (!config.ownerId) return null;
     const m = await guild.members.fetch(config.ownerId);
-    return m?.user?.displayAvatarURL({ size: 128 }) || null;
-  } catch { return null; }
-}
-
-async function updateSummary(forChannelId) {
-  try {
-    const summaryChannelId = config.currentTradesChannelId || forChannelId;
-    if (!summaryChannelId) return;
-
-    const channel = await client.channels.fetch(summaryChannelId);
-    const all = store.listAll();
-    const active = all.filter(eligibleForSummary);
-
-    let content;
-    if (active.length === 0) {
-      content = `${SUMMARY_HEADER_BOLD}
-• There are currently no ongoing trades valid for entry — stay posted for future trades.`;
-    } else {
-      const blocks = active.map((s, idx) => {
-        const jump = `https://discord.com/channels/${s.guildId}/${s.channelId}/${s.messageId}`;
-        let tpLabel = '', tpValue = '';
-        if (!s.latestTpHit && s.tp1)              { tpLabel = 'TP1'; tpValue = s.tp1; }
-        else if (s.latestTpHit === '1' && s.tp2)  { tpLabel = 'TP2'; tpValue = s.tp2; }
-        else if (s.latestTpHit === '2' && s.tp3)  { tpLabel = 'TP3'; tpValue = s.tp3; }
-
-        const entry = `➡️ Entry: ${s.entry || '-'}`;
-        const sl    = `🛑 Stop Loss: ${s.sl || '-'}`;
-        const tp    = tpValue ? `🎯 ${tpLabel}: ${tpValue}` : null;
-
-        return `${idx + 1}. ${s.asset.toUpperCase()} ${s.side === 'LONG' ? 'Long 🟢' : 'Short 🔴'} — [jump](${jump})
-${entry}
-${sl}${tp ? `\n${tp}` : ''}`;
-      });
-
-      content = `${SUMMARY_HEADER_BOLD}\n\n${blocks.join('\n\n')}`;
-    }
-
-    // Try to edit the one we know
-    let existingId = store.getSummaryMessageId(summaryChannelId);
-    if (existingId) {
-      try {
-        const msg = await channel.messages.fetch(existingId);
-        await msg.edit(content);
-        return;
-      } catch { /* fall through to find existing */ }
-    }
-
-    // Find an existing one by header, whether webhook or bot sent it
-    try {
-      const recent = await channel.messages.fetch({ limit: 30 });
-      const existing = recent.find(m =>
-        typeof m.content === 'string' &&
-        m.content.startsWith(SUMMARY_HEADER_BOLD) &&
-        (m.webhookId || m.author?.id === client.user.id)
-      );
-      if (existing) {
-        await existing.edit(content);
-        store.setSummaryMessageId(summaryChannelId, existing.id);
-        return;
-      }
-    } catch { /* ignore */ }
-
-    // Create new (webhook preferred with static name/avatar; else bot)
-    try {
-      const nameToUse = STATIC_NAME || 'JV Trades';
-      const avatarToUse = STATIC_AVATAR_URL || (await getOwnerAvatar(channel.guild));
-      const summaryHook = await getOrCreateWebhook(channel, config.summaryWebhookName, avatarToUse);
-      const hookClient  = new WebhookClient({ id: summaryHook.id, token: summaryHook.token });
-      const sent = await hookClient.send({
-        content,
-        username: nameToUse,
-        avatarURL: avatarToUse || undefined,
-      });
-      store.setSummaryMessageId(summaryChannelId, sent.id);
-    } catch {
-      const sent = await channel.send(content);
-      store.setSummaryMessageId(summaryChannelId, sent.id);
-    }
-  } catch (e) {
-    console.error('updateSummary error:', e);
+    return m?.displayAvatarURL({ size: 128 }) || m?.user?.displayAvatarURL({ size: 128 }) || null;
+  } catch {
+    return null;
   }
 }
 
-/* -------- pick (asset/side) -------- */
+async function createPrivateControlsThread(signal, channel, userId) {
+  const me = await channel.guild.members.fetch(userId);
+  const thread = await channel.threads.create({
+    name: `Controls • ${signal.asset} ${signal.side} • ${me.displayName || me.user.username}`,
+    autoArchiveDuration: 1440,
+    type: ChannelType.PrivateThread,
+    invitable: false,
+  });
+  await thread.members.add(me.id).catch(() => {});
+  const msg = await thread.send({ content: 'Your controls:', components: controls(signal) });
+  return `https://discord.com/channels/${signal.guildId}/${thread.id}/${msg.id}`;
+}
+
+/* --------- Asset/Side pick (ephemeral) --------- */
+
+const pickState = new Map(); // userId -> { channelId, asset, assetWasCustom, side }
+
+function modalAssetCustom() {
+  const modal = new ModalBuilder().setCustomId('asset-custom').setTitle('Custom Asset');
+  const field = new TextInputBuilder()
+    .setCustomId('asset')
+    .setLabel('Asset / Symbol')
+    .setPlaceholder('e.g., BTC, ETH, SOL, DOGE/USDT')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(20);
+  return modal.addComponents(new ActionRowBuilder().addComponents(field));
+}
+
+// 5 rows max → Entry, SL, TP1, TP2, Reason  (TP3 can be adjusted later with an edit flow if needed)
+function modalSignalForm(titleText) {
+  const modal = new ModalBuilder().setCustomId('signal-create-b').setTitle(titleText);
+
+  const entry = new TextInputBuilder()
+    .setCustomId('entry')
+    .setLabel('Entry (required)')
+    .setPlaceholder('e.g., 108,201 or 108,100–108,300')
+    .setRequired(true)
+    .setStyle(TextInputStyle.Short);
+
+  const sl = new TextInputBuilder()
+    .setCustomId('sl')
+    .setLabel('SL (optional)')
+    .setPlaceholder('e.g., 100,201')
+    .setRequired(false)
+    .setStyle(TextInputStyle.Short);
+
+  const tp1 = new TextInputBuilder()
+    .setCustomId('tp1')
+    .setLabel('TP1 (optional)')
+    .setPlaceholder('e.g., 110,000')
+    .setRequired(false)
+    .setStyle(TextInputStyle.Short);
+
+  const tp2 = new TextInputBuilder()
+    .setCustomId('tp2')
+    .setLabel('TP2 (optional)')
+    .setPlaceholder('e.g., 121,201')
+    .setRequired(false)
+    .setStyle(TextInputStyle.Short);
+
+  const reason = new TextInputBuilder()
+    .setCustomId('reason')
+    .setLabel('Reason (optional)')
+    .setPlaceholder('Notes about this setup')
+    .setRequired(false)
+    .setStyle(TextInputStyle.Paragraph);
+
+  return modal
+    .addComponents(new ActionRowBuilder().addComponents(entry))
+    .addComponents(new ActionRowBuilder().addComponents(sl))
+    .addComponents(new ActionRowBuilder().addComponents(tp1))
+    .addComponents(new ActionRowBuilder().addComponents(tp2))
+    .addComponents(new ActionRowBuilder().addComponents(reason));
+}
 
 function buildPickComponents(userId) {
   const pick = pickState.get(userId) || {};
 
   const assetMenu = new StringSelectMenuBuilder()
     .setCustomId('pick|asset')
-    .setPlaceholder('Pick Asset (or choose Other…)')
+    .setPlaceholder(
+      pick.assetWasCustom && pick.asset ? `Asset: ${pick.asset}` : 'Pick Asset (or choose Other…)'
+    )
     .addOptions(
       { label: 'BTC', value: 'BTC', default: pick.asset === 'BTC' },
       { label: 'ETH', value: 'ETH', default: pick.asset === 'ETH' },
       { label: 'SOL', value: 'SOL', default: pick.asset === 'SOL' },
-      { label: 'Other…', value: 'OTHER', default: pick.asset === 'OTHER' },
+      { label: 'Other…', value: 'OTHER', default: pick.assetWasCustom === true }
     );
 
   const sideMenu = new StringSelectMenuBuilder()
     .setCustomId('pick|side')
     .setPlaceholder('Pick Side')
     .addOptions(
-      { label: 'Long',  value: 'LONG',  default: pick.side === 'LONG'  },
+      { label: 'Long', value: 'LONG', default: pick.side === 'LONG' },
       { label: 'Short', value: 'SHORT', default: pick.side === 'SHORT' },
     );
 
@@ -345,438 +234,292 @@ function buildPickComponents(userId) {
   ];
 }
 
-/* -------- create modals (Step A + Step B via button) -------- */
-
-function modalStepA(preset) {
-  const modal = new ModalBuilder()
-    .setCustomId('signal-create-a')
-    .setTitle(`Create ${preset.asset || ''} ${preset.side || ''} Signal`);
-
-  const entry   = new TextInputBuilder().setCustomId('entry').setLabel('Entry *').setPlaceholder('e.g., 108,201 or 108,100–108,300').setStyle(TextInputStyle.Short).setRequired(true);
-  const sl      = new TextInputBuilder().setCustomId('sl').setLabel('SL (optional)').setPlaceholder('e.g., 100,201').setStyle(TextInputStyle.Short).setRequired(false);
-  const reason  = new TextInputBuilder().setCustomId('reason').setLabel('Reason (optional)').setPlaceholder('Notes about this setup').setStyle(TextInputStyle.Paragraph).setRequired(false);
-  const extra   = new TextInputBuilder().setCustomId('extra').setLabel('Extra role to tag (optional)').setPlaceholder('paste @Role, role ID, or role name').setStyle(TextInputStyle.Short).setRequired(false);
-
-  return modal.addComponents(
-    new ActionRowBuilder().addComponents(entry),
-    new ActionRowBuilder().addComponents(sl),
-    new ActionRowBuilder().addComponents(reason),
-    new ActionRowBuilder().addComponents(extra),
-  );
-}
-
-function modalStepB() {
-  const modal = new ModalBuilder().setCustomId('signal-create-b').setTitle('Targets (optional)');
-
-  const tp1 = new TextInputBuilder().setCustomId('tp1').setLabel('TP1 (optional)').setPlaceholder('e.g., 110,000').setStyle(TextInputStyle.Short).setRequired(false);
-  const tp2 = new TextInputBuilder().setCustomId('tp2').setLabel('TP2 (optional)').setPlaceholder('e.g., 121,201').setStyle(TextInputStyle.Short).setRequired(false);
-  const tp3 = new TextInputBuilder().setCustomId('tp3').setLabel('TP3 (optional)').setPlaceholder('e.g., 132,500').setStyle(TextInputStyle.Short).setRequired(false);
-
-  return modal.addComponents(
-    new ActionRowBuilder().addComponents(tp1),
-    new ActionRowBuilder().addComponents(tp2),
-    new ActionRowBuilder().addComponents(tp3),
-  );
-}
-
-function draftPromptRows() {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('draft|targets').setLabel('Add Targets').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('draft|post').setLabel('Post Now').setStyle(ButtonStyle.Success),
-    ),
-  ];
-}
-
-/* ---------------- interactions ---------------- */
-
-client.once('ready', async () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-  await snapshotOwnerIdentity(); // set STATIC_NAME / STATIC_AVATAR_URL
-
-  // Ensure the summary shows “no trades” even before first signal
-  try {
-    if (config.currentTradesChannelId) {
-      await updateSummary(config.currentTradesChannelId);
-    }
-  } catch (e) {
-    console.error('initial updateSummary failed:', e);
-  }
-});
+/* ----------------- Interactions ----------------- */
 
 client.on('interactionCreate', async (interaction) => {
   try {
-    // /signal command -> start pick
-    if (interaction.isChatInputCommand && interaction.isChatInputCommand() && interaction.commandName === 'signal') {
-      pickState.set(interaction.user.id, { asset: null, side: null, channelId: interaction.channelId });
-      await interaction.reply({ content: 'Pick Asset & Side, then Continue:', components: buildPickComponents(interaction.user.id), flags: 64 });
-      return;
-    }
-
-    // pick selections (asset/side)
-    if (interaction.isStringSelectMenu && interaction.isStringSelectMenu() && interaction.customId.startsWith('pick|')) {
-      const which = interaction.customId.split('|')[1];
-      const pick = pickState.get(interaction.user.id) || { channelId: interaction.channelId };
-      if (which === 'asset') pick.asset = interaction.values[0];
-      if (which === 'side')  pick.side  = interaction.values[0];
-      pickState.set(interaction.user.id, pick);
-
-      await interaction.update({
+    // /signal
+    if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
+      pickState.set(interaction.user.id, { channelId: interaction.channelId });
+      await interaction.reply({
         content: 'Pick Asset & Side, then Continue:',
         components: buildPickComponents(interaction.user.id),
+        ephemeral: true,
       });
       return;
     }
 
-    // continue button -> open first modal
-    if (interaction.isButton && interaction.isButton() && interaction.customId === 'pick|continue') {
+    // asset select
+    if (interaction.isStringSelectMenu() && interaction.customId === 'pick|asset') {
+      const pick = pickState.get(interaction.user.id) || { channelId: interaction.channelId };
+      if (interaction.values[0] === 'OTHER') {
+        pick.assetWasCustom = true;
+        pickState.set(interaction.user.id, pick);
+        await interaction.showModal(modalAssetCustom());
+        return;
+      }
+      pick.asset = interaction.values[0];
+      pick.assetWasCustom = false;
+      pickState.set(interaction.user.id, pick);
+      await interaction.update({ content: 'Pick Asset & Side, then Continue:', components: buildPickComponents(interaction.user.id) });
+      return;
+    }
+
+    // side select
+    if (interaction.isStringSelectMenu() && interaction.customId === 'pick|side') {
+      const pick = pickState.get(interaction.user.id) || { channelId: interaction.channelId };
+      pick.side = interaction.values[0];
+      pickState.set(interaction.user.id, pick);
+      await interaction.update({ content: 'Pick Asset & Side, then Continue:', components: buildPickComponents(interaction.user.id) });
+      return;
+    }
+
+    // custom asset modal submit
+    if (interaction.isModalSubmit() && interaction.customId === 'asset-custom') {
+      let symbol = interaction.fields.getTextInputValue('asset') || '';
+      symbol = symbol.toUpperCase().trim().replace(/\s+/g, '');
+      symbol = symbol.replace(/[^A-Z0-9/.\-]/g, '').slice(0, 20);
+      if (!symbol) return interaction.reply({ content: 'Please enter a valid asset symbol.', ephemeral: true });
+
+      const pick = pickState.get(interaction.user.id) || { channelId: interaction.channelId };
+      pick.asset = symbol;
+      pick.assetWasCustom = true;
+      pickState.set(interaction.user.id, pick);
+
+      await interaction.reply({ content: 'Pick Asset & Side, then Continue:', components: buildPickComponents(interaction.user.id), ephemeral: true });
+      return;
+    }
+
+    // continue → open form
+    if (interaction.isButton() && interaction.customId === 'pick|continue') {
       const pick = pickState.get(interaction.user.id);
       if (!pick?.asset || !pick?.side) {
-        await interaction.update({ content: 'Pick Asset & Side, then Continue:', components: buildPickComponents(interaction.user.id) });
-        return;
+        return interaction.reply({ content: 'Pick an asset and side first.', ephemeral: true });
       }
-      await interaction.showModal(modalStepA(pick));
+      const title = `Create ${pick.asset} ${pick.side} Signal`;
+      await interaction.showModal(modalSignalForm(title));
       return;
     }
 
-    // create step A submit -> show ephemeral prompt with buttons
-    if (interaction.isModalSubmit && interaction.isModalSubmit() && interaction.customId === 'signal-create-a') {
-      const pick = pickState.get(interaction.user.id) || {};
-      const data = {
-        asset: pick.asset || 'ASSET',
-        side: pick.side || 'LONG',
-        entry: oneLine(interaction.fields.getTextInputValue('entry')),
-        sl:    oneLine(interaction.fields.getTextInputValue('sl') || ''),
-        reason: interaction.fields.getTextInputValue('reason') || '',
-        extraRole: interaction.fields.getTextInputValue('extra') || '',
-        channelId: pick.channelId || interaction.channelId,
-      };
-      draftState.set(interaction.user.id, data);
+    // create signal form submit
+    if (interaction.isModalSubmit() && interaction.customId === 'signal-create-b') {
+      const pick = pickState.get(interaction.user.id);
+      if (!pick?.asset || !pick?.side) {
+        return interaction.reply({ content: 'Session expired. Run /signal again.', ephemeral: true });
+      }
 
-      await interaction.reply({
-        content: 'Add targets (optional) or post now:',
-        components: draftPromptRows(),
-        flags: 64,
-      });
-      return;
-    }
+      const entry  = interaction.fields.getTextInputValue('entry')?.trim() || '';
+      const sl     = interaction.fields.getTextInputValue('sl')?.trim() || '';
+      const tp1    = interaction.fields.getTextInputValue('tp1')?.trim() || '';
+      const tp2    = interaction.fields.getTextInputValue('tp2')?.trim() || '';
+      const reason = interaction.fields.getTextInputValue('reason')?.trim() || '';
 
-    // draft buttons
-    if (interaction.isButton && interaction.isButton() && interaction.customId === 'draft|targets') {
-      const draft = draftState.get(interaction.user.id);
-      if (!draft) return await interaction.reply({ content: 'Draft not found. Run /signal again.', flags: 64 });
-      await interaction.showModal(modalStepB());
-      return;
-    }
-
-    if (interaction.isButton && interaction.isButton() && interaction.customId === 'draft|post') {
-      const draft = draftState.get(interaction.user.id);
-      if (!draft) return await interaction.reply({ content: 'Draft not found. Run /signal again.', flags: 64 });
-
-      const channel       = await client.channels.fetch(draft.channelId);
-      const hook          = await getOrCreateWebhook(channel, config.webhookName, STATIC_AVATAR_URL);
-      const hookClient    = new WebhookClient({ id: hook.id, token: hook.token });
-
-      const extraRoleId = parseExtraRole(draft.extraRole, interaction.guild);
+      const channel = await client.channels.fetch(pick.channelId);
+      const guildId = channel.guildId;
 
       const signal = {
-        id: uuidv4(),
-        guildId: interaction.guildId,
+        id: require('crypto').randomUUID(),
+        guildId,
         channelId: channel.id,
-        asset: draft.asset,
-        side:  draft.side,
-        entry: draft.entry,
-        sl:    draft.sl,
-        tp1: '', tp2: '', tp3: '',
-        tp1Pct: null, tp2Pct: null, tp3Pct: null,
-        rationale: draft.reason,
-        extraRoleId,
-        status: 'RUNNING_VALID',
-        latestTpHit: null,
-        ownerId: interaction.user.id,
-        createdAt: Date.now(),
-        webhookId: hook.id,
-        webhookToken: hook.token,
         messageId: null,
+        createdBy: interaction.user.id,
+        asset: pick.asset,
+        side: pick.side,
+        entry: entry || '-',
+        sl: sl || '-',
+        tp1: tp1 || '',
+        tp2: tp2 || '',
+        tp3: '',                // omitted in modal due to 5-row limit
+        reason,
+        createdAt: new Date().toISOString(),
         closedAt: null,
+        status: 'RUNNING_VALID', // RUNNING_VALID | RUNNING_BE | STOPPED_OUT | STOPPED_BE | CLOSED
+        latestTpHit: null        // '1' | '2' | '3'
       };
 
-      const sent = await hookClient.send({
-        content: renderTrade(signal),
-        username: STATIC_NAME || interaction.user.username,
-        avatarURL: STATIC_AVATAR_URL || interaction.user.displayAvatarURL({ size: 128 }),
-        allowedMentions: buildAllowedMentions(extraRoleId),
-      });
-      signal.messageId = sent.id;
-      store.upsert(signal);
+      // content with single-blank-line spacing between sections
+      const sections = [
+        titleFor(signal),
+        blockTradeDetails(signal),
+      ];
+      if (signal.reason) sections.push(blockReason(signal));
+      sections.push(blockStatus(signal));
 
-      // PRIVATE controls thread only; also send an ephemeral link
+      const mentionRole = config.mentionRoleId ? `<@&${config.mentionRoleId}>` : '';
+      if (mentionRole) sections.push(mentionRole);
+
+      const content = sections.join('\n\n');
+
+      // prefer webhook identity
+      let posted;
       try {
-        const me = await channel.guild.members.fetch(interaction.user.id);
-        const thread = await channel.threads.create({
-          name: `Controls • ${signal.asset} ${signal.side} • ${interaction.user.username}`,
-          autoArchiveDuration: 1440,
-          type: ChannelType.PrivateThread,
-          invitable: false,
-          startMessage: sent,
-        });
-        await thread.members.add(me.id).catch(() => {});
-        await thread.send({ content: 'Your controls:', components: controls(signal) });
-
-        const threadUrl = `https://discord.com/channels/${signal.guildId}/${thread.id}`;
-        await interaction.followUp({ content: `Opened your private controls thread → ${threadUrl}`, flags: 64 });
-      } catch (e) {
-        console.error('controls-thread error:', e);
-        await interaction.followUp({
-          content: 'Could not create a private control thread. Check bot permissions (Create Private Threads / Manage Threads).',
-          flags: 64,
-        }).catch(() => {});
+        const avatarToUse = STATIC_AVATAR_URL || await getOwnerAvatar(channel.guild);
+        const hook = await getOrCreateWebhook(channel, STATIC_NAME, avatarToUse);
+        const wc = new WebhookClient({ id: hook.id, token: hook.token });
+        posted = await wc.send({ content, username: STATIC_NAME, avatarURL: avatarToUse || undefined });
+      } catch {
+        posted = await channel.send(content);
       }
 
-      pickState.delete(interaction.user.id);
-      draftState.delete(interaction.user.id);
+      signal.messageId = posted.id;
+      store.saveSignal(signal);
 
-      await interaction.update({ content: 'Signal posted.', components: [], flags: 64 });
-      await updateSummary(channel.id);
+      // private controls thread + link back
+      try {
+        const link = await createPrivateControlsThread(signal, channel, interaction.user.id);
+        await interaction.reply({ content: `Signal posted. Open your private controls thread → ${link}`, ephemeral: true });
+      } catch (e) {
+        console.error('controls-thread error:', e);
+        await interaction.reply({
+          content: 'Signal posted. (Could not create a private controls thread — check bot permissions: Create Private Threads, Send Messages in Threads, Manage Threads.)',
+          ephemeral: true,
+        });
+      }
+
+      await updateSummary(channel.id).catch(() => {});
       return;
     }
 
-    // create step B submit -> post with targets
-    if (interaction.isModalSubmit && interaction.isModalSubmit() && interaction.customId === 'signal-create-b') {
-      const draft = draftState.get(interaction.user.id);
-      if (!draft) { await interaction.reply({ content: 'Something went wrong. Please try /signal again.', flags: 64 }); return; }
-
-      const tp1 = oneLine(interaction.fields.getTextInputValue('tp1') || '');
-      const tp2 = oneLine(interaction.fields.getTextInputValue('tp2') || '');
-      const tp3 = oneLine(interaction.fields.getTextInputValue('tp3') || '');
-
-      const channel       = await client.channels.fetch(draft.channelId);
-      const hook          = await getOrCreateWebhook(channel, config.webhookName, STATIC_AVATAR_URL);
-      const hookClient    = new WebhookClient({ id: hook.id, token: hook.token });
-      const extraRoleId   = parseExtraRole(draft.extraRole, interaction.guild);
-
-      const signal = {
-        id: uuidv4(),
-        guildId: interaction.guildId,
-        channelId: channel.id,
-        asset: draft.asset,
-        side:  draft.side,
-        entry: draft.entry,
-        sl:    draft.sl,
-        tp1, tp2, tp3,
-        tp1Pct: null, tp2Pct: null, tp3Pct: null,
-        rationale: draft.reason,
-        extraRoleId,
-        status: 'RUNNING_VALID',
-        latestTpHit: null,
-        ownerId: interaction.user.id,
-        createdAt: Date.now(),
-        webhookId: hook.id,
-        webhookToken: hook.token,
-        messageId: null,
-        closedAt: null,
-      };
-
-      const sent = await hookClient.send({
-        content: renderTrade(signal),
-        username: STATIC_NAME || interaction.user.username,
-        avatarURL: STATIC_AVATAR_URL || interaction.user.displayAvatarURL({ size: 128 }),
-        allowedMentions: buildAllowedMentions(extraRoleId),
-      });
-      signal.messageId = sent.id;
-      store.upsert(signal);
-
-      // PRIVATE controls thread only; also send an ephemeral link
-      try {
-        const me = await channel.guild.members.fetch(interaction.user.id);
-        const thread = await channel.threads.create({
-          name: `Controls • ${signal.asset} ${signal.side} • ${interaction.user.username}`,
-          autoArchiveDuration: 1440,
-          type: ChannelType.PrivateThread,
-          invitable: false,
-          startMessage: sent,
-        });
-        await thread.members.add(me.id).catch(() => {});
-        await thread.send({ content: 'Your controls:', components: controls(signal) });
-
-        const threadUrl = `https://discord.com/channels/${signal.guildId}/${thread.id}`;
-        await interaction.followUp({ content: `Opened your private controls thread → ${threadUrl}`, flags: 64 });
-      } catch (e) {
-        console.error('controls-thread error:', e);
-        await interaction.followUp({
-          content: 'Could not create a private control thread. Check bot permissions (Create Private Threads / Manage Threads).',
-          flags: 64,
-        }).catch(() => {});
+    // private thread controls
+    if (interaction.isButton() && interaction.customId.startsWith('ctrl|')) {
+      const [, action, id] = interaction.customId.split('|');
+      const signal = store.getSignal(id);
+      if (!signal) {
+        await interaction.reply({ content: 'Signal not found (maybe deleted).', ephemeral: true });
+        return;
       }
-
-      pickState.delete(interaction.user.id);
-      draftState.delete(interaction.user.id);
-
-      await interaction.reply({ content: 'Signal posted.', flags: 64 });
-      await updateSummary(channel.id);
-      return;
-    }
-
-    // ----- controls handlers -----
-    if (interaction.isButton && interaction.isButton() && interaction.customId.startsWith('signal|')) {
-      const [, id, action, extra] = interaction.customId.split('|');
-
-      let signal = store.getById(id) || store.getByMessageId(interaction.message?.id);
-      if (!signal) return await interaction.reply({ content: 'Signal not found.', flags: 64 });
-      if (!canManage(interaction, signal)) return await interaction.reply({ content: 'No permission.', flags: 64 });
-
-      const hook = new WebhookClient({ id: signal.webhookId, token: signal.webhookToken });
-
-      if (action === 'status') {
-        signal.status = extra; // RUNNING_VALID / RUNNING_BE
-        store.upsert(signal);
-        await hook.editMessage(signal.messageId, { content: renderTrade(signal) });
-        await interaction.reply({ content: 'Status updated.', flags: 64 });
-        await updateSummary(signal.channelId);
+      if (interaction.user.id !== signal.createdBy) {
+        await interaction.reply({ content: 'Only the signal owner can use these controls.', ephemeral: true });
         return;
       }
 
-      if (action === 'tp') {
-        if (!['1','2','3'].includes(extra)) return await interaction.reply({ content: 'Invalid TP.', flags: 64 });
-        signal.latestTpHit = extra;
-        store.upsert(signal);
-        await hook.editMessage(signal.messageId, { content: renderTrade(signal) });
-        await interaction.reply({ content: `Marked TP${extra} hit.`, flags: 64 });
-        await updateSummary(signal.channelId);
-        return;
-      }
+      if (action === 'tp1') signal.latestTpHit = '1';
+      if (action === 'tp2') signal.latestTpHit = '2';
+      if (action === 'tp3') signal.latestTpHit = '3';
 
-      if (action === 'close') {
-        signal.closedAt = Date.now();
-        store.upsert(signal);
-        await hook.editMessage(signal.messageId, { content: renderTrade(signal) });
-        await interaction.reply({ content: 'Trade closed.', flags: 64 });
-        await updateSummary(signal.channelId);
-        return;
-      }
-
-      if (action === 'reason') {
-        const modal = new ModalBuilder().setCustomId(`reason-edit|${signal.id}`).setTitle('Add / Update Reason');
-        const input = new TextInputBuilder().setCustomId('reason').setLabel('Reason (optional)').setPlaceholder('Notes about this setup').setStyle(TextInputStyle.Paragraph).setRequired(false).setValue(signal.rationale || '');
-        return await interaction.showModal(modal.addComponents(new ActionRowBuilder().addComponents(input)));
-      }
-
-      if (action === 'edit') {
-        const modal = new ModalBuilder().setCustomId(`signal-edit|${signal.id}`).setTitle('Edit Fields');
-
-        const entry = new TextInputBuilder().setCustomId('entry').setLabel('Entry').setPlaceholder('e.g., 108,201 or 108,100–108,300').setStyle(TextInputStyle.Short).setRequired(true).setValue(signal.entry || '');
-        const sl    = new TextInputBuilder().setCustomId('sl').setLabel('SL').setPlaceholder('e.g., 100,201').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.sl || '');
-        const tp1   = new TextInputBuilder().setCustomId('tp1').setLabel('TP1 (optional)').setPlaceholder('e.g., 110,000').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.tp1 || '');
-        const tp2   = new TextInputBuilder().setCustomId('tp2').setLabel('TP2 (optional)').setPlaceholder('e.g., 121,201').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.tp2 || '');
-        const tp3   = new TextInputBuilder().setCustomId('tp3').setLabel('TP3 (optional)').setPlaceholder('e.g., 132,500').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.tp3 || '');
-
-        return await interaction.showModal(
-          modal.addComponents(
-            new ActionRowBuilder().addComponents(entry),
-            new ActionRowBuilder().addComponents(sl),
-            new ActionRowBuilder().addComponents(tp1),
-            new ActionRowBuilder().addComponents(tp2),
-            new ActionRowBuilder().addComponents(tp3),
-          )
-        );
-      }
+      if (action === 'running_valid') signal.status = 'RUNNING_VALID';
+      if (action === 'running_be')     signal.status = 'RUNNING_BE';
+      if (action === 'stopped_out')    signal.status = 'STOPPED_OUT';
+      if (action === 'stopped_be')     signal.status = 'STOPPED_BE';
 
       if (action === 'delete') {
         try {
-          await new WebhookClient({ id: signal.webhookId, token: signal.webhookToken }).deleteMessage(signal.messageId);
+          const ch = await client.channels.fetch(signal.channelId);
+          const msg = await ch.messages.fetch(signal.messageId);
+          await msg.delete().catch(() => {});
         } catch {}
-        store.removeById(signal.id);
-        await interaction.reply({ content: 'Signal deleted.', flags: 64 });
-        await updateSummary(signal.channelId);
+        store.deleteSignal(signal.id);
+        await interaction.reply({ content: 'Deleted.', ephemeral: true });
+        await updateSummary(signal.channelId).catch(() => {});
         return;
       }
-    }
 
-    // TP % select + custom modal
-    if (interaction.isStringSelectMenu && interaction.isStringSelectMenu() && interaction.customId.startsWith('signal|')) {
-      const [, id, kind, which] = interaction.customId.split('|');
-
-      let signal = store.getById(id) || store.getByMessageId(interaction.message?.id);
-      if (!signal) return await interaction.reply({ content: 'Signal not found.', flags: 64 });
-      if (!canManage(interaction, signal)) return await interaction.reply({ content: 'No permission.', flags: 64 });
-
-      const choice = interaction.values[0];
-      if (kind !== 'tppct' || !['1','2','3'].includes(which)) return await interaction.reply({ content: 'Invalid selection.', flags: 64 });
-
-      if (choice === 'custom') {
-        const modal = new ModalBuilder().setCustomId(`tppct-custom|${signal.id}|${which}`).setTitle(`TP${which} % (1–100)`);
-        const input = new TextInputBuilder().setCustomId('pct').setLabel('Percent out').setPlaceholder('e.g., 33').setStyle(TextInputStyle.Short).setRequired(true);
-        return await interaction.showModal(modal.addComponents(new ActionRowBuilder().addComponents(input)));
-      }
-
-      signal[`tp${which}Pct`] = (choice === 'clear') ? null : parseInt(choice, 10);
-      store.upsert(signal);
-      await new WebhookClient({ id: signal.webhookId, token: signal.webhookToken }).editMessage(signal.messageId, { content: renderTrade(signal) });
-      await interaction.update({ components: controls(signal) });
-      await updateSummary(signal.channelId);
-      return;
-    }
-
-    if (interaction.isModalSubmit && interaction.isModalSubmit() && interaction.customId.startsWith('tppct-custom|')) {
-      const [, id, which] = interaction.customId.split('|');
-      let signal = store.getById(id) || store.getByMessageId(interaction.message?.id);
-      if (!signal) return await interaction.reply({ content: 'Signal not found.', flags: 64 });
-      if (!canManage(interaction, signal)) return await interaction.reply({ content: 'No permission.', flags: 64 });
-
-      const val = parseInt(oneLine(interaction.fields.getTextInputValue('pct')), 10);
-      if (!(val >= 1 && val <= 100)) return await interaction.reply({ content: 'Enter a number between 1 and 100.', flags: 64 });
-
-      signal[`tp${which}Pct`] = val;
-      store.upsert(signal);
-      await new WebhookClient({ id: signal.webhookId, token: signal.webhookToken }).editMessage(signal.messageId, { content: renderTrade(signal) });
-      await interaction.reply({ content: `Set TP${which} to ${val}%.`, flags: 64 });
-      await updateSummary(signal.channelId);
-      return;
-    }
-
-    // Reason update
-    if (interaction.isModalSubmit && interaction.isModalSubmit() && interaction.customId.startsWith('reason-edit|')) {
-      const [, id] = interaction.customId.split('|');
-      let signal = store.getById(id) || store.getByMessageId(interaction.message?.id);
-      if (!signal) return await interaction.reply({ content: 'Signal not found.', flags: 64 });
-      if (!canManage(interaction, signal)) return await interaction.reply({ content: 'No permission.', flags: 64 });
-
-      signal.rationale = interaction.fields.getTextInputValue('reason') || '';
-      store.upsert(signal);
-      await new WebhookClient({ id: signal.webhookId, token: signal.webhookToken }).editMessage(signal.messageId, { content: renderTrade(signal) });
-      await interaction.reply({ content: 'Reason updated.', flags: 64 });
-      await updateSummary(signal.channelId);
-      return;
-    }
-
-    // Edit fields modal submit
-    if (interaction.isModalSubmit && interaction.isModalSubmit() && interaction.customId.startsWith('signal-edit|')) {
-      const [, id] = interaction.customId.split('|');
-      let signal = store.getById(id) || store.getByMessageId(interaction.message?.id);
-      if (!signal) return await interaction.reply({ content: 'Signal not found.', flags: 64 });
-      if (!canManage(interaction, signal)) return await interaction.reply({ content: 'No permission.', flags: 64 });
-
-      signal.entry = oneLine(interaction.fields.getTextInputValue('entry'));
-      signal.sl    = oneLine(interaction.fields.getTextInputValue('sl') || '');
-      signal.tp1   = oneLine(interaction.fields.getTextInputValue('tp1') || '');
-      signal.tp2   = oneLine(interaction.fields.getTextInputValue('tp2') || '');
-      signal.tp3   = oneLine(interaction.fields.getTextInputValue('tp3') || '');
-
-      store.upsert(signal);
-      await new WebhookClient({ id: signal.webhookId, token: signal.webhookToken }).editMessage(signal.messageId, { content: renderTrade(signal) });
-      await interaction.reply({ content: 'Fields updated.', flags: 64 });
-      await updateSummary(signal.channelId);
+      store.saveSignal(signal);
+      await interaction.deferUpdate();
+      await updateSummary(signal.channelId).catch(() => {});
       return;
     }
 
   } catch (err) {
     console.error('interactionCreate error:', err);
-    try {
-      if (interaction.isRepliable && interaction.isRepliable()) {
-        await interaction.reply({ content: 'An error occurred. Check bot logs.', flags: 64 });
-      }
-    } catch {}
+    try { await interaction.reply({ content: 'An error occurred. Check bot logs.', ephemeral: true }); } catch {}
   }
 });
 
+/* -------------- Summary (single message) --------------- */
+
+function eligibleForSummary(s) {
+  if (s.closedAt) return false;
+  return s.status === 'RUNNING_VALID';
+}
+
+async function updateSummary(forChannelId) {
+  const summaryChannelId = config.currentTradesChannelId || forChannelId;
+  if (!summaryChannelId) return;
+
+  const channel = await client.channels.fetch(summaryChannelId);
+  const all = store.listAll();
+  const active = all.filter(eligibleForSummary);
+
+  let content;
+  if (active.length === 0) {
+    content = `${SUMMARY_HEADER_BOLD}
+• There are currently no ongoing trades valid for entry — stay posted for future trades.`;
+  } else {
+    const blocks = active.map((s, idx) => {
+      const jump = `https://discord.com/channels/${s.guildId}/${s.channelId}/${s.messageId}`;
+      const entry = `➡️ Entry: ${s.entry || '-'}`;
+      const sl    = `🛑 Stop Loss: ${s.sl || '-'}`;
+      let nextTp = '';
+      if (!s.latestTpHit && s.tp1)               nextTp = `🎯 TP1: ${s.tp1}`;
+      else if (s.latestTpHit === '1' && s.tp2)   nextTp = `🎯 TP2: ${s.tp2}`;
+      else if (s.latestTpHit === '2' && s.tp3)   nextTp = `🎯 TP3: ${s.tp3}`;
+      const title = `${idx + 1}. ${s.asset.toUpperCase()} ${s.side === 'LONG' ? 'Long 🟢' : 'Short 🔴'} — [jump](${jump})`;
+      return [title, entry, sl, nextTp].filter(Boolean).join('\n');
+    });
+    content = `${SUMMARY_HEADER_BOLD}\n\n${blocks.join('\n\n')}`;
+  }
+
+  // edit if we have a stored message id
+  let keepId = store.getSummaryMessageId(summaryChannelId);
+  if (keepId) {
+    try {
+      const msg = await channel.messages.fetch(keepId);
+      await msg.edit(content);
+      const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+      recent?.filter(m => typeof m.content === 'string' && m.content.startsWith(SUMMARY_HEADER_BOLD) && m.id !== keepId)
+             ?.forEach(m => m.delete().catch(() => {}));
+      return;
+    } catch {
+      // fall through
+    }
+  }
+
+  // reuse an existing summary
+  let existing = null;
+  try {
+    const recent = await channel.messages.fetch({ limit: 50 });
+    existing = recent.find(m =>
+      typeof m.content === 'string' && m.content.startsWith(SUMMARY_HEADER_BOLD)
+    ) || null;
+  } catch {}
+
+  if (existing) {
+    await existing.edit(content);
+    store.setSummaryMessageId(summaryChannelId, existing.id);
+    try {
+      const recent = await channel.messages.fetch({ limit: 50 });
+      recent.filter(m =>
+        typeof m.content === 'string' &&
+        m.content.startsWith(SUMMARY_HEADER_BOLD) &&
+        m.id !== existing.id
+      ).forEach(m => m.delete().catch(() => {}));
+    } catch {}
+    return;
+  }
+
+  // create new (prefer webhook identity)
+  try {
+    const avatarToUse = STATIC_AVATAR_URL || await getOwnerAvatar(channel.guild);
+    const hook        = await getOrCreateWebhook(channel, 'JV Current Trades', avatarToUse);
+    const wc          = new WebhookClient({ id: hook.id, token: hook.token });
+    const sent        = await wc.send({ content, username: STATIC_NAME, avatarURL: avatarToUse || undefined });
+    store.setSummaryMessageId(summaryChannelId, sent.id);
+  } catch {
+    const sent = await channel.send(content);
+    store.setSummaryMessageId(summaryChannelId, sent.id);
+  }
+
+  // clean any duplicates
+  try {
+    const recent = await channel.messages.fetch({ limit: 50 });
+    recent.filter(m =>
+      typeof m.content === 'string' &&
+      m.content.startsWith(SUMMARY_HEADER_BOLD) &&
+      m.id !== store.getSummaryMessageId(summaryChannelId)
+    ).forEach(m => m.delete().catch(() => {}));
+  } catch {}
+}
+
+/* ---------------- Start ---------------- */
 client.login(config.token);
