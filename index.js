@@ -28,6 +28,24 @@ const client = new Client({
   partials: [Partials.Channel],
 });
 
+/* ---------------- static identity snapshot ---------------- */
+let STATIC_NAME = null;
+let STATIC_AVATAR_URL = null;
+async function snapshotOwnerIdentity() {
+  try {
+    if (!config.ownerId) return;
+    const g = await client.guilds.fetch(config.guildId).catch(() => null);
+    if (!g) return;
+    const m = await g.members.fetch(config.ownerId).catch(() => null);
+    if (!m) return;
+    STATIC_NAME = m.displayName || m.user.username;
+    STATIC_AVATAR_URL = m.user.displayAvatarURL({ size: 128 });
+    console.log(`🆔 Using static identity -> name: ${STATIC_NAME}`);
+  } catch (e) {
+    console.warn('snapshotOwnerIdentity failed:', e?.message || e);
+  }
+}
+
 /* ---------------- state ---------------- */
 const pickState  = new Map(); // userId -> { asset, side, channelId }
 const draftState = new Map(); // userId -> { asset, side, entry, sl, reason, extraRole, channelId }
@@ -92,11 +110,9 @@ function renderTrade(signal) {
   const sideEmoji = signal.side === 'LONG' ? '🟢' : '🔴';
   const lines = [];
 
-  // Title + robust spacer (no emoji; keep a clear gap)
+  // Big title with exactly ONE preserved gap (no emoji line)
   lines.push(`# ${signal.asset.toUpperCase()} | ${signal.side === 'LONG' ? 'Long' : 'Short'} ${sideEmoji}`);
-  lines.push('');           // regular blank
-  lines.push('\u200B');     // zero-width space line (prevents collapse)
-  lines.push('');           // another blank
+  lines.push('\u200B');   // zero-width spacer -> renders as exactly one blank line
 
   // Details
   lines.push('📊 Trade Details');
@@ -197,7 +213,9 @@ function controls(signal) {
   return rows;
 }
 
-/* -------- summary (JV Current Trades 📊) -------- */
+/* -------- summary (JV Current Active Trades) -------- */
+
+const SUMMARY_HEADER_BOLD = '**📊 JV Current Active Trades 📊**';
 
 function eligibleForSummary(s) {
   if (s.closedAt) return false;
@@ -221,49 +239,65 @@ async function updateSummary(forChannelId) {
     const all = store.listAll();
     const active = all.filter(eligibleForSummary);
 
-    const header = '# JV Current Trades 📊';
-    let content = '';
-
+    let content;
     if (active.length === 0) {
-      content = `${header}\n- There are currently no ongoing trades valid for entry — stay posted for future trades.`;
+      content = `${SUMMARY_HEADER_BOLD}
+• There are currently no ongoing trades valid for entry — stay posted for future trades.`;
     } else {
       const blocks = active.map((s, idx) => {
-        const base = `${idx + 1}. ${s.asset.toUpperCase()} ${s.side === 'LONG' ? 'Long 🟢' : 'Short 🔴'} — [jump](https://discord.com/channels/${s.guildId}/${s.channelId}/${s.messageId})`;
+        const jump = `https://discord.com/channels/${s.guildId}/${s.channelId}/${s.messageId}`;
+        let tpLabel = '', tpValue = '';
+        if (!s.latestTpHit && s.tp1)              { tpLabel = 'TP1'; tpValue = s.tp1; }
+        else if (s.latestTpHit === '1' && s.tp2)  { tpLabel = 'TP2'; tpValue = s.tp2; }
+        else if (s.latestTpHit === '2' && s.tp3)  { tpLabel = 'TP3'; tpValue = s.tp3; }
 
-        let tpLabel = '';
-        let tpValue = '';
-        if (!s.latestTpHit && s.tp1)                { tpLabel = 'Take Profit 1'; tpValue = s.tp1; }
-        else if (s.latestTpHit === '1' && s.tp2)    { tpLabel = 'Take Profit 2'; tpValue = s.tp2; }
-        else if (s.latestTpHit === '2' && s.tp3)    { tpLabel = 'Take Profit 3'; tpValue = s.tp3; }
+        const entry = `➡️ Entry: ${s.entry || '-'}`;
+        const sl    = `🛑 Stop Loss: ${s.sl || '-'}`;
+        const tp    = tpValue ? `🎯 ${tpLabel}: ${tpValue}` : null;
 
-        const entryLine = `➡️ Entry: ${s.entry || '-'}`;
-        const slLine    = `🛑 Stop Loss: ${s.sl || '-'}`;
-        const tpLine    = tpValue ? `🎯 ${tpLabel}: ${tpValue}` : null;
-
-        return [base, entryLine, slLine, tpLine].filter(Boolean).join('\n');
+        return `${idx + 1}. ${s.asset.toUpperCase()} ${s.side === 'LONG' ? 'Long 🟢' : 'Short 🔴'} — [jump](${jump})
+${entry}
+${sl}${tp ? `\n${tp}` : ''}`;
       });
 
-      content = `${header}\n\n${blocks.join('\n\n')}`;
+      content = `${SUMMARY_HEADER_BOLD}\n\n${blocks.join('\n\n')}`;
     }
 
-    // Edit/create summary message (webhook preferred; fallback to bot)
-    const existingId = store.getSummaryMessageId(summaryChannelId);
+    // Try to edit the one we know
+    let existingId = store.getSummaryMessageId(summaryChannelId);
     if (existingId) {
       try {
         const msg = await channel.messages.fetch(existingId);
         await msg.edit(content);
         return;
-      } catch { /* fall through to create */ }
+      } catch { /* fall through to find existing */ }
     }
 
+    // Find an existing one by header, whether webhook or bot sent it
     try {
-      const ownerAvatar = await getOwnerAvatar(channel.guild);
-      const summaryHook = await getOrCreateWebhook(channel, config.summaryWebhookName, ownerAvatar);
+      const recent = await channel.messages.fetch({ limit: 30 });
+      const existing = recent.find(m =>
+        typeof m.content === 'string' &&
+        m.content.startsWith(SUMMARY_HEADER_BOLD) &&
+        (m.webhookId || m.author?.id === client.user.id)
+      );
+      if (existing) {
+        await existing.edit(content);
+        store.setSummaryMessageId(summaryChannelId, existing.id);
+        return;
+      }
+    } catch { /* ignore */ }
+
+    // Create new (webhook preferred with static name/avatar; else bot)
+    try {
+      const nameToUse = STATIC_NAME || 'JV Trades';
+      const avatarToUse = STATIC_AVATAR_URL || (await getOwnerAvatar(channel.guild));
+      const summaryHook = await getOrCreateWebhook(channel, config.summaryWebhookName, avatarToUse);
       const hookClient  = new WebhookClient({ id: summaryHook.id, token: summaryHook.token });
       const sent = await hookClient.send({
         content,
-        username: 'JV Current Trades',
-        avatarURL: ownerAvatar || undefined,
+        username: nameToUse,
+        avatarURL: avatarToUse || undefined,
       });
       store.setSummaryMessageId(summaryChannelId, sent.id);
     } catch {
@@ -358,6 +392,8 @@ function draftPromptRows() {
 
 client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
+  await snapshotOwnerIdentity(); // set STATIC_NAME / STATIC_AVATAR_URL
+
   // Ensure the summary shows “no trades” even before first signal
   try {
     if (config.currentTradesChannelId) {
@@ -438,8 +474,7 @@ client.on('interactionCreate', async (interaction) => {
       if (!draft) return await interaction.reply({ content: 'Draft not found. Run /signal again.', flags: 64 });
 
       const channel       = await client.channels.fetch(draft.channelId);
-      const creatorAvatar = interaction.user.displayAvatarURL({ size: 128 });
-      const hook          = await getOrCreateWebhook(channel, config.webhookName, creatorAvatar);
+      const hook          = await getOrCreateWebhook(channel, config.webhookName, STATIC_AVATAR_URL);
       const hookClient    = new WebhookClient({ id: hook.id, token: hook.token });
 
       const extraRoleId = parseExtraRole(draft.extraRole, interaction.guild);
@@ -468,8 +503,8 @@ client.on('interactionCreate', async (interaction) => {
 
       const sent = await hookClient.send({
         content: renderTrade(signal),
-        username: interaction.user.username,
-        avatarURL: creatorAvatar,
+        username: STATIC_NAME || interaction.user.username,
+        avatarURL: STATIC_AVATAR_URL || interaction.user.displayAvatarURL({ size: 128 }),
         allowedMentions: buildAllowedMentions(extraRoleId),
       });
       signal.messageId = sent.id;
@@ -515,11 +550,10 @@ client.on('interactionCreate', async (interaction) => {
       const tp2 = oneLine(interaction.fields.getTextInputValue('tp2') || '');
       const tp3 = oneLine(interaction.fields.getTextInputValue('tp3') || '');
 
-      const extraRoleId = parseExtraRole(draft.extraRole, interaction.guild);
       const channel       = await client.channels.fetch(draft.channelId);
-      const creatorAvatar = interaction.user.displayAvatarURL({ size: 128 });
-      const hook          = await getOrCreateWebhook(channel, config.webhookName, creatorAvatar);
+      const hook          = await getOrCreateWebhook(channel, config.webhookName, STATIC_AVATAR_URL);
       const hookClient    = new WebhookClient({ id: hook.id, token: hook.token });
+      const extraRoleId   = parseExtraRole(draft.extraRole, interaction.guild);
 
       const signal = {
         id: uuidv4(),
@@ -545,8 +579,8 @@ client.on('interactionCreate', async (interaction) => {
 
       const sent = await hookClient.send({
         content: renderTrade(signal),
-        username: interaction.user.username,
-        avatarURL: creatorAvatar,
+        username: STATIC_NAME || interaction.user.username,
+        avatarURL: STATIC_AVATAR_URL || interaction.user.displayAvatarURL({ size: 128 }),
         allowedMentions: buildAllowedMentions(extraRoleId),
       });
       signal.messageId = sent.id;
