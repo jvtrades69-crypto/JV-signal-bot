@@ -1,31 +1,17 @@
-const dotenv = require('dotenv');
-dotenv.config();
-
-function need(name) {
-  const v = process.env[name];
-  if (!v || !v.trim()) console.warn(`[WARN] ${name} is not set.`);
-  return v;
-}
+// config.js
+require('dotenv').config();
 
 module.exports = {
-  token: need('DISCORD_TOKEN'),
-  clientId: need('CLIENT_ID'),
-  guildId: need('GUILD_ID'),
+  token: process.env.DISCORD_TOKEN,
+  clientId: process.env.CLIENT_ID,
+  guildId: process.env.GUILD_ID,
 
-  ownerId: process.env.OWNER_ID || '',
-  allowedRoleId: process.env.ALLOWED_ROLE_ID || '',
+  // the owner (you) — used for permissions and for avatar identity
+  ownerId: process.env.OWNER_USER_ID || "",
 
-  // Single rolling "Current Trades" message lives here
-  currentTradesChannelId: process.env.CURRENT_TRADES_CHANNEL_ID || '',
+  // ping this role under the signal (optional)
+  mentionRoleId: process.env.MENTION_ROLE_ID || "",
 
-  // Role to tag at bottom of each trade post
-  tradeSignalRoleId: process.env.TRADE_SIGNAL_ROLE_ID || '',
-
-  // Webhook display names
-  webhookName: 'JV Trades',
-  summaryWebhookName: 'JV Current Trades',
-
-  // true -> controls in a private thread attached to the post (only you)
-  // false -> controls as a public reply under the post
-  privateControls: (process.env.PRIVATE_CONTROLS || 'true').toLowerCase() === 'true',
+  // channel where the single "JV Current Active Trades" summary lives
+  currentTradesChannelId: process.env.CURRENT_TRADES_CHANNEL_ID || ""
 };
