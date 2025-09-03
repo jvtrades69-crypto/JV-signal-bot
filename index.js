@@ -34,7 +34,7 @@ client.once('ready', () => {
 
 /* ---------------- state ---------------- */
 const pickState = new Map();     // userId -> { asset, side, channelId }
-const draftState = new Map();    // userId -> { asset, side, entry, sl, reason, extraRole }
+const draftState = new Map();    // userId -> { asset, side, entry, sl, reason, extraRole, channelId }
 
 /* ---------------- helpers ---------------- */
 
@@ -230,7 +230,7 @@ async function updateSummary(forChannelId) {
       content = `${header}\n\n${blocks.join('\n\n')}`;
     }
 
-    // Edit/create summary message (it might be a webhook message or a normal one)
+    // Edit/create summary message
     const existingId = store.getSummaryMessageId(summaryChannelId);
     if (existingId) {
       try {
@@ -238,7 +238,7 @@ async function updateSummary(forChannelId) {
         await msg.edit(content);
         return;
       } catch {
-        // fall through to create new
+        // fall through
       }
     }
     const ownerAvatar = await getOwnerAvatar(channel.guild);
@@ -291,7 +291,7 @@ function buildPickComponents(userId) {
   ];
 }
 
-/* -------- create modals (2 steps) -------- */
+/* -------- create modals (Step A + Step B via button) -------- */
 
 function modalStepA(preset) {
   const modal = new ModalBuilder().setCustomId('signal-create-a').setTitle(`Create ${preset.asset || ''} ${preset.side || ''} Signal`);
@@ -323,6 +323,15 @@ function modalStepB() {
   );
 }
 
+function draftPromptRows() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('draft|targets').setLabel('Add Targets').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('draft|post').setLabel('Post Now').setStyle(ButtonStyle.Success),
+    ),
+  ];
+}
+
 /* ---------------- interactions ---------------- */
 
 client.on('interactionCreate', async (interaction) => {
@@ -334,7 +343,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // pick selections (asset/side) — DO NOT open modal here (fix for showModal on select)
+    // pick selections (asset/side) — do NOT open modal here
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('pick|')) {
       const which = interaction.customId.split('|')[1];
       const pick = pickState.get(interaction.user.id) || { channelId: interaction.channelId };
@@ -344,12 +353,12 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.update({
         content: 'Pick Asset & Side, then Continue:',
-        components: buildPickComponents(interaction.user.id), // Continue enables when both picked
+        components: buildPickComponents(interaction.user.id), // Continue enabled when both chosen
       });
       return;
     }
 
-    // continue button -> open first modal (this path is safe to showModal)
+    // continue button -> open first modal
     if (interaction.isButton() && interaction.customId === 'pick|continue') {
       const pick = pickState.get(interaction.user.id);
       if (!pick?.asset || !pick?.side) {
@@ -360,7 +369,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // create step A submit
+    // create step A submit -> show ephemeral prompt with buttons
     if (interaction.isModalSubmit() && interaction.customId === 'signal-create-a') {
       const pick = pickState.get(interaction.user.id) || {};
       const data = {
@@ -373,11 +382,97 @@ client.on('interactionCreate', async (interaction) => {
         channelId: pick.channelId || interaction.channelId,
       };
       draftState.set(interaction.user.id, data);
-      await interaction.showModal(modalStepB());
+
+      await interaction.reply({
+        content: 'Add targets (optional) or post now:',
+        components: draftPromptRows(),
+        flags: 64,
+      });
       return;
     }
 
-    // create step B submit -> post
+    // draft buttons
+    if (interaction.isButton() && interaction.customId === 'draft|targets') {
+      const draft = draftState.get(interaction.user.id);
+      if (!draft) return await interaction.reply({ content: 'Draft not found. Run /signal again.', flags: 64 });
+      await interaction.showModal(modalStepB());
+      return;
+    }
+    if (interaction.isButton() && interaction.customId === 'draft|post') {
+      const draft = draftState.get(interaction.user.id);
+      if (!draft) return await interaction.reply({ content: 'Draft not found. Run /signal again.', flags: 64 });
+
+      const channel = await client.channels.fetch(draft.channelId);
+      const creatorAvatar = interaction.user.displayAvatarURL({ size: 128 });
+      const hook = await getOrCreateWebhook(channel, config.webhookName, creatorAvatar);
+      const hookClient = new WebhookClient({ id: hook.id, token: hook.token });
+
+      const extraRoleId = parseExtraRole(draft.extraRole);
+
+      const signal = {
+        id: uuidv4(),
+        guildId: interaction.guildId,
+        channelId: channel.id,
+        asset: draft.asset,
+        side: draft.side,
+        entry: draft.entry,
+        sl: draft.sl,
+        tp1: '', tp2: '', tp3: '',
+        tp1Pct: null, tp2Pct: null, tp3Pct: null,
+        rationale: draft.reason,
+        extraRoleId,
+        status: 'RUNNING_VALID',
+        latestTpHit: null,
+        ownerId: interaction.user.id,
+        createdAt: Date.now(),
+        webhookId: hook.id,
+        webhookToken: hook.token,
+        messageId: null,
+        closedAt: null,
+      };
+
+      const sent = await hookClient.send({
+        content: renderTrade(signal),
+        username: interaction.user.username,
+        avatarURL: creatorAvatar,
+        allowedMentions: { parse: ['roles'], roles: [config.tradeSignalRoleId, extraRoleId].filter(Boolean) },
+      });
+      signal.messageId = sent.id;
+      store.upsert(signal);
+
+      // controls with private thread + fallback
+      try {
+        if (config.privateControls) {
+          const me = await channel.guild.members.fetch(interaction.user.id);
+          const thread = await channel.threads.create({
+            name: `Controls • ${signal.asset} ${signal.side} • ${interaction.user.username}`,
+            autoArchiveDuration: 1440,
+            type: ChannelType.PrivateThread,
+            invitable: false,
+            startMessage: sent,
+          });
+          await thread.members.add(me.id).catch(() => {});
+          await thread.send({ content: 'Your controls:', components: controls(signal) });
+        } else {
+          const msg = await channel.messages.fetch(signal.messageId);
+          await msg.reply({ content: 'Controls:', components: controls(signal) });
+        }
+      } catch {
+        try {
+          const msg = await channel.messages.fetch(signal.messageId);
+          await msg.reply({ content: 'Controls:', components: controls(signal) });
+        } catch {}
+      }
+
+      pickState.delete(interaction.user.id);
+      draftState.delete(interaction.user.id);
+
+      await interaction.update({ content: 'Signal posted.', components: [], flags: 64 });
+      await updateSummary(channel.id);
+      return;
+    }
+
+    // create step B submit -> post with targets
     if (interaction.isModalSubmit() && interaction.customId === 'signal-create-b') {
       const draft = draftState.get(interaction.user.id);
       if (!draft) { await interaction.reply({ content: 'Something went wrong. Please try /signal again.', flags: 64 }); return; }
@@ -392,9 +487,8 @@ client.on('interactionCreate', async (interaction) => {
       const hook = await getOrCreateWebhook(channel, config.webhookName, creatorAvatar);
       const hookClient = new WebhookClient({ id: hook.id, token: hook.token });
 
-      const id = uuidv4();
       const signal = {
-        id,
+        id: uuidv4(),
         guildId: interaction.guildId,
         channelId: channel.id,
         asset: draft.asset,
