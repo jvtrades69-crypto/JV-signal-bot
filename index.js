@@ -84,8 +84,10 @@ function renderTrade(signal) {
   const sideEmoji = signal.side === 'LONG' ? '🟢' : '🔴';
   const lines = [];
 
-  // Big title
+  // Title + finger spacer
   lines.push(`# ${signal.asset.toUpperCase()} | ${signal.side === 'LONG' ? 'Long' : 'Short'} ${sideEmoji}`);
+  lines.push('');
+  lines.push('👉');
   lines.push('');
 
   // Details
@@ -117,7 +119,7 @@ function renderTrade(signal) {
   if (active) {
     const reentry = (signal.status === 'RUNNING_BE') ? 'No ( SL set to breakeven )' : 'Yes';
     let first = `📍 Status : Active 🟩 - trade is still running`;
-    if (signal.latestTpHit) first += ` TP${signal.latestTpHit} hit`;
+    if (signal.latestTpHit) first += `\nTP${signal.latestTpHit} hit`;
     lines.push(first);
     lines.push(`Valid for re-entry: ${reentry}`);
   } else {
@@ -343,14 +345,14 @@ function draftPromptRows() {
 client.on('interactionCreate', async (interaction) => {
   try {
     // /signal command -> start pick
-    if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
+    if (interaction.isChatInputCommand && interaction.isChatInputCommand() && interaction.commandName === 'signal') {
       pickState.set(interaction.user.id, { asset: null, side: null, channelId: interaction.channelId });
       await interaction.reply({ content: 'Pick Asset & Side, then Continue:', components: buildPickComponents(interaction.user.id), flags: 64 });
       return;
     }
 
     // pick selections (asset/side) — do NOT open modal here
-    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('pick|')) {
+    if (interaction.isStringSelectMenu && interaction.isStringSelectMenu() && interaction.customId.startsWith('pick|')) {
       const which = interaction.customId.split('|')[1];
       const pick = pickState.get(interaction.user.id) || { channelId: interaction.channelId };
       if (which === 'asset') pick.asset = interaction.values[0];
@@ -365,7 +367,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // continue button -> open first modal
-    if (interaction.isButton() && interaction.customId === 'pick|continue') {
+    if (interaction.isButton && interaction.isButton() && interaction.customId === 'pick|continue') {
       const pick = pickState.get(interaction.user.id);
       if (!pick?.asset || !pick?.side) {
         await interaction.update({ content: 'Pick Asset & Side, then Continue:', components: buildPickComponents(interaction.user.id) });
@@ -376,7 +378,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // create step A submit -> show ephemeral prompt with buttons
-    if (interaction.isModalSubmit() && interaction.customId === 'signal-create-a') {
+    if (interaction.isModalSubmit && interaction.isModalSubmit() && interaction.customId === 'signal-create-a') {
       const pick = pickState.get(interaction.user.id) || {};
       const data = {
         asset: pick.asset || 'ASSET',
@@ -398,13 +400,13 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // draft buttons
-    if (interaction.isButton() && interaction.customId === 'draft|targets') {
+    if (interaction.isButton && interaction.isButton() && interaction.customId === 'draft|targets') {
       const draft = draftState.get(interaction.user.id);
       if (!draft) return await interaction.reply({ content: 'Draft not found. Run /signal again.', flags: 64 });
       await interaction.showModal(modalStepB());
       return;
     }
-    if (interaction.isButton() && interaction.customId === 'draft|post') {
+    if (interaction.isButton && interaction.isButton() && interaction.customId === 'draft|post') {
       const draft = draftState.get(interaction.user.id);
       if (!draft) return await interaction.reply({ content: 'Draft not found. Run /signal again.', flags: 64 });
 
@@ -479,7 +481,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // create step B submit -> post with targets
-    if (interaction.isModalSubmit() && interaction.customId === 'signal-create-b') {
+    if (interaction.isModalSubmit && interaction.isModalSubmit() && interaction.customId === 'signal-create-b') {
       const draft = draftState.get(interaction.user.id);
       if (!draft) { await interaction.reply({ content: 'Something went wrong. Please try /signal again.', flags: 64 }); return; }
 
@@ -557,7 +559,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // ----- controls handlers -----
-    if (interaction.isButton() && interaction.customId.startsWith('signal|')) {
+    if (interaction.isButton && interaction.isButton() && interaction.customId.startsWith('signal|')) {
       const [, id, action, extra] = interaction.customId.split('|');
 
       let signal = store.getById(id);
@@ -633,7 +635,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // TP % select + custom modal
-    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('signal|')) {
+    if (interaction.isStringSelectMenu && interaction.isStringSelectMenu() && interaction.customId.startsWith('signal|')) {
       const [, id, kind, which] = interaction.customId.split('|');
 
       let signal = store.getById(id);
@@ -658,7 +660,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('tppct-custom|')) {
+    if (interaction.isModalSubmit && interaction.isModalSubmit() && interaction.customId.startsWith('tppct-custom|')) {
       const [, id, which] = interaction.customId.split('|');
       let signal = store.getById(id);
       if (!signal) signal = store.getByMessageId(interaction.message?.id);
@@ -677,7 +679,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // Reason update
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('reason-edit|')) {
+    if (interaction.isModalSubmit && interaction.isModalSubmit() && interaction.customId.startsWith('reason-edit|')) {
       const [, id] = interaction.customId.split('|');
       let signal = store.getById(id);
       if (!signal) signal = store.getByMessageId(interaction.message?.id);
@@ -693,7 +695,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // Edit fields modal submit
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('signal-edit|')) {
+    if (interaction.isModalSubmit && interaction.isModalSubmit() && interaction.customId.startsWith('signal-edit|')) {
       const [, id] = interaction.customId.split('|');
       let signal = store.getById(id);
       if (!signal) signal = store.getByMessageId(interaction.message?.id);
@@ -716,7 +718,7 @@ client.on('interactionCreate', async (interaction) => {
   } catch (err) {
     console.error('interactionCreate error:', err);
     try {
-      if (interaction.isRepliable()) {
+      if (interaction.isRepliable && interaction.isRepliable()) {
         await interaction.reply({ content: 'An error occurred. Check bot logs.', flags: 64 });
       }
     } catch {}
