@@ -21,8 +21,9 @@ module.exports = {
   // Role to tag at bottom of each trade post
   tradeSignalRoleId: process.env.TRADE_SIGNAL_ROLE_ID || '',
 
-  // Webhook display name (for the clean non-APP look)
+  // Webhook display names
   webhookName: 'JV Trades',
+  summaryWebhookName: 'JV Current Trades',
 
   // true -> controls in a private thread attached to the post (only you)
   // false -> controls as a public reply under the post
