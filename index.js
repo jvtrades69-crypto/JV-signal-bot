@@ -72,6 +72,12 @@ function parseExtraRole(input) {
   return null;
 }
 
+// Fix for role-mention conflict: use either explicit roles OR parse (not both)
+function buildAllowedMentions(extraRoleId) {
+  const roles = [config.tradeSignalRoleId, extraRoleId].filter(Boolean);
+  return roles.length ? { roles } : { parse: [] };
+}
+
 /* -------- trade post rendering (plain text) -------- */
 
 function renderTrade(signal) {
@@ -435,7 +441,7 @@ client.on('interactionCreate', async (interaction) => {
         content: renderTrade(signal),
         username: interaction.user.username,
         avatarURL: creatorAvatar,
-        allowedMentions: { parse: ['roles'], roles: [config.tradeSignalRoleId, extraRoleId].filter(Boolean) },
+        allowedMentions: buildAllowedMentions(extraRoleId),
       });
       signal.messageId = sent.id;
       store.upsert(signal);
@@ -513,7 +519,7 @@ client.on('interactionCreate', async (interaction) => {
         content: renderTrade(signal),
         username: interaction.user.username,
         avatarURL: creatorAvatar,
-        allowedMentions: { parse: ['roles'], roles: [config.tradeSignalRoleId, extraRoleId].filter(Boolean) },
+        allowedMentions: buildAllowedMentions(extraRoleId),
       });
       signal.messageId = sent.id;
       store.upsert(signal);
