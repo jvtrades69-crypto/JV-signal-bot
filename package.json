@@ -1,7 +1,7 @@
 {
   "name": "jv-signal-bot",
   "version": "1.0.0",
-  "description": "JV Trades signal bot (clean embeds, update panel, no privileged intents)",
+  "description": "JV Trades signal bot",
   "main": "index.js",
   "type": "module",
   "scripts": {
