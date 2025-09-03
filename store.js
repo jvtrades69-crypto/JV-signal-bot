@@ -1,100 +1,70 @@
-const fs = require('fs-extra');
+// store.js
+// Simple JSON persistence for signals + a per-channel summary message ID.
+
+const fs = require('fs');
 const path = require('path');
 
-const FILE = path.join(__dirname, 'signals.json');
-const DEFAULT_DATA = { byId: {}, byMessageId: {}, summaries: {} };
+const DB_PATH = path.join(__dirname, 'signals.json');
 
-function normalize(raw) {
-  const out = { byId: {}, byMessageId: {}, summaries: {} };
-  if (!raw || typeof raw !== 'object') return { ...out };
-
-  if (Array.isArray(raw)) {
-    for (const s of raw) {
-      if (!s || !s.id) continue;
-      out.byId[s.id] = s;
-      if (s.messageId) out.byMessageId[s.messageId] = s.id;
-    }
-    return out;
-  }
-
-  if (raw.byId && typeof raw.byId === 'object') out.byId = raw.byId;
-  if (raw.byMessageId && typeof raw.byMessageId === 'object') out.byMessageId = raw.byMessageId;
-  if (raw.summaries && typeof raw.summaries === 'object') out.summaries = raw.summaries;
-  return out;
-}
-
-function ensureFile() {
-  if (!fs.existsSync(FILE)) {
-    fs.writeJsonSync(FILE, DEFAULT_DATA, { spaces: 2 });
-  } else {
-    try {
-      const raw = fs.readJsonSync(FILE);
-      fs.writeJsonSync(FILE, normalize(raw), { spaces: 2 });
-    } catch {
-      fs.writeJsonSync(FILE, DEFAULT_DATA, { spaces: 2 });
-    }
-  }
-}
-
-function readAll() {
-  ensureFile();
+function load() {
   try {
-    return normalize(fs.readJsonSync(FILE));
+    if (!fs.existsSync(DB_PATH)) {
+      fs.writeFileSync(DB_PATH, JSON.stringify({ signals: [], summaryByChannel: {} }, null, 2));
+    }
+    return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
   } catch {
-    fs.writeJsonSync(FILE, DEFAULT_DATA, { spaces: 2 });
-    return { ...DEFAULT_DATA };
+    return { signals: [], summaryByChannel: {} };
   }
 }
 
-function writeAll(data) {
-  fs.writeJsonSync(FILE, normalize(data), { spaces: 2 });
+function save(db) {
+  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
 }
 
-function upsert(signal) {
-  const data = readAll();
-  data.byId[signal.id] = signal;
-  if (signal.messageId) data.byMessageId[signal.messageId] = signal.id;
-  writeAll(data);
-}
-
-function getById(id) {
-  return readAll().byId[id] || null;
-}
-
-function getByMessageId(mid) {
-  const data = readAll();
-  const id = data.byMessageId[mid];
-  return id ? (data.byId[id] || null) : null;
-}
-
-function removeById(id) {
-  const data = readAll();
-  const sig = data.byId[id];
-  if (sig?.messageId) delete data.byMessageId[sig.messageId];
-  delete data.byId[id];
-  writeAll(data);
-}
-
+/* ----------------- Signal CRUD ----------------- */
 function listAll() {
-  return Object.values(readAll().byId);
+  const db = load();
+  return db.signals || [];
 }
 
+function getSignal(id) {
+  const db = load();
+  return (db.signals || []).find(s => s.id === id) || null;
+}
+
+function saveSignal(signal) {
+  const db = load();
+  const idx = (db.signals || []).findIndex(s => s.id === signal.id);
+  if (idx >= 0) db.signals[idx] = signal;
+  else db.signals.push(signal);
+  save(db);
+  return signal;
+}
+
+function deleteSignal(id) {
+  const db = load();
+  db.signals = (db.signals || []).filter(s => s.id !== id);
+  save(db);
+}
+
+/* --------- Summary message per channel ---------- */
 function getSummaryMessageId(channelId) {
-  return readAll().summaries[channelId] || null;
+  const db = load();
+  return db.summaryByChannel?.[channelId] || null;
 }
 
 function setSummaryMessageId(channelId, messageId) {
-  const data = readAll();
-  data.summaries[channelId] = messageId;
-  writeAll(data);
+  const db = load();
+  db.summaryByChannel = db.summaryByChannel || {};
+  db.summaryByChannel[channelId] = messageId;
+  save(db);
 }
 
 module.exports = {
-  upsert,
-  getById,
-  getByMessageId,
-  removeById,
   listAll,
+  getSignal,
+  saveSignal,
+  deleteSignal,
   getSummaryMessageId,
   setSummaryMessageId,
 };
