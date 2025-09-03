@@ -1,5 +1,20 @@
 import 'dotenv/config';
-import { Client, REST, Routes, GatewayIntentBits, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, StringSelectMenuBuilder } from 'discord.js';
+import {
+  Client,
+  REST,
+  Routes,
+  GatewayIntentBits,
+  SlashCommandBuilder,
+  PermissionFlagsBits,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  StringSelectMenuBuilder
+} from 'discord.js';
 import fs from 'fs-extra';
 
 // ---------- CONFIG ----------
@@ -13,16 +28,16 @@ const {
 } = process.env;
 
 if (!DISCORD_TOKEN || !APPLICATION_ID || !GUILD_ID || !CURRENT_TRADES_CHANNEL_ID) {
-  console.error('Missing env vars. Check .env');
+  console.error('❌ Missing env vars. Check your .env or Render Environment tab');
   process.exit(1);
 }
 
-// No privileged intents needed (fixes “Used disallowed intents”)
+// No privileged intents (fixes “disallowed intents”)
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
 
-// ---------- SIMPLE DB (JSON FILE) ----------
+// ---------- SIMPLE DB ----------
 const DATA_DIR = './data';
 const DB_PATH = `${DATA_DIR}/trades.json`;
 
@@ -45,7 +60,7 @@ const db = {
   }
 };
 
-// ---------- COMMAND REGISTRATION ----------
+// ---------- COMMAND REG ----------
 const commands = [
   new SlashCommandBuilder()
     .setName('trade')
@@ -53,8 +68,9 @@ const commands = [
     .addSubcommand(sub =>
       sub.setName('new')
         .setDescription('Create a new trade card')
-        .addStringOption(o => o.setName('asset').setDescription('e.g. BTC, ETH, SOL, NQ, ES').setRequired(true))
-        .addStringOption(o => o.setName('direction').setDescription('long/short').addChoices({name:'Long', value:'long'},{name:'Short', value:'short'}).setRequired(true))
+        .addStringOption(o => o.setName('asset').setDescription('e.g. BTC, ETH, SOL').setRequired(true))
+        .addStringOption(o => o.setName('direction').setDescription('long/short')
+          .addChoices({ name: 'Long', value: 'long' }, { name: 'Short', value: 'short' }).setRequired(true))
         .addStringOption(o => o.setName('entry').setDescription('Entry price').setRequired(true))
         .addStringOption(o => o.setName('sl').setDescription('Stop loss').setRequired(true))
         .addStringOption(o => o.setName('tp1').setDescription('TP1').setRequired(false))
@@ -142,7 +158,6 @@ client.on('interactionCreate', async (interaction) => {
     // Slash command: /trade new
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'trade' && interaction.options.getSubcommand() === 'new') {
-        // Role/permission gate to create trades
         if (!isAllowed(interaction, interaction.user.id)) {
           return interaction.reply({ content: 'You are not allowed to create trades.', ephemeral: true });
         }
@@ -159,9 +174,8 @@ client.on('interactionCreate', async (interaction) => {
         const tps = [tp1, tp2, tp3].filter(Boolean);
         const channel = await client.channels.fetch(CURRENT_TRADES_CHANNEL_ID);
 
-        // Draft initial embed
         const trade = {
-          id: '', // fill after send
+          id: '',
           asset, direction, entry, sl, tps,
           reason,
           ownerId: interaction.user.id,
@@ -169,8 +183,8 @@ client.on('interactionCreate', async (interaction) => {
           active: true,
           be: false,
           createdAt: new Date(),
-          nextIndex: tps.length ? 0 : null, // first unhit tp
-          partials: [] // {percent, at, note}
+          nextIndex: tps.length ? 0 : null,
+          partials: []
         };
 
         const msg = await channel.send({
@@ -178,7 +192,6 @@ client.on('interactionCreate', async (interaction) => {
           components: [controlRow('tmp'), controlRow2('tmp')]
         });
 
-        // Update with IDs + buttons bound to id
         trade.id = msg.id;
         const jump = `https://discord.com/channels/${interaction.guildId}/${msg.channelId}/${msg.id}`;
         const embed = buildEmbed({ ...trade });
@@ -204,7 +217,7 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (action === 'be') {
-        trade.be = true; // stays active
+        trade.be = true;
         await db.setTrade(trade.id, trade);
         const channel = await client.channels.fetch(CURRENT_TRADES_CHANNEL_ID);
         const msg = await channel.messages.fetch(trade.id);
@@ -215,7 +228,6 @@ client.on('interactionCreate', async (interaction) => {
       if (action.startsWith('tp')) {
         const idx = Number(action.replace('tp','')) - 1;
         if (idx >= 0 && idx < trade.tps.length) {
-          // mark that TP as hit by advancing nextIndex
           if (trade.nextIndex !== null && idx >= trade.nextIndex) trade.nextIndex = idx + 1 < trade.tps.length ? idx + 1 : null;
           await db.setTrade(trade.id, trade);
           const channel = await client.channels.fetch(CURRENT_TRADES_CHANNEL_ID);
