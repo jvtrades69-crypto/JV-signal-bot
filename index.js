@@ -16,7 +16,7 @@ const {
 const { v4: uuidv4 } = require('uuid');
 
 const config = require('./config');
-const store = require('./store');
+const store  = require('./store');
 
 if (!config.token) {
   console.error('[ERROR] Missing DISCORD_TOKEN');
@@ -29,8 +29,8 @@ const client = new Client({
 });
 
 /* ---------------- state ---------------- */
-const pickState = new Map();     // userId -> { asset, side, channelId }
-const draftState = new Map();    // userId -> { asset, side, entry, sl, reason, extraRole, channelId }
+const pickState  = new Map(); // userId -> { asset, side, channelId }
+const draftState = new Map(); // userId -> { asset, side, entry, sl, reason, extraRole, channelId }
 
 /* ---------------- helpers ---------------- */
 
@@ -59,16 +59,28 @@ async function getOrCreateWebhook(channel, name, avatarURL) {
   return hook;
 }
 
-function parseExtraRole(input) {
+// Accepts: <@&id>, raw id, or plain role name (case-insensitive)
+function parseExtraRole(input, guild) {
   if (!input) return null;
-  const mentionMatch = input.match(/<@&(\d+)>/);
-  if (mentionMatch) return mentionMatch[1];
-  const idMatch = input.match(/\b\d{15,21}\b/);
-  if (idMatch) return idMatch[0];
+
+  // mention like <@&123...>
+  const mention = input.match(/<@&(\d+)>/);
+  if (mention) return mention[1];
+
+  // raw id
+  const id = input.match(/\b\d{15,21}\b/);
+  if (id) return id[0];
+
+  // name lookup
+  const name = input.trim().toLowerCase();
+  if (guild && guild.roles?.cache?.size) {
+    const role = guild.roles.cache.find(r => r.name.toLowerCase() === name);
+    if (role) return role.id;
+  }
   return null;
 }
 
-// Fix for role-mention conflict: use either explicit roles OR parse (not both)
+// Use roles-only allowedMentions to avoid “parse” conflicts
 function buildAllowedMentions(extraRoleId) {
   const roles = [config.tradeSignalRoleId, extraRoleId].filter(Boolean);
   return roles.length ? { roles } : { parse: [] };
@@ -80,10 +92,11 @@ function renderTrade(signal) {
   const sideEmoji = signal.side === 'LONG' ? '🟢' : '🔴';
   const lines = [];
 
-  // Title + clean spacer (two blank lines, no emoji)
+  // Title + robust spacer (no emoji; keep a clear gap)
   lines.push(`# ${signal.asset.toUpperCase()} | ${signal.side === 'LONG' ? 'Long' : 'Short'} ${sideEmoji}`);
-  lines.push('');
-  lines.push('');
+  lines.push('');           // regular blank
+  lines.push('\u200B');     // zero-width space line (prevents collapse)
+  lines.push('');           // another blank
 
   // Details
   lines.push('📊 Trade Details');
@@ -124,7 +137,7 @@ function renderTrade(signal) {
 
   const mentions = [];
   if (config.tradeSignalRoleId) mentions.push(`<@&${config.tradeSignalRoleId}>`);
-  if (signal.extraRoleId) mentions.push(`<@&${signal.extraRoleId}>`);
+  if (signal.extraRoleId)      mentions.push(`<@&${signal.extraRoleId}>`);
   if (mentions.length) {
     lines.push('');
     lines.push(mentions.join(' '));
@@ -166,7 +179,7 @@ function rowTpPct(id, which, hasPrice) {
       { label: '50%', value: '50' },
       { label: '75%', value: '75' },
       { label: 'Custom…', value: 'custom' },
-      { label: 'Clear', value: 'clear' },
+      { label: 'Clear',  value: 'clear'  },
     );
   return new ActionRowBuilder().addComponents(menu);
 }
@@ -219,13 +232,13 @@ async function updateSummary(forChannelId) {
 
         let tpLabel = '';
         let tpValue = '';
-        if (!s.latestTpHit && s.tp1) { tpLabel = 'Take Profit 1'; tpValue = s.tp1; }
-        else if (s.latestTpHit === '1' && s.tp2) { tpLabel = 'Take Profit 2'; tpValue = s.tp2; }
-        else if (s.latestTpHit === '2' && s.tp3) { tpLabel = 'Take Profit 3'; tpValue = s.tp3; }
+        if (!s.latestTpHit && s.tp1)                { tpLabel = 'Take Profit 1'; tpValue = s.tp1; }
+        else if (s.latestTpHit === '1' && s.tp2)    { tpLabel = 'Take Profit 2'; tpValue = s.tp2; }
+        else if (s.latestTpHit === '2' && s.tp3)    { tpLabel = 'Take Profit 3'; tpValue = s.tp3; }
 
         const entryLine = `➡️ Entry: ${s.entry || '-'}`;
-        const slLine = `🛑 Stop Loss: ${s.sl || '-'}`;
-        const tpLine = tpValue ? `🎯 ${tpLabel}: ${tpValue}` : null;
+        const slLine    = `🛑 Stop Loss: ${s.sl || '-'}`;
+        const tpLine    = tpValue ? `🎯 ${tpLabel}: ${tpValue}` : null;
 
         return [base, entryLine, slLine, tpLine].filter(Boolean).join('\n');
       });
@@ -233,26 +246,30 @@ async function updateSummary(forChannelId) {
       content = `${header}\n\n${blocks.join('\n\n')}`;
     }
 
-    // Edit/create summary message
+    // Edit/create summary message (webhook preferred; fallback to bot)
     const existingId = store.getSummaryMessageId(summaryChannelId);
     if (existingId) {
       try {
         const msg = await channel.messages.fetch(existingId);
         await msg.edit(content);
         return;
-      } catch {
-        // fall through
-      }
+      } catch { /* fall through to create */ }
     }
-    const ownerAvatar = await getOwnerAvatar(channel.guild);
-    const summaryHook = await getOrCreateWebhook(channel, config.summaryWebhookName, ownerAvatar);
-    const hookClient = new WebhookClient({ id: summaryHook.id, token: summaryHook.token });
-    const sent = await hookClient.send({
-      content,
-      username: 'JV Current Trades',
-      avatarURL: ownerAvatar || undefined,
-    });
-    store.setSummaryMessageId(summaryChannelId, sent.id);
+
+    try {
+      const ownerAvatar = await getOwnerAvatar(channel.guild);
+      const summaryHook = await getOrCreateWebhook(channel, config.summaryWebhookName, ownerAvatar);
+      const hookClient  = new WebhookClient({ id: summaryHook.id, token: summaryHook.token });
+      const sent = await hookClient.send({
+        content,
+        username: 'JV Current Trades',
+        avatarURL: ownerAvatar || undefined,
+      });
+      store.setSummaryMessageId(summaryChannelId, sent.id);
+    } catch {
+      const sent = await channel.send(content);
+      store.setSummaryMessageId(summaryChannelId, sent.id);
+    }
   } catch (e) {
     console.error('updateSummary error:', e);
   }
@@ -277,7 +294,7 @@ function buildPickComponents(userId) {
     .setCustomId('pick|side')
     .setPlaceholder('Pick Side')
     .addOptions(
-      { label: 'Long', value: 'LONG', default: pick.side === 'LONG' },
+      { label: 'Long',  value: 'LONG',  default: pick.side === 'LONG'  },
       { label: 'Short', value: 'SHORT', default: pick.side === 'SHORT' },
     );
 
@@ -297,18 +314,20 @@ function buildPickComponents(userId) {
 /* -------- create modals (Step A + Step B via button) -------- */
 
 function modalStepA(preset) {
-  const modal = new ModalBuilder().setCustomId('signal-create-a').setTitle(`Create ${preset.asset || ''} ${preset.side || ''} Signal`);
+  const modal = new ModalBuilder()
+    .setCustomId('signal-create-a')
+    .setTitle(`Create ${preset.asset || ''} ${preset.side || ''} Signal`);
 
-  const entry = new TextInputBuilder().setCustomId('entry').setLabel('Entry *').setPlaceholder('e.g., 108,201 or 108,100–108,300').setStyle(TextInputStyle.Short).setRequired(true);
-  const sl = new TextInputBuilder().setCustomId('sl').setLabel('SL (optional)').setPlaceholder('e.g., 100,201').setStyle(TextInputStyle.Short).setRequired(false);
-  const reason = new TextInputBuilder().setCustomId('reason').setLabel('Reason (optional)').setPlaceholder('Notes about this setup').setStyle(TextInputStyle.Paragraph).setRequired(false);
-  const extraRole = new TextInputBuilder().setCustomId('extra').setLabel('Extra role to tag (optional)').setPlaceholder('paste @Role or role ID').setStyle(TextInputStyle.Short).setRequired(false);
+  const entry   = new TextInputBuilder().setCustomId('entry').setLabel('Entry *').setPlaceholder('e.g., 108,201 or 108,100–108,300').setStyle(TextInputStyle.Short).setRequired(true);
+  const sl      = new TextInputBuilder().setCustomId('sl').setLabel('SL (optional)').setPlaceholder('e.g., 100,201').setStyle(TextInputStyle.Short).setRequired(false);
+  const reason  = new TextInputBuilder().setCustomId('reason').setLabel('Reason (optional)').setPlaceholder('Notes about this setup').setStyle(TextInputStyle.Paragraph).setRequired(false);
+  const extra   = new TextInputBuilder().setCustomId('extra').setLabel('Extra role to tag (optional)').setPlaceholder('paste @Role, role ID, or role name').setStyle(TextInputStyle.Short).setRequired(false);
 
   return modal.addComponents(
     new ActionRowBuilder().addComponents(entry),
     new ActionRowBuilder().addComponents(sl),
     new ActionRowBuilder().addComponents(reason),
-    new ActionRowBuilder().addComponents(extraRole),
+    new ActionRowBuilder().addComponents(extra),
   );
 }
 
@@ -391,7 +410,7 @@ client.on('interactionCreate', async (interaction) => {
         asset: pick.asset || 'ASSET',
         side: pick.side || 'LONG',
         entry: oneLine(interaction.fields.getTextInputValue('entry')),
-        sl: oneLine(interaction.fields.getTextInputValue('sl') || ''),
+        sl:    oneLine(interaction.fields.getTextInputValue('sl') || ''),
         reason: interaction.fields.getTextInputValue('reason') || '',
         extraRole: interaction.fields.getTextInputValue('extra') || '',
         channelId: pick.channelId || interaction.channelId,
@@ -413,25 +432,26 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.showModal(modalStepB());
       return;
     }
+
     if (interaction.isButton && interaction.isButton() && interaction.customId === 'draft|post') {
       const draft = draftState.get(interaction.user.id);
       if (!draft) return await interaction.reply({ content: 'Draft not found. Run /signal again.', flags: 64 });
 
-      const channel = await client.channels.fetch(draft.channelId);
+      const channel       = await client.channels.fetch(draft.channelId);
       const creatorAvatar = interaction.user.displayAvatarURL({ size: 128 });
-      const hook = await getOrCreateWebhook(channel, config.webhookName, creatorAvatar);
-      const hookClient = new WebhookClient({ id: hook.id, token: hook.token });
+      const hook          = await getOrCreateWebhook(channel, config.webhookName, creatorAvatar);
+      const hookClient    = new WebhookClient({ id: hook.id, token: hook.token });
 
-      const extraRoleId = parseExtraRole(draft.extraRole);
+      const extraRoleId = parseExtraRole(draft.extraRole, interaction.guild);
 
       const signal = {
         id: uuidv4(),
         guildId: interaction.guildId,
         channelId: channel.id,
         asset: draft.asset,
-        side: draft.side,
+        side:  draft.side,
         entry: draft.entry,
-        sl: draft.sl,
+        sl:    draft.sl,
         tp1: '', tp2: '', tp3: '',
         tp1Pct: null, tp2Pct: null, tp3Pct: null,
         rationale: draft.reason,
@@ -455,7 +475,7 @@ client.on('interactionCreate', async (interaction) => {
       signal.messageId = sent.id;
       store.upsert(signal);
 
-      // PRIVATE controls thread only; if it fails, tell creator ephemerally
+      // PRIVATE controls thread only; also send an ephemeral link
       try {
         const me = await channel.guild.members.fetch(interaction.user.id);
         const thread = await channel.threads.create({
@@ -467,14 +487,15 @@ client.on('interactionCreate', async (interaction) => {
         });
         await thread.members.add(me.id).catch(() => {});
         await thread.send({ content: 'Your controls:', components: controls(signal) });
+
+        const threadUrl = `https://discord.com/channels/${signal.guildId}/${thread.id}`;
+        await interaction.followUp({ content: `Opened your private controls thread → ${threadUrl}`, flags: 64 });
       } catch (e) {
         console.error('controls-thread error:', e);
-        try {
-          await interaction.followUp({
-            content: 'Could not create a private control thread. Check bot permissions (Create Private Threads / Manage Threads).',
-            flags: 64,
-          });
-        } catch {}
+        await interaction.followUp({
+          content: 'Could not create a private control thread. Check bot permissions (Create Private Threads / Manage Threads).',
+          flags: 64,
+        }).catch(() => {});
       }
 
       pickState.delete(interaction.user.id);
@@ -494,20 +515,20 @@ client.on('interactionCreate', async (interaction) => {
       const tp2 = oneLine(interaction.fields.getTextInputValue('tp2') || '');
       const tp3 = oneLine(interaction.fields.getTextInputValue('tp3') || '');
 
-      const extraRoleId = parseExtraRole(draft.extraRole);
-      const channel = await client.channels.fetch(draft.channelId);
+      const extraRoleId = parseExtraRole(draft.extraRole, interaction.guild);
+      const channel       = await client.channels.fetch(draft.channelId);
       const creatorAvatar = interaction.user.displayAvatarURL({ size: 128 });
-      const hook = await getOrCreateWebhook(channel, config.webhookName, creatorAvatar);
-      const hookClient = new WebhookClient({ id: hook.id, token: hook.token });
+      const hook          = await getOrCreateWebhook(channel, config.webhookName, creatorAvatar);
+      const hookClient    = new WebhookClient({ id: hook.id, token: hook.token });
 
       const signal = {
         id: uuidv4(),
         guildId: interaction.guildId,
         channelId: channel.id,
         asset: draft.asset,
-        side: draft.side,
+        side:  draft.side,
         entry: draft.entry,
-        sl: draft.sl,
+        sl:    draft.sl,
         tp1, tp2, tp3,
         tp1Pct: null, tp2Pct: null, tp3Pct: null,
         rationale: draft.reason,
@@ -531,7 +552,7 @@ client.on('interactionCreate', async (interaction) => {
       signal.messageId = sent.id;
       store.upsert(signal);
 
-      // PRIVATE controls thread only; if it fails, tell creator ephemerally
+      // PRIVATE controls thread only; also send an ephemeral link
       try {
         const me = await channel.guild.members.fetch(interaction.user.id);
         const thread = await channel.threads.create({
@@ -543,14 +564,15 @@ client.on('interactionCreate', async (interaction) => {
         });
         await thread.members.add(me.id).catch(() => {});
         await thread.send({ content: 'Your controls:', components: controls(signal) });
+
+        const threadUrl = `https://discord.com/channels/${signal.guildId}/${thread.id}`;
+        await interaction.followUp({ content: `Opened your private controls thread → ${threadUrl}`, flags: 64 });
       } catch (e) {
         console.error('controls-thread error:', e);
-        try {
-          await interaction.followUp({
-            content: 'Could not create a private control thread. Check bot permissions (Create Private Threads / Manage Threads).',
-            flags: 64,
-          });
-        } catch {}
+        await interaction.followUp({
+          content: 'Could not create a private control thread. Check bot permissions (Create Private Threads / Manage Threads).',
+          flags: 64,
+        }).catch(() => {});
       }
 
       pickState.delete(interaction.user.id);
@@ -565,8 +587,7 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isButton && interaction.isButton() && interaction.customId.startsWith('signal|')) {
       const [, id, action, extra] = interaction.customId.split('|');
 
-      let signal = store.getById(id);
-      if (!signal) signal = store.getByMessageId(interaction.message?.id);
+      let signal = store.getById(id) || store.getByMessageId(interaction.message?.id);
       if (!signal) return await interaction.reply({ content: 'Signal not found.', flags: 64 });
       if (!canManage(interaction, signal)) return await interaction.reply({ content: 'No permission.', flags: 64 });
 
@@ -582,7 +603,7 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (action === 'tp') {
-        if (!['1', '2', '3'].includes(extra)) return await interaction.reply({ content: 'Invalid TP.', flags: 64 });
+        if (!['1','2','3'].includes(extra)) return await interaction.reply({ content: 'Invalid TP.', flags: 64 });
         signal.latestTpHit = extra;
         store.upsert(signal);
         await hook.editMessage(signal.messageId, { content: renderTrade(signal) });
@@ -610,10 +631,10 @@ client.on('interactionCreate', async (interaction) => {
         const modal = new ModalBuilder().setCustomId(`signal-edit|${signal.id}`).setTitle('Edit Fields');
 
         const entry = new TextInputBuilder().setCustomId('entry').setLabel('Entry').setPlaceholder('e.g., 108,201 or 108,100–108,300').setStyle(TextInputStyle.Short).setRequired(true).setValue(signal.entry || '');
-        const sl = new TextInputBuilder().setCustomId('sl').setLabel('SL').setPlaceholder('e.g., 100,201').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.sl || '');
-        const tp1 = new TextInputBuilder().setCustomId('tp1').setLabel('TP1 (optional)').setPlaceholder('e.g., 110,000').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.tp1 || '');
-        const tp2 = new TextInputBuilder().setCustomId('tp2').setLabel('TP2 (optional)').setPlaceholder('e.g., 121,201').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.tp2 || '');
-        const tp3 = new TextInputBuilder().setCustomId('tp3').setLabel('TP3 (optional)').setPlaceholder('e.g., 132,500').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.tp3 || '');
+        const sl    = new TextInputBuilder().setCustomId('sl').setLabel('SL').setPlaceholder('e.g., 100,201').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.sl || '');
+        const tp1   = new TextInputBuilder().setCustomId('tp1').setLabel('TP1 (optional)').setPlaceholder('e.g., 110,000').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.tp1 || '');
+        const tp2   = new TextInputBuilder().setCustomId('tp2').setLabel('TP2 (optional)').setPlaceholder('e.g., 121,201').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.tp2 || '');
+        const tp3   = new TextInputBuilder().setCustomId('tp3').setLabel('TP3 (optional)').setPlaceholder('e.g., 132,500').setStyle(TextInputStyle.Short).setRequired(false).setValue(signal.tp3 || '');
 
         return await interaction.showModal(
           modal.addComponents(
@@ -641,13 +662,12 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isStringSelectMenu && interaction.isStringSelectMenu() && interaction.customId.startsWith('signal|')) {
       const [, id, kind, which] = interaction.customId.split('|');
 
-      let signal = store.getById(id);
-      if (!signal) signal = store.getByMessageId(interaction.message?.id);
+      let signal = store.getById(id) || store.getByMessageId(interaction.message?.id);
       if (!signal) return await interaction.reply({ content: 'Signal not found.', flags: 64 });
       if (!canManage(interaction, signal)) return await interaction.reply({ content: 'No permission.', flags: 64 });
 
       const choice = interaction.values[0];
-      if (kind !== 'tppct' || !['1', '2', '3'].includes(which)) return await interaction.reply({ content: 'Invalid selection.', flags: 64 });
+      if (kind !== 'tppct' || !['1','2','3'].includes(which)) return await interaction.reply({ content: 'Invalid selection.', flags: 64 });
 
       if (choice === 'custom') {
         const modal = new ModalBuilder().setCustomId(`tppct-custom|${signal.id}|${which}`).setTitle(`TP${which} % (1–100)`);
@@ -665,8 +685,7 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.isModalSubmit && interaction.isModalSubmit() && interaction.customId.startsWith('tppct-custom|')) {
       const [, id, which] = interaction.customId.split('|');
-      let signal = store.getById(id);
-      if (!signal) signal = store.getByMessageId(interaction.message?.id);
+      let signal = store.getById(id) || store.getByMessageId(interaction.message?.id);
       if (!signal) return await interaction.reply({ content: 'Signal not found.', flags: 64 });
       if (!canManage(interaction, signal)) return await interaction.reply({ content: 'No permission.', flags: 64 });
 
@@ -684,8 +703,7 @@ client.on('interactionCreate', async (interaction) => {
     // Reason update
     if (interaction.isModalSubmit && interaction.isModalSubmit() && interaction.customId.startsWith('reason-edit|')) {
       const [, id] = interaction.customId.split('|');
-      let signal = store.getById(id);
-      if (!signal) signal = store.getByMessageId(interaction.message?.id);
+      let signal = store.getById(id) || store.getByMessageId(interaction.message?.id);
       if (!signal) return await interaction.reply({ content: 'Signal not found.', flags: 64 });
       if (!canManage(interaction, signal)) return await interaction.reply({ content: 'No permission.', flags: 64 });
 
@@ -700,16 +718,15 @@ client.on('interactionCreate', async (interaction) => {
     // Edit fields modal submit
     if (interaction.isModalSubmit && interaction.isModalSubmit() && interaction.customId.startsWith('signal-edit|')) {
       const [, id] = interaction.customId.split('|');
-      let signal = store.getById(id);
-      if (!signal) signal = store.getByMessageId(interaction.message?.id);
+      let signal = store.getById(id) || store.getByMessageId(interaction.message?.id);
       if (!signal) return await interaction.reply({ content: 'Signal not found.', flags: 64 });
       if (!canManage(interaction, signal)) return await interaction.reply({ content: 'No permission.', flags: 64 });
 
       signal.entry = oneLine(interaction.fields.getTextInputValue('entry'));
-      signal.sl = oneLine(interaction.fields.getTextInputValue('sl') || '');
-      signal.tp1 = oneLine(interaction.fields.getTextInputValue('tp1') || '');
-      signal.tp2 = oneLine(interaction.fields.getTextInputValue('tp2') || '');
-      signal.tp3 = oneLine(interaction.fields.getTextInputValue('tp3') || '');
+      signal.sl    = oneLine(interaction.fields.getTextInputValue('sl') || '');
+      signal.tp1   = oneLine(interaction.fields.getTextInputValue('tp1') || '');
+      signal.tp2   = oneLine(interaction.fields.getTextInputValue('tp2') || '');
+      signal.tp3   = oneLine(interaction.fields.getTextInputValue('tp3') || '');
 
       store.upsert(signal);
       await new WebhookClient({ id: signal.webhookId, token: signal.webhookToken }).editMessage(signal.messageId, { content: renderTrade(signal) });
