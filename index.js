@@ -21,6 +21,9 @@ import {
 import { renderSignalEmbed, renderSummaryEmbed } from "./embeds.js";
 import { v4 as uuidv4 } from "uuid";
 
+// Debug: check if token is being loaded
+console.log("Token starts with:", config.token ? config.token.slice(0, 10) : "❌ NO TOKEN");
+
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
 });
@@ -56,12 +59,12 @@ const rest = new REST({ version: "10" }).setToken(config.token);
 
 (async () => {
   try {
-    await rest.put(Routes.applicationGuildCommands("YOUR_APP_ID", config.guildId), {
+    await rest.put(Routes.applicationGuildCommands(config.appId, config.guildId), {
       body: commands
     });
     console.log("✅ Slash commands registered");
   } catch (err) {
-    console.error("Error registering commands:", err);
+    console.error("❌ Error registering commands:", err);
   }
 })();
 
@@ -107,50 +110,26 @@ client.on("interactionCreate", async interaction => {
       // Create private thread for owner-only controls
       const thread = await message.startThread({
         name: `${signal.asset} ${signal.direction} Controls`,
-        autoArchiveDuration: 1440, // 24h
+        autoArchiveDuration: 1440,
         type: ChannelType.PrivateThread
       });
 
-      // Add owner only
       try {
         await thread.members.add(config.ownerId);
       } catch (e) {
         console.error("⚠️ Could not add owner to thread:", e);
       }
 
-      // Save thread ID for cleanup later
       updateSignal(signal.id, { threadId: thread.id });
 
-      // Owner control buttons
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`tp1_${signal.id}`)
-          .setLabel("TP1 🎯")
-          .setStyle(ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId(`tp2_${signal.id}`)
-          .setLabel("TP2 🎯")
-          .setStyle(ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId(`tp3_${signal.id}`)
-          .setLabel("TP3 🎯")
-          .setStyle(ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId(`stop_${signal.id}`)
-          .setLabel("Stopped Out ❌")
-          .setStyle(ButtonStyle.Danger),
-        new ButtonBuilder()
-          .setCustomId(`be_${signal.id}`)
-          .setLabel("Stopped BE 🟨")
-          .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-          .setCustomId(`close_${signal.id}`)
-          .setLabel("Fully Closed ✅")
-          .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder()
-          .setCustomId(`delete_${signal.id}`)
-          .setLabel("Delete 🗑")
-          .setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId(`tp1_${signal.id}`).setLabel("TP1 🎯").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`tp2_${signal.id}`).setLabel("TP2 🎯").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`tp3_${signal.id}`).setLabel("TP3 🎯").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`stop_${signal.id}`).setLabel("Stopped Out ❌").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`be_${signal.id}`).setLabel("Stopped BE 🟨").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`close_${signal.id}`).setLabel("Fully Closed ✅").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`delete_${signal.id}`).setLabel("Delete 🗑").setStyle(ButtonStyle.Secondary)
       );
 
       await thread.send({
@@ -177,7 +156,6 @@ client.on("interactionCreate", async interaction => {
     const signal = signals.find(s => s.id === signalId);
     if (!signal) return interaction.reply({ content: "⚠️ Trade not found.", ephemeral: true });
 
-    // ====== Status updates ======
     if (action === "tp1" || action === "tp2" || action === "tp3") {
       updateSignal(signalId, { status: `${action.toUpperCase()} Hit 🎯` });
     } else if (action === "stop") {
@@ -190,23 +168,19 @@ client.on("interactionCreate", async interaction => {
       updateSignal(signalId, { status: "Fully Closed ✅" });
       await cleanupThread(signal);
     } else if (action === "delete") {
-      // Hard delete: remove embed, thread, DB entry
       await deleteTrade(signal);
       return interaction.reply({ content: "🗑 Trade deleted.", ephemeral: true });
     }
 
-    // ====== Update main embed ======
     try {
       const signalsChannel = await client.channels.fetch(config.signalsChannelId);
       const messages = await signalsChannel.messages.fetch({ limit: 50 });
-      const target = messages.find(
-        m => m.embeds.length > 0 && m.embeds[0].title?.includes(signal.asset)
-      );
+      const target = messages.find(m => m.embeds.length > 0 && m.embeds[0].title?.includes(signal.asset));
       if (target) {
         await target.edit({ embeds: [renderSignalEmbed(signal)] });
       }
     } catch (e) {
-      console.error("Error updating main embed:", e);
+      console.error("Error updating embed:", e);
     }
 
     await updateSummary();
@@ -216,10 +190,7 @@ client.on("interactionCreate", async interaction => {
 
 // ====== Helpers ======
 async function cleanupThread(signal) {
-  // Remove from summary but keep embed visible
   await updateSummary();
-
-  // Delete private thread if exists
   if (signal.threadId) {
     try {
       const thread = await client.channels.fetch(signal.threadId);
@@ -232,22 +203,15 @@ async function cleanupThread(signal) {
 }
 
 async function deleteTrade(signal) {
-  // Delete DB entry
   deleteSignal(signal.id);
-
-  // Delete public embed
   try {
     const signalsChannel = await client.channels.fetch(config.signalsChannelId);
     const messages = await signalsChannel.messages.fetch({ limit: 50 });
-    const target = messages.find(
-      m => m.embeds.length > 0 && m.embeds[0].title?.includes(signal.asset)
-    );
+    const target = messages.find(m => m.embeds.length > 0 && m.embeds[0].title?.includes(signal.asset));
     if (target) await target.delete();
   } catch (e) {
     console.error("⚠️ Could not delete trade embed:", e);
   }
-
-  // Delete private thread
   if (signal.threadId) {
     try {
       const thread = await client.channels.fetch(signal.threadId);
@@ -256,11 +220,10 @@ async function deleteTrade(signal) {
       console.error("⚠️ Could not delete thread:", e);
     }
   }
-
   await updateSummary();
 }
 
-// ====== Update Summary ======
+// ====== Summary ======
 async function updateSummary() {
   const trades = getSignals().filter(
     s => !["Stopped Out ❌", "Stopped BE 🟨", "Fully Closed ✅"].includes(s.status)
@@ -283,4 +246,5 @@ async function updateSummary() {
   setSummaryMessageId(newMsg.id);
 }
 
+// ====== Start Bot ======
 client.login(config.token);
