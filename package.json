@@ -1,15 +1,19 @@
 {
   "name": "jv-signal-bot",
   "version": "1.0.0",
-  "private": true,
-  "type": "commonjs",
+  "description": "JV Trades signal bot (clean embeds, update panel, no privileged intents)",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js",
-    "register": "node register-commands.js"
+    "register": "node index.js register"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
-    "discord.js": "^14.15.3",
-    "uuid": "^9.0.1"
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "fs-extra": "^11.2.0"
   }
 }
