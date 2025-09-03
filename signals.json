@@ -1,1 +1,4 @@
-{ "signals": {}, "boards": {} }
+{
+  "signals": [],
+  "summaryMessageId": null
+}
