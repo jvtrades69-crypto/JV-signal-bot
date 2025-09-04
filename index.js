@@ -26,16 +26,16 @@ import {
 } from './store.js';
 import { renderSignalEmbed, renderSummaryEmbed } from './embeds.js';
 
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
-});
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// ------------------------
-// Slash command
-// ------------------------
+/* ------------------------------
+   Slash command (REQUIRED FIRST)
+--------------------------------*/
 const SignalCmd = new SlashCommandBuilder()
   .setName('signal')
   .setDescription('Post a trade signal')
+
+  // REQUIRED first
   .addStringOption((o) =>
     o
       .setName('asset')
@@ -50,12 +50,6 @@ const SignalCmd = new SlashCommandBuilder()
   )
   .addStringOption((o) =>
     o
-      .setName('custom_asset')
-      .setDescription('If you chose Other, type the asset (e.g., XRP)')
-      .setRequired(false),
-  )
-  .addStringOption((o) =>
-    o
       .setName('direction')
       .setDescription('Long or Short')
       .setRequired(true)
@@ -63,6 +57,14 @@ const SignalCmd = new SlashCommandBuilder()
   )
   .addStringOption((o) => o.setName('entry').setDescription('Entry price').setRequired(true))
   .addStringOption((o) => o.setName('stop').setDescription('Stop Loss').setRequired(true))
+
+  // OPTIONAL after
+  .addStringOption((o) =>
+    o
+      .setName('custom_asset')
+      .setDescription('If you chose Other, type the asset (e.g., XRP)')
+      .setRequired(false),
+  )
   .addStringOption((o) => o.setName('tp1').setDescription('Take Profit 1').setRequired(false))
   .addStringOption((o) => o.setName('tp2').setDescription('Take Profit 2').setRequired(false))
   .addStringOption((o) => o.setName('tp3').setDescription('Take Profit 3').setRequired(false))
@@ -79,9 +81,9 @@ async function registerCommands() {
   console.log('[slash] /signal registered');
 }
 
-// ------------------------
-// Helpers
-// ------------------------
+/* ------------------------------
+   Helpers
+--------------------------------*/
 async function getOrCreateWebhook(channel) {
   const hooks = await channel.fetchWebhooks();
   let hook = hooks.find((h) => h.name === 'JV Signal Hook');
@@ -109,7 +111,6 @@ async function upsertSummary() {
     await setSummaryMessageId(msg.id);
   } else {
     try {
-      // Always fetch fresh Message (Webhook return objects can’t be edited)
       const msg = await currentCh.messages.fetch(summaryId);
       await msg.edit({ embeds: [summaryEmbed], allowedMentions: { parse: [] } });
     } catch {
@@ -119,9 +120,9 @@ async function upsertSummary() {
   }
 }
 
-// ------------------------
-// Runtime
-// ------------------------
+/* ------------------------------
+   Runtime
+--------------------------------*/
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
   await registerCommands();
@@ -163,7 +164,6 @@ client.on('interactionCreate', async (interaction) => {
     const parentChannel = await client.channels.fetch(SIGNALS_CHANNEL_ID);
     const embed = renderSignalEmbed(signal);
 
-    // post as webhook (looks like you)
     let sent;
     if (USE_WEBHOOK) {
       sent = await postAsWebhook(parentChannel, {
@@ -199,7 +199,7 @@ client.on('interactionCreate', async (interaction) => {
       await thread.members.add(OWNER_ID);
       await thread.send('Owner panel created. (Buttons can be added later.)');
     } catch {
-      // ignore if no thread perms
+      // ignore if missing perms
     }
 
     await interaction.editReply('✅ Signal posted.');
