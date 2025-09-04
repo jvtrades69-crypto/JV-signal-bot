@@ -1,4 +1,5 @@
 {
   "signals": [],
-  "summaryMessageId": null
+  "summaryMessageId": null,
+  "webhooks": {}
 }
