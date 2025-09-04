@@ -1,205 +1,401 @@
-import {
+// JV Trades – Discord Trade Signal Bot
+// Implements: /signal, webhook identity, private owner control panel, and Current Active Trades summary syncing.
+
+const {
   Client,
   GatewayIntentBits,
+  Partials,
+  ChannelType,
+  PermissionsBitField,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ChannelType,
-  WebhookClient
-} from 'discord.js';
-import { customAlphabet } from 'nanoid';
-import config from './config.js';
-import {
-  saveSignal, getSignal, getSignals, updateSignal, deleteSignal,
-  listActive, getSummaryMessageId, setSummaryMessageId,
-  getOwnerPanelMessageId, setOwnerPanelMessageId,
-  getStoredWebhook, setStoredWebhook
-} from './store.js';
-import { renderSignalEmbed, renderSummaryEmbed } from './embeds.js';
+  WebhookClient,
+  EmbedBuilder,
+} = require('discord.js');
+const { v4: uuidv4 } = require('uuid');
 
-const nano = customAlphabet('1234567890abcdef', 10);
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const {
+  token,
+  guildId,
+  currentTradesChannelId,
+  mentionRoleId,
+  ownerUserId,
+} = require('./config.js');
 
-// ---------- Utils ----------
-async function getOrCreateWebhook(channel) {
-  const stored = await getStoredWebhook(channel.id);
-  if (stored) {
-    return new WebhookClient({ id: stored.id, token: stored.token });
-  }
+const Store = require('./store.js');
+const { renderSignalEmbed, renderSummaryEmbed, titleFor } = require('./embeds.js');
+
+// ---- Client Setup ----
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+  partials: [Partials.Channel, Partials.Message, Partials.GuildMember, Partials.User],
+});
+
+// ---- Utils ----
+function isOwner(userId) {
+  return userId === ownerUserId;
+}
+
+function parseRoleId(input) {
+  if (!input) return "";
+  const mentionMatch = /<@&(\d+)>/.exec(input);
+  if (mentionMatch) return mentionMatch[1];
+  const idMatch = /^(\d{10,})$/.exec(input.trim());
+  if (idMatch) return idMatch[1];
+  return "";
+}
+
+async function ensureChannelWebhook(channel) {
+  const saved = Store.getChannelWebhook(channel.id);
+  if (saved) return saved;
+
   const hooks = await channel.fetchWebhooks();
-  let hook = hooks.find(h => h.name === config.brandName);
+  let hook = hooks.find(h => h.owner && h.owner.id === client.user.id);
   if (!hook) {
-    hook = await channel.createWebhook({
-      name: config.brandName,
-      avatar: config.brandAvatarUrl || null
-    });
+    hook = await channel.createWebhook({ name: 'JV Signal Relay' });
   }
-  await setStoredWebhook(channel.id, { id: hook.id, token: hook.token });
-  return new WebhookClient({ id: hook.id, token: hook.token });
+  const info = { id: hook.id, token: hook.token };
+  Store.setChannelWebhook(channel.id, info);
+  return info;
 }
 
-// ---------- Event: Ready ----------
-client.once('ready', () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-});
+function messageUrl(guildId, channelId, messageId) {
+  return `https://discord.com/channels/${guildId}/${channelId}/${messageId}`;
+}
 
-// ---------- Event: Interaction ----------
-client.on('interactionCreate', async (interaction) => {
-  // /signal command
-  if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
-    if (interaction.user.id !== config.ownerId) {
-      return interaction.reply({ content: 'Only the owner can use this command.', ephemeral: true });
-    }
+async function updateSummary(guild) {
+  const trades = Store.listActive().sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  const summaryChannel = await guild.channels.fetch(currentTradesChannelId).catch(() => null);
+  if (!summaryChannel) return;
 
-    // Acknowledge immediately so Discord doesn't time out
-    await interaction.deferReply({ ephemeral: true });
+  const hookInfo = await ensureChannelWebhook(summaryChannel);
+  const webhook = new WebhookClient({ id: hookInfo.id, token: hookInfo.token });
 
+  // Use owner's profile for identity
+  const member = await guild.members.fetch(ownerUserId).catch(() => null);
+  const username = member ? (member.displayName || member.user.username) : 'JV Trades';
+  const avatarURL = member ? member.displayAvatarURL({ size: 256 }) : null;
+
+  const embed = renderSummaryEmbed(trades, '📊 JV Current Active Trades 📊');
+  const summaryMessageId = Store.getSummaryMessageId();
+
+  if (summaryMessageId) {
     try {
-      // Asset
-      let asset = interaction.options.getString('asset');
-      if (asset === 'OTHER') {
-        asset = interaction.options.getString('asset_manual') || 'ASSET';
-      }
-
-      const signal = {
-        id: nano(),
-        asset,
-        direction: interaction.options.getString('direction'), // LONG/SHORT
-        entry: interaction.options.getString('entry'),
-        stop: interaction.options.getString('sl'),
-        tp1: interaction.options.getString('tp1'),
-        tp2: interaction.options.getString('tp2'),
-        tp3: interaction.options.getString('tp3'),
-        reason: interaction.options.getString('reason'),
-        extraRole: interaction.options.getString('extra_role'),
-        status: 'RUN_VALID',
-        validReentry: true,
-        jumpUrl: null
-      };
-
-      await saveSignal(signal);
-
-      // Post via webhook to signals channel
-      const signalsChannel = await client.channels.fetch(config.signalsChannelId);
-      const webhook = await getOrCreateWebhook(signalsChannel);
-      const embed = renderSignalEmbed(signal, config.brandName);
-
-      const contentParts = [];
-      if (config.mentionRoleId) contentParts.push(`<@&${config.mentionRoleId}>`);
-      if (signal.extraRole) contentParts.push(signal.extraRole);
-      const content = contentParts.length ? contentParts.join(' ') : undefined;
-
-      const msg = await webhook.send({ content, embeds: [embed] });
-      await updateSignal(signal.id, { jumpUrl: msg.url });
-
-      // Create private thread for owner controls
-      const thread = await signalsChannel.threads.create({
-        name: `controls-${signal.asset}-${signal.id.slice(0, 4)}`,
-        type: ChannelType.PrivateThread,
-        invitable: false
+      await webhook.editMessage(summaryMessageId, {
+        username,
+        avatarURL,
+        content: '',
+        embeds: [embed],
+        allowedMentions: { parse: [] },
       });
-      await thread.members.add(config.ownerId);
-
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`tp1_${signal.id}`).setLabel('🎯 TP1 Hit').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`tp2_${signal.id}`).setLabel('🎯 TP2 Hit').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`tp3_${signal.id}`).setLabel('🎯 TP3 Hit').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`run_${signal.id}`).setLabel('🟩 Running (Valid)').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(`be_${signal.id}`).setLabel('🟫 Running (BE)').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`stopped_${signal.id}`).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId(`stopbe_${signal.id}`).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId(`del_${signal.id}`).setLabel('❌ Delete').setStyle(ButtonStyle.Secondary)
-      );
-
-      const panelMsg = await thread.send({ content: 'Owner Control Panel', components: [row] });
-      await setOwnerPanelMessageId(signal.id, panelMsg.id);
-
-      await updateSummary();
-
-      await interaction.editReply({ content: '✅ Trade signal posted.' });
-    } catch (err) {
-      console.error(err);
-      await interaction.editReply({ content: '❌ Error while creating signal.' });
+      return;
+    } catch (e) {
+      // If editing fails (deleted), we'll send a fresh one below.
+      console.warn('Summary edit failed, sending new. Reason:', e.message);
     }
-    return;
   }
 
-  // Buttons on a signal
-  if (interaction.isButton()) {
-    if (interaction.user.id !== config.ownerId) {
-      return interaction.reply({ content: 'Only the owner can use these controls.', ephemeral: true });
-    }
+  const sent = await webhook.send({
+    username,
+    avatarURL,
+    content: '',
+    embeds: [embed],
+    allowedMentions: { parse: [] },
+    wait: true,
+  });
+  Store.setSummaryMessageId(sent.id);
+}
 
-    // Avoid timeouts on button clicks too
-    await interaction.deferReply({ ephemeral: true });
+function statusPatchFor(action) {
+  switch (action) {
+    case 'TP1': return { tp1Hit: true };
+    case 'TP2': return { tp2Hit: true };
+    case 'TP3': return { tp3Hit: true };
+    case 'RUN_VALID': return { status: 'ACTIVE', active: true, validForReentry: true };
+    case 'RUN_BE': return { status: 'RUNNING_BE', active: true, validForReentry: false };
+    case 'STOPPED_OUT': return { status: 'STOPPED_OUT', active: false, validForReentry: false };
+    case 'STOPPED_BE': return { status: 'STOPPED_BE', active: false, validForReentry: false };
+    default: return {};
+  }
+}
 
-    try {
-      const [action, id] = interaction.customId.split('_');
-      const signal = await getSignal(id);
-      if (!signal) {
-        return interaction.editReply({ content: 'Signal not found.' });
+function controlButtons(signalId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`SIG:${signalId}:TP1`).setLabel('🎯 TP1 Hit').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`SIG:${signalId}:TP2`).setLabel('🎯 TP2 Hit').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`SIG:${signalId}:TP3`).setLabel('🎯 TP3 Hit').setStyle(ButtonStyle.Secondary),
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`SIG:${signalId}:RUN_VALID`).setLabel('🟩 Running (Valid)').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`SIG:${signalId}:RUN_BE`).setLabel('🟫 Running (BE)').setStyle(ButtonStyle.Secondary),
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`SIG:${signalId}:STOPPED_OUT`).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`SIG:${signalId}:STOPPED_BE`).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`SIG:${signalId}:DELETE`).setLabel('❌ Delete').setStyle(ButtonStyle.Danger),
+    ),
+  ];
+}
+
+// ---- Command Registration (on ready) ----
+async function registerCommands() {
+  const cmd = [{
+    name: 'signal',
+    description: 'Create a trade signal card',
+    dm_permission: false,
+    default_member_permissions: null, // we enforce owner check in code
+    options: [
+      {
+        type: 3, // STRING
+        name: 'asset',
+        description: 'Asset to trade (BTC, ETH, SOL, Other)',
+        required: true,
+        choices: [
+          { name: 'BTC', value: 'BTC' },
+          { name: 'ETH', value: 'ETH' },
+          { name: 'SOL', value: 'SOL' },
+          { name: 'Other', value: 'Other' },
+        ],
+      },
+      {
+        type: 3, // STRING
+        name: 'asset_custom',
+        description: 'If asset=Other, enter custom asset name',
+        required: false,
+      },
+      {
+        type: 3, // STRING
+        name: 'direction',
+        description: 'Long or Short',
+        required: true,
+        choices: [
+          { name: 'Long', value: 'Long' },
+          { name: 'Short', value: 'Short' },
+        ],
+      },
+      { type: 3, name: 'entry', description: 'Entry price (free text OK)', required: true },
+      { type: 3, name: 'sl', description: 'Stop Loss (free text OK)', required: true },
+      { type: 3, name: 'tp1', description: 'Take Profit 1 (optional)', required: false },
+      { type: 3, name: 'tp1_note', description: 'TP1 note e.g. "close 50%"', required: false },
+      { type: 3, name: 'tp2', description: 'Take Profit 2 (optional)', required: false },
+      { type: 3, name: 'tp2_note', description: 'TP2 note', required: false },
+      { type: 3, name: 'tp3', description: 'Take Profit 3 (optional)', required: false },
+      { type: 3, name: 'tp3_note', description: 'TP3 note', required: false },
+      { type: 3, name: 'reason', description: 'Reason (optional, multiline allowed)', required: false },
+      { type: 3, name: 'extra_role', description: 'Extra role to tag (paste @Role or ID)', required: false },
+    ],
+  }];
+
+  await client.application.commands.set(cmd, guildId);
+  console.log('Slash command registered for guild', guildId);
+}
+
+// ---- Ready ----
+client.once('ready', async () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+  try {
+    await registerCommands();
+  } catch (e) {
+    console.error('Command registration failed:', e);
+  }
+  const guild = await client.guilds.fetch(guildId).catch(() => null);
+  if (guild) {
+    await updateSummary(guild); // ensure summary exists
+  }
+});
+
+// ---- Interaction Create ----
+client.on('interactionCreate', async (interaction) => {
+  try {
+    if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
+      if (!isOwner(interaction.user.id)) {
+        return interaction.reply({ content: 'Only the owner can create signals.', ephemeral: true });
       }
 
-      if (action === 'del') {
-        await deleteSignal(id);
-        await updateSummary();
-        return interaction.editReply({ content: '❌ Trade deleted.' });
-      }
+      const assetChoice = interaction.options.getString('asset', true);
+      const assetCustom = interaction.options.getString('asset_custom') || '';
+      const side = interaction.options.getString('direction', true);
+      const entry = interaction.options.getString('entry', true);
+      const sl = interaction.options.getString('sl', true);
+      const tp1 = interaction.options.getString('tp1') || '';
+      const tp1Note = interaction.options.getString('tp1_note') || '';
+      const tp2 = interaction.options.getString('tp2') || '';
+      const tp2Note = interaction.options.getString('tp2_note') || '';
+      const tp3 = interaction.options.getString('tp3') || '';
+      const tp3Note = interaction.options.getString('tp3_note') || '';
+      const reason = interaction.options.getString('reason') || '';
+      const extraRoleRaw = interaction.options.getString('extra_role') || '';
 
-      const patches = {
-        tp1: { tp1: '✅ Hit' },
-        tp2: { tp2: '✅ Hit' },
-        tp3: { tp3: '✅ Hit' },
-        run: { status: 'RUN_VALID', validReentry: true },
-        be: { status: 'RUN_BE', validReentry: true },
-        stopped: { status: 'STOPPED_OUT', validReentry: false },
-        stopbe: { status: 'STOPPED_BE', validReentry: false }
+      const asset = assetChoice === 'Other' ? (assetCustom || 'Other') : assetChoice;
+
+      // Prepare mentions
+      const baseRoleId = mentionRoleId && mentionRoleId !== "PUT_DEFAULT_TRADE_SIGNALS_ROLE_ID_HERE" ? mentionRoleId : "";
+      const extraRoleId = parseRoleId(extraRoleRaw);
+      const rolesToMention = [baseRoleId, extraRoleId].filter(Boolean);
+
+      await interaction.deferReply({ ephemeral: true });
+
+      const channel = interaction.channel;
+      const guild = interaction.guild;
+      const hookInfo = await ensureChannelWebhook(channel);
+      const webhook = new WebhookClient({ id: hookInfo.id, token: hookInfo.token });
+
+      const member = await guild.members.fetch(ownerUserId).catch(() => null);
+      const username = member ? (member.displayName || member.user.username) : interaction.user.username;
+      const avatarURL = member ? member.displayAvatarURL({ size: 256 }) : interaction.user.displayAvatarURL({ size: 256 });
+
+      // Construct initial signal object
+      const id = uuidv4().slice(0, 8);
+      const signal = {
+        id,
+        asset,
+        side,
+        entry,
+        sl,
+        tp1, tp1Note, tp1Hit: false,
+        tp2, tp2Note, tp2Hit: false,
+        tp3, tp3Note, tp3Hit: false,
+        reason,
+        ownerId: ownerUserId,
+        channelId: channel.id,
+        messageId: "",
+        threadId: "",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        status: 'ACTIVE',
+        active: true,
+        validForReentry: true,
+        jumpUrl: "",
       };
 
-      if (patches[action]) {
-        await updateSignal(id, patches[action]);
+      // Send via webhook using owner's identity
+      const embed = renderSignalEmbed(signal);
+      const contentLine = rolesToMention.length
+        ? rolesToMention.map(r => `<@&${r}>`).join(' ') 
+        : '';
+
+      const sent = await webhook.send({
+        username,
+        avatarURL,
+        content: contentLine,
+        embeds: [embed],
+        allowedMentions: { roles: rolesToMention, parse: [] },
+        wait: true,
+      });
+
+      signal.messageId = sent.id;
+      signal.jumpUrl = `https://discord.com/channels/${guild.id}/${channel.id}/${sent.id}`;
+
+      // Save signal now that we have message id/url
+      Store.saveSignal(signal);
+
+      // Create a private owner-only thread attached to the signal message
+      let thread;
+      try {
+        thread = await channel.threads.create({
+          name: `🛠️ Control – ${asset} ${side} @ ${entry}`.slice(0, 95),
+          autoArchiveDuration: 1440,
+          type: ChannelType.PrivateThread,
+          startMessage: sent.id,
+          invitable: false,
+        });
+        await thread.members.add(ownerUserId).catch(() => {});
+      } catch (e) {
+        console.warn('Thread creation failed (missing perms or channel type?):', e.message);
       }
 
-      // Re-render signal via webhook edit
-      const signalsChannel = await client.channels.fetch(config.signalsChannelId);
-      const webhook = await getOrCreateWebhook(signalsChannel);
-      const updated = await getSignal(id);
-      const embed = renderSignalEmbed(updated, config.brandName);
-
-      if (updated.jumpUrl) {
-        const parts = updated.jumpUrl.split('/');
-        const messageId = parts[parts.length - 1];
-        await webhook.editMessage(messageId, { embeds: [embed] });
+      if (thread) {
+        const control = await thread.send({
+          content: `<@${ownerUserId}>`,
+          embeds: [
+            new EmbedBuilder()
+              .setTitle('Owner Control Panel')
+              .setDescription(`Use the buttons below to update **${titleFor(signal)}**`)
+              .setColor(0x94a3b8)
+          ],
+          components: controlButtons(signal.id),
+        });
+        Store.setOwnerPanelMessageId(signal.id, control.id);
+        Store.updateSignal(signal.id, { threadId: thread.id });
       }
 
-      await updateSummary();
-      return interaction.editReply({ content: '✅ Updated.' });
-    } catch (err) {
-      console.error(err);
-      return interaction.editReply({ content: '❌ Error while updating trade.' });
+      // Update summary channel
+      await updateSummary(guild);
+
+      await interaction.editReply({ content: `✅ Signal posted: ${titleFor(signal)}\nJump: ${signal.jumpUrl}` });
+    }
+
+    if (interaction.isButton()) {
+      const parts = interaction.customId.split(':');
+      if (parts.length !== 3 || parts[0] !== 'SIG') return;
+      const signalId = parts[1];
+      const action = parts[2];
+
+      const s = Store.getSignal(signalId);
+      if (!s) {
+        return interaction.reply({ content: 'Signal not found (maybe deleted).', ephemeral: true });
+      }
+      if (!isOwner(interaction.user.id)) {
+        return interaction.reply({ content: 'Only the owner can use these controls.', ephemeral: true });
+      }
+
+      const guild = await client.guilds.fetch(guildId);
+      const channel = await guild.channels.fetch(s.channelId).catch(() => null);
+      if (!channel) {
+        return interaction.reply({ content: 'Original channel missing.', ephemeral: true });
+      }
+
+      // Apply patch
+      if (action === 'DELETE') {
+        // Delete original message and clean up
+        try {
+          const msg = await channel.messages.fetch(s.messageId);
+          await msg.delete();
+        } catch (e) {
+          // ignore
+        }
+        if (s.threadId) {
+          try {
+            const thr = await guild.channels.fetch(s.threadId);
+            await thr.delete('Signal deleted');
+          } catch (e) {}
+        }
+        Store.deleteSignal(s.id);
+        await updateSummary(guild);
+        return interaction.reply({ content: '🗑️ Signal deleted and summary updated.', ephemeral: true });
+      }
+
+      const patch = statusPatchFor(action);
+      const updated = Store.updateSignal(s.id, patch);
+      if (!updated) {
+        return interaction.reply({ content: 'Failed to update signal.', ephemeral: true });
+      }
+
+      // Edit the original signal embed
+      try {
+        const msg = await channel.messages.fetch(s.messageId);
+        const embed = renderSignalEmbed(updated);
+        await msg.edit({ embeds: [embed] });
+      } catch (e) {
+        console.warn('Failed to edit original signal message:', e.message);
+      }
+
+      await updateSummary(guild);
+      return interaction.reply({ content: '✅ Updated.', ephemeral: true });
+    }
+  } catch (err) {
+    console.error('interactionCreate error:', err);
+    if (interaction.isRepliable()) {
+      try { await interaction.reply({ content: 'Unexpected error.', ephemeral: true }); } catch {}
     }
   }
 });
 
-// ---------- Summary ----------
-async function updateSummary() {
-  const trades = await listActive();
-  const channel = await client.channels.fetch(config.currentTradesChannelId);
-  const webhook = await getOrCreateWebhook(channel);
-  const embed = renderSummaryEmbed(trades);
-
-  const summaryId = await getSummaryMessageId();
-  if (summaryId) {
-    try {
-      await webhook.editMessage(summaryId, { embeds: [embed] });
-      return;
-    } catch {
-      // fall through
-    }
-  }
-
-  const msg = await webhook.send({ embeds: [embed] });
-  await setSummaryMessageId(msg.id);
-}
-
-client.login(config.token);
+client.login(token);
