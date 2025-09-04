@@ -1,85 +1,119 @@
-// embeds.js (ESM)
-import { EmbedBuilder } from 'discord.js';
+// embeds.js
+import { EmbedBuilder } from "discord.js";
 
-const color = {
-  green: 0x22c55e,
-  red: 0xef4444,
-  yellow: 0xf59e0b,
-  // darker gray to make the left color strip almost invisible
-  subtle: 0x2b2d31,
+// Emojis (kept simple and consistent)
+const EMO = {
+  chart: "📊",
+  memo: "📝",
+  pin: "📍",
+  greenDot: "🟢",
+  redDot: "🔴",
 };
 
-const emoji = {
-  chart: '📊',
-  note: '🧾',
-  pin: '📍',
-  greenDot: '🟢', // circle (requested)
-  redDot: '🔴',
-};
+function circleForDirection(direction) {
+  return direction.toLowerCase() === "long" ? EMO.greenDot : EMO.redDot;
+}
 
+function toUpperAsset(asset) {
+  return (asset || "").trim().toUpperCase();
+}
+
+function fieldIf(label, value) {
+  if (!value && value !== 0) return null;
+  const str = String(value).trim();
+  if (!str) return null;
+  return { name: label, value: str, inline: false };
+}
+
+/**
+ * Main trade signal embed
+ * - Title: BTC | Long 🟢
+ * - Sections:
+ *    📊 Trade Details
+ *    📝 Reasoning (only if provided)
+ *    📍 Status
+ * - Neutral color (no green strip). Leaving color undefined keeps Discord’s default subtle edge.
+ */
 export function renderSignalEmbed(signal) {
   const {
     asset,
-    direction, // 'Long' | 'Short'
+    direction,
     entry,
     stop,
     tp1,
     tp2,
     tp3,
     reason,
-    validReentry = 'No',
-    status = 'Active',
+    statusText = "Active — trade is still running",
+    validReentry = "Yes",
   } = signal;
 
-  const isLong = direction.toLowerCase() === 'long';
+  const title = `${toUpperAsset(asset)} | ${capitalize(direction)} ${circleForDirection(
+    direction
+  )}`;
+
+  const detailsLines = [
+    `**Entry:** ${entry ?? "-"}`,
+    `**Stop Loss:** ${stop ?? "-"}`,
+  ];
+  if (tp1) detailsLines.push(`**TP1:** ${tp1}`);
+  if (tp2) detailsLines.push(`**TP2:** ${tp2}`);
+  if (tp3) detailsLines.push(`**TP3:** ${tp3}`);
 
   const embed = new EmbedBuilder()
-    .setColor(color.subtle) // subtle bar; change to green/red if you prefer
-    .setTitle(`${asset.toUpperCase()} | ${direction} ${isLong ? emoji.greenDot : emoji.redDot}`)
+    .setTitle(title)
     .setDescription(
       [
-        `**${emoji.chart}  Trade Details**`,
-        `Entry: ${entry ?? '-'}`,
-        `Stop Loss: ${stop ?? '-'}`,
-        tp1 ? `TP1: ${tp1}` : null,
-        tp2 ? `TP2: ${tp2}` : null,
-        tp3 ? `TP3: ${tp3}` : null,
-        '',
-        `**${emoji.note}  Reasoning**`,
-        reason ? `${reason}` : '—',
-        '',
-        `**${emoji.pin}  Status**`,
-        `${status} ${isLong ? emoji.greenDot : emoji.redDot} — trade is still running`,
+        `**${EMO.chart}  Trade Details**`,
+        detailsLines.join("\n"),
+        reason
+          ? `\n**${EMO.memo}  Reasoning**\n${String(reason)}`
+          : null,
+        `\n**${EMO.pin}  Status**`,
+        `${statusText}`,
         `Valid for re-entry: ${validReentry}`,
       ]
         .filter(Boolean)
-        .join('\n'),
+        .join("\n")
     );
+  // NOTE: no .setColor() -> avoids the strong colored strip
 
   return embed;
 }
 
-export function renderSummaryEmbed(trades) {
-  // Compact one-embed list for the Current Active Trades channel
-  const lines = [];
+/**
+ * Compact summary embed for “Current Active Trades” channel.
+ * One embed that lists several trades; each item can include a jump link.
+ */
+export function renderSummaryEmbed(trades, title = "JV Current Active Trades") {
+  const embed = new EmbedBuilder().setTitle(`📊 ${title}`);
 
-  if (!trades || trades.length === 0) {
-    lines.push(
-      `**${emoji.chart} JV Current Active Trades**`,
-      `• There are currently **no** ongoing trades **valid** for entry — stay posted for future trades.`,
+  if (!trades?.length) {
+    embed.setDescription(
+      "• There are currently **no** ongoing trades **valid** for entry — stay posted for future trades."
     );
-  } else {
-    lines.push(`**${emoji.chart} JV Current Active Trades**`, '');
-    trades.forEach((t, i) => {
-      const dot = t.direction.toLowerCase() === 'long' ? emoji.greenDot : emoji.redDot;
-      lines.push(
-        `${i + 1}. **${t.asset.toUpperCase()} ${t.direction} ${dot}** — *jump*`,
-        `   Entry: ${t.entry ?? '-'}`,
-        `   Stop Loss: ${t.stop ?? '-'}`,
-        '',
-      );
-    });
+    return embed;
   }
 
-  return new EmbedBuilder().setColor(color.subtle).setDescription(lines.join('\n'));
+  const lines = trades.map((t, i) => {
+    const bullet =
+      t.direction?.toLowerCase() === "long" ? EMO.greenDot : EMO.redDot;
+    const jump = t.jumpUrl ? ` — [jump](${t.jumpUrl})` : "";
+    const header = `${i + 1}. ${toUpperAsset(t.asset)} ${capitalize(
+      t.direction
+    )} ${bullet}${jump}`;
+    const body = [`Entry: ${t.entry ?? "-"}`, `Stop Loss: ${t.stop ?? "-"}`]
+      .filter(Boolean)
+      .join("\n");
+
+    return `**${header}**\n${body}`;
+  });
+
+  embed.setDescription(lines.join("\n\n"));
+  return embed;
+}
+
+function capitalize(s) {
+  if (!s) return "";
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 }
