@@ -5,9 +5,9 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
-  PermissionsBitField,
   WebhookClient
 } from 'discord.js';
+import http from 'http';
 import { customAlphabet } from 'nanoid';
 import config from './config.js';
 import {
@@ -21,14 +21,22 @@ import { renderSignalEmbed, renderSummaryEmbed } from './embeds.js';
 const nano = customAlphabet('1234567890abcdef', 10);
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
+// ---- Tiny HTTP server so Render health checks pass ----
+const PORT = process.env.PORT || 3000;
+http
+  .createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('JV-signal-bot OK\n');
+  })
+  .listen(PORT, () => console.log(`🌐 Health server listening on :${PORT}`));
+// --------------------------------------------------------
+
 // ---------- Utils ----------
 async function getOrCreateWebhook(channel) {
-  // Reuse if saved
   const stored = await getStoredWebhook(channel.id);
   if (stored) {
     return new WebhookClient({ id: stored.id, token: stored.token });
   }
-  // Otherwise create
   const hooks = await channel.fetchWebhooks();
   let hook = hooks.find(h => h.name === config.brandName);
   if (!hook) {
@@ -88,11 +96,7 @@ client.on('interactionCreate', async (interaction) => {
     if (signal.extraRole) contentParts.push(signal.extraRole);
     const content = contentParts.length ? contentParts.join(' ') : undefined;
 
-    const msg = await webhook.send({
-      content,
-      embeds: [embed]
-    });
-
+    const msg = await webhook.send({ content, embeds: [embed] });
     await updateSignal(signal.id, { jumpUrl: msg.url });
 
     // Create private thread for owner controls
@@ -158,7 +162,6 @@ client.on('interactionCreate', async (interaction) => {
     const embed = renderSignalEmbed(updated, config.brandName);
 
     if (updated.jumpUrl) {
-      // Webhook messages can be edited by ID
       const parts = updated.jumpUrl.split('/');
       const messageId = parts[parts.length - 1];
       await webhook.editMessage(messageId, { embeds: [embed] });
