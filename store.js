@@ -1,73 +1,37 @@
-// store.js
-import fs from "fs-extra";
+import { readJSON, writeJSON, pathExists } from "fs-extra";
 
 const DB_PATH = "./signals.json";
 
 async function load() {
-  const exists = await fs.pathExists(DB_PATH);
-  if (!exists) {
-    const init = { signals: [], summaryMessageId: null, webhooks: {} };
-    await fs.writeJson(DB_PATH, init, { spaces: 2 });
-    return init;
+  if (!(await pathExists(DB_PATH))) {
+    await writeJSON(DB_PATH, { signals: [], summaryMessageId: null }, { spaces: 2 });
   }
-  return fs.readJson(DB_PATH);
+  return readJSON(DB_PATH);
 }
 
-async function save(data) {
-  await fs.writeJson(DB_PATH, data, { spaces: 2 });
+async function save(db) {
+  await writeJSON(DB_PATH, db, { spaces: 2 });
 }
 
-/* Signals */
 export async function saveSignal(signal) {
   const db = await load();
+  db.signals = db.signals.filter((s) => s.id !== signal.id);
   db.signals.push(signal);
   await save(db);
-  return signal;
 }
 
-export async function getSignals() {
+export async function listActive() {
   const db = await load();
-  return db.signals;
+  return db.signals.filter((s) => /active/i.test(s.status || ""));
 }
 
-export async function getSignal(id) {
-  const db = await load();
-  return db.signals.find(s => s.id === id) || null;
-}
-
-export async function updateSignal(id, patch) {
-  const db = await load();
-  const i = db.signals.findIndex(s => s.id === id);
-  if (i === -1) return null;
-  db.signals[i] = { ...db.signals[i], ...patch };
-  await save(db);
-  return db.signals[i];
-}
-
-export async function deleteSignal(id) {
-  const db = await load();
-  db.signals = db.signals.filter(s => s.id !== id);
-  await save(db);
-}
-
-/* Summary message */
-export async function getSummaryMessageId() {
-  const db = await load();
-  return db.summaryMessageId || null;
-}
 export async function setSummaryMessageId(id) {
   const db = await load();
   db.summaryMessageId = id;
   await save(db);
 }
 
-/* Webhook cache (id+token) per channel */
-export async function getWebhook(channelId) {
+export async function getSummaryMessageId() {
   const db = await load();
-  return db.webhooks[channelId] || null;
-}
-export async function setWebhook(channelId, webhook) {
-  const db = await load();
-  db.webhooks[channelId] = webhook; // { id, token }
-  await save(db);
+  return db.summaryMessageId || null;
 }
