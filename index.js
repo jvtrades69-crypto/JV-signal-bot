@@ -1,181 +1,132 @@
-// index.js
-import 'dotenv/config';
 import {
   Client,
   GatewayIntentBits,
-  REST,
-  Routes,
-  SlashCommandBuilder,
-  InteractionType,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle
 } from 'discord.js';
+import { customAlphabet } from 'nanoid';
+import config from './config.js';
 import {
-  saveSignal,
-  getSignal,
-  updateSignal,
-  deleteSignal,
-  listActive,
-  setSummaryMessageId,
-  getSummaryMessageId,
-  setOwnerPanelMessageId,
-  getOwnerPanelMessageId,
+  saveSignal, getSignals, updateSignal, deleteSignal,
+  getSummaryMessageId, setSummaryMessageId
 } from './store.js';
 import { renderSignalEmbed, renderSummaryEmbed } from './embeds.js';
-import {
-  DISCORD_TOKEN,
-  APPLICATION_ID,
-  GUILD_ID,
-  SIGNALS_CHANNEL_ID,
-  CURRENT_TRADES_CHANNEL_ID,
-  OWNER_ID,
-} from './config.js';
 
-// Create client with minimal intents (slash commands only need Guilds)
+const nano = customAlphabet('1234567890abcdef', 10);
+
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
 });
 
-// Slash command builder
-const signalCommand = new SlashCommandBuilder()
-  .setName('signal')
-  .setDescription('Create a trade signal')
-  .addStringOption(opt =>
-    opt.setName('asset')
-      .setDescription('Choose asset or type Other')
-      .setRequired(true)
-      .addChoices(
-        { name: 'BTC', value: 'BTC' },
-        { name: 'ETH', value: 'ETH' },
-        { name: 'SOL', value: 'SOL' },
-        { name: 'Other (custom)', value: 'OTHER' },
-      ))
-  .addStringOption(opt =>
-    opt.setName('direction')
-      .setDescription('Trade direction')
-      .setRequired(true)
-      .addChoices(
-        { name: 'Long', value: 'LONG' },
-        { name: 'Short', value: 'SHORT' },
-      ))
-  .addStringOption(opt =>
-    opt.setName('entry')
-      .setDescription('Entry price')
-      .setRequired(true))
-  .addStringOption(opt =>
-    opt.setName('stop')
-      .setDescription('Stop loss')
-      .setRequired(true))
-  .addStringOption(opt =>
-    opt.setName('tp1')
-      .setDescription('Take Profit 1 (optional)')
-      .setRequired(false))
-  .addStringOption(opt =>
-    opt.setName('tp2')
-      .setDescription('Take Profit 2 (optional)')
-      .setRequired(false))
-  .addStringOption(opt =>
-    opt.setName('tp3')
-      .setDescription('Take Profit 3 (optional)')
-      .setRequired(false))
-  .addStringOption(opt =>
-    opt.setName('reason')
-      .setDescription('Reasoning (optional)')
-      .setRequired(false))
-  .addStringOption(opt =>
-    opt.setName('mention')
-      .setDescription('Role to mention (optional)')
-      .setRequired(false));
+client.once('ready', () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+});
 
-// Deploy commands
-async function registerCommands() {
-  const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
-  try {
-    console.log('Registering slash commands...');
-    await rest.put(
-      Routes.applicationGuildCommands(APPLICATION_ID, GUILD_ID),
-      { body: [signalCommand.toJSON()] },
+client.on('interactionCreate', async (interaction) => {
+  // /signal command
+  if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
+    if (interaction.user.id !== config.ownerId) {
+      return interaction.reply({ content: 'Only the owner can use this command.', ephemeral: true });
+    }
+
+    const signal = {
+      id: nano(),
+      asset: interaction.options.getString('asset').toUpperCase(),
+      direction: interaction.options.getString('direction'), // 'LONG' | 'SHORT'
+      entry: interaction.options.getString('entry'),
+      stop: interaction.options.getString('sl'),
+      tp1: interaction.options.getString('tp1') || null,
+      tp2: interaction.options.getString('tp2') || null,
+      tp3: interaction.options.getString('tp3') || null,
+      reason: interaction.options.getString('reason') || null,
+      status: 'RUN_VALID',
+      validReentry: true,
+      jumpUrl: null
+    };
+
+    await saveSignal(signal);
+
+    const signalsChannel = await client.channels.fetch(config.signalsChannelId);
+    const embed = renderSignalEmbed(signal, config.brandName);
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`tp1_${signal.id}`).setLabel('TP1 🎯').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`tp2_${signal.id}`).setLabel('TP2 🎯').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`tp3_${signal.id}`).setLabel('TP3 🎯').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`be_${signal.id}`).setLabel('Set BE ⬛').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`stopped_${signal.id}`).setLabel('Stopped Out ❌').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`del_${signal.id}`).setLabel('Delete 🗑').setStyle(ButtonStyle.Secondary)
     );
-    console.log('Commands registered');
-  } catch (err) {
-    console.error('Failed to register commands:', err);
+
+    const msg = await signalsChannel.send({
+      content: config.mentionRoleId ? `<@&${config.mentionRoleId}>` : undefined,
+      embeds: [embed],
+      components: [row]
+    });
+
+    await updateSignal(signal.id, { jumpUrl: msg.url });
+    await updateSummary();
+
+    return interaction.reply({ content: '✅ Trade signal posted.', ephemeral: true });
   }
+
+  // Buttons on a signal
+  if (interaction.isButton()) {
+    const [action, id] = interaction.customId.split('_');
+
+    if (interaction.user.id !== config.ownerId) {
+      return interaction.reply({ content: 'Only the owner can update signals.', ephemeral: true });
+    }
+
+    if (action === 'del') {
+      await deleteSignal(id);
+      try { await interaction.message.delete(); } catch {}
+      await updateSummary();
+      return interaction.reply({ content: '🗑 Deleted.', ephemeral: true });
+    }
+
+    let patch = {};
+    if (action === 'tp1') patch = { tp1: '✅ Hit' };
+    if (action === 'tp2') patch = { tp2: '✅ Hit' };
+    if (action === 'tp3') patch = { tp3: '✅ Hit' };
+    if (action === 'be')  patch = { status: 'RUN_BE', validReentry: true };
+    if (action === 'stopped') patch = { status: 'STOPPED_OUT', validReentry: false };
+
+    await updateSignal(id, patch);
+
+    const all = await getSignals();
+    const s = all.find(x => x.id === id);
+    if (!s) return interaction.reply({ content: 'Signal not found.', ephemeral: true });
+
+    const newEmbed = renderSignalEmbed(s, config.brandName);
+    await interaction.message.edit({ embeds: [newEmbed] });
+
+    await updateSummary();
+    return interaction.reply({ content: '✅ Updated.', ephemeral: true });
+  }
+});
+
+async function updateSummary() {
+  const trades = (await getSignals()).filter(
+    s => s.status === 'RUN_VALID' || s.status === 'RUN_BE'
+  );
+  const channel = await client.channels.fetch(config.currentTradesChannelId);
+  const embed = renderSummaryEmbed(trades, config.summaryTitle);
+
+  const summaryMessageId = await getSummaryMessageId();
+  if (summaryMessageId) {
+    try {
+      const msg = await channel.messages.fetch(summaryMessageId);
+      await msg.edit({ embeds: [embed] });
+      return;
+    } catch {
+      // message missing; will repost
+    }
+  }
+
+  const newMsg = await channel.send({ embeds: [embed] });
+  await setSummaryMessageId(newMsg.id);
 }
 
-// Ready
-client.once('ready', () => {
-  console.log(`Logged in as ${client.user.tag}`);
-  registerCommands();
-});
-
-// Handle slash commands
-client.on('interactionCreate', async interaction => {
-  try {
-    if (!interaction.isChatInputCommand()) return;
-
-    if (interaction.commandName === 'signal') {
-      const asset = interaction.options.getString('asset');
-      const direction = interaction.options.getString('direction');
-      const entry = interaction.options.getString('entry');
-      const stop = interaction.options.getString('stop');
-      const tp1 = interaction.options.getString('tp1');
-      const tp2 = interaction.options.getString('tp2');
-      const tp3 = interaction.options.getString('tp3');
-      const reason = interaction.options.getString('reason');
-      const mention = interaction.options.getString('mention');
-
-      // Custom asset
-      let finalAsset = asset;
-      if (asset === 'OTHER') {
-        finalAsset = 'Custom'; // or extend to accept typed asset
-      }
-
-      // Save signal
-      const newSignal = {
-        id: Date.now().toString(),
-        asset: finalAsset,
-        direction,
-        entry,
-        stop,
-        tp1,
-        tp2,
-        tp3,
-        reason,
-        mention,
-        status: 'Active',
-        validReentry: true,
-      };
-
-      saveSignal(newSignal);
-
-      // Render embed
-      const embed = renderSignalEmbed(newSignal);
-
-      // Send to signals channel
-      const signalsChannel = await client.channels.fetch(SIGNALS_CHANNEL_ID);
-      await signalsChannel.send({
-        content: mention ? `<@&${mention}>` : null,
-        embeds: [embed],
-      });
-
-      await interaction.reply({
-        content: '✅ Signal posted!',
-        flags: 64, // ephemeral replacement
-      });
-
-      // TODO: Add private owner panel thread + buttons
-    }
-  } catch (err) {
-    console.error('Error handling /signal:', err);
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply({
-        content: '❌ Failed to post signal.',
-      }).catch(() => {});
-    } else {
-      await interaction.reply({
-        content: '❌ Failed to post signal.',
-        flags: 64,
-      }).catch(() => {});
-    }
-  }
-});
-
-client.login(DISCORD_TOKEN);
+client.login(config.token);
