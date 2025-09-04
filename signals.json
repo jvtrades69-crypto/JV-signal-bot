@@ -1,4 +1,6 @@
 {
-  "trades": [],
-  "summaryMessageId": null
+  "signals": {},
+  "summaryMessageId": "",
+  "ownerPanelMessageIds": {},
+  "channelWebhooks": {}
 }
