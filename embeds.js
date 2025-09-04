@@ -1,70 +1,87 @@
-import { EmbedBuilder } from 'discord.js';
+const { EmbedBuilder } = require('discord.js');
 
-const GREEN = '🟢';
-const RED = '🔴';
-const BE = '🟫';
-const STOP_BE = '🟥';
+function titleFor(signal) {
+  const sideEmoji = signal.side === 'Long' ? '🟢' : '🔴';
+  return `${signal.asset} | ${signal.side} ${sideEmoji}`;
+}
 
-export function statusLabel(signal) {
-  switch (signal.status) {
-    case 'RUN_VALID':   return `Active 🟩 – trade is still running`;
-    case 'RUN_BE':      return `Active ${BE} – running at break-even`;
-    case 'STOPPED_OUT': return `Stopped Out ${RED}`;
-    case 'STOPPED_BE':  return `Stopped BE ${STOP_BE}`;
-    default:            return '—';
+function statusLine(signal) {
+  // Map status + flags to the exact phrasing required
+  let line = '';
+  if (signal.status === 'ACTIVE') {
+    line = 'Active 🟩 – trade is still running';
+  } else if (signal.status === 'RUNNING_BE') {
+    line = 'Running (BE) 🟫 – stops set to breakeven';
+  } else if (signal.status === 'STOPPED_OUT') {
+    line = 'Stopped Out 🔴';
+  } else if (signal.status === 'STOPPED_BE') {
+    line = 'Stopped at BE 🟥';
+  } else {
+    line = 'Closed';
   }
+  return line;
 }
 
-export function titleLine(signal) {
-  const d = signal.direction === 'LONG' ? GREEN : RED;
-  const dirWord = signal.direction === 'LONG' ? 'Long' : 'Short';
-  return `${signal.asset} | ${dirWord} ${d}`;
-}
+function renderSignalEmbed(signal) {
+  const color = signal.side === 'Long' ? 0x22c55e : 0xef4444; // green/red
 
-const fmt = (v) => (v ?? '—');
+  // Build Trade Details
+  const td = [];
+  td.push(`Entry: ${signal.entry}`);
+  td.push(`Stop Loss: ${signal.sl}`);
+  if (signal.tp1) td.push(`TP1: ${signal.tp1}${signal.tp1Hit ? ' ✅' : ''}${signal.tp1Note ? ` (${signal.tp1Note})` : ''}`);
+  if (signal.tp2) td.push(`TP2: ${signal.tp2}${signal.tp2Hit ? ' ✅' : ''}${signal.tp2Note ? ` (${signal.tp2Note})` : ''}`);
+  if (signal.tp3) td.push(`TP3: ${signal.tp3}${signal.tp3Hit ? ' ✅' : ''}${signal.tp3Note ? ` (${signal.tp3Note})` : ''}`);
 
-export function renderSignalEmbed(signal, brand = 'JV Trades') {
-  return new EmbedBuilder()
-    .setColor(signal.direction === 'LONG' ? 0x22c55e : 0xef4444)
-    .setTitle(titleLine(signal))
-    .setDescription([
-      '📊 **Trade Details**',
-      `Entry: ${fmt(signal.entry)}`,
-      `Stop Loss: ${fmt(signal.stop)}`,
-      ...(signal.tp1 || signal.tp2 || signal.tp3
-        ? [
-            signal.tp1 ? `TP1: ${fmt(signal.tp1)}` : null,
-            signal.tp2 ? `TP2: ${fmt(signal.tp2)}` : null,
-            signal.tp3 ? `TP3: ${fmt(signal.tp3)}` : null
-          ].filter(Boolean)
-        : []),
-      '',
-      ...(signal.reason ? ['📝 **Reasoning**', signal.reason, ''] : []),
-      '📍 **Status**',
-      statusLabel(signal),
-      `Valid for re-entry: ${signal.validReentry ? 'Yes' : 'No'}`
-    ].join('\n'))
-    .setFooter({ text: brand });
-}
+  const fields = [
+    { name: '📊 Trade Details', value: td.join('\n'), inline: false },
+  ];
 
-export function renderSummaryEmbed(trades, title = '📊 JV Current Active Trades 📊') {
-  if (!trades.length) {
-    return new EmbedBuilder()
-      .setColor(0x60a5fa)
-      .setTitle(title)
-      .setDescription('• There are currently no ongoing trades valid for entry – stay posted for future trades.');
+  if (signal.reason && signal.reason.trim().length > 0) {
+    fields.push({ name: '📝 Reasoning', value: signal.reason.trim(), inline: false });
   }
 
-  const lines = trades.map((t, i) => {
-    const dot = t.direction === 'LONG' ? '🟢' : '🔴';
-    const jump = t.jumpUrl ? ` — [jump](${t.jumpUrl})` : '';
-    return `${i + 1}. ${t.asset} ${t.direction === 'LONG' ? 'Long' : 'Short'} ${dot}${jump}\n` +
-           `   Entry: ${fmt(t.entry)}\n` +
-           `   Stop Loss: ${fmt(t.stop)}`;
+  fields.push({
+    name: '📍 Status',
+    value: `${statusLine(signal)}\nValid for re-entry: ${signal.validForReentry ? 'Yes' : 'No'}`,
+    inline: false,
   });
 
-  return new EmbedBuilder()
-    .setColor(0x60a5fa)
-    .setTitle(title)
-    .setDescription(lines.join('\n\n'));
+  const embed = new EmbedBuilder()
+    .setTitle(titleFor(signal))
+    .setColor(color)
+    .addFields(fields)
+    .setTimestamp(new Date(signal.updatedAt || signal.createdAt || Date.now()))
+    .setFooter({ text: `Signal ID: ${signal.id}` });
+
+  if (signal.jumpUrl) {
+    embed.setURL(signal.jumpUrl);
+  }
+
+  return embed;
 }
+
+function renderSummaryEmbed(trades, title = '📊 JV Current Active Trades 📊') {
+  const emb = new EmbedBuilder().setTitle(title).setColor(0x60a5fa); // blue
+
+  if (!trades || trades.length === 0) {
+    emb.setDescription('• There are currently no ongoing trades valid for entry – stay posted for future trades.');
+    return emb;
+  }
+
+  // Build a numbered list per spec
+  const lines = [];
+  trades.forEach((t, i) => {
+    const sideEmoji = t.side === 'Long' ? '🟢' : '🔴';
+    lines.push(`${i + 1}. ${t.asset} ${t.side} ${sideEmoji} — [jump](${t.jumpUrl})\n   Entry: ${t.entry}\n   Stop Loss: ${t.sl}`);
+  });
+  emb.setDescription(lines.join('\n\n'));
+  return emb;
+}
+
+module.exports = {
+  renderSignalEmbed,
+  renderSummaryEmbed,
+  titleFor,
+  statusLine,
+};
