@@ -1,28 +1,32 @@
-// config.js (ESM)
+// Reads all configuration from env and exposes a default config object.
 import 'dotenv/config';
 
-export const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-export const APPLICATION_ID = process.env.APPLICATION_ID;
-export const GUILD_ID = process.env.GUILD_ID;
+function req(key) {
+  const v = process.env[key];
+  if (!v) throw new Error(`Missing required env: ${key}`);
+  return v;
+}
 
-export const SIGNALS_CHANNEL_ID = process.env.SIGNALS_CHANNEL_ID;
-export const CURRENT_TRADES_CHANNEL_ID = process.env.CURRENT_TRADES_CHANNEL_ID;
+const cfg = {
+  token: req('DISCORD_TOKEN'),
+  appId: req('APPLICATION_ID'),
+  guildId: req('GUILD_ID'),
 
-export const OWNER_ID = process.env.OWNER_ID;
+  signalsChannelId: req('SIGNALS_CHANNEL_ID'),
+  currentTradesChannelId: req('CURRENT_TRADES_CHANNEL_ID'),
 
-// Branding / webhook identity
-export const BRAND_NAME = process.env.BRAND_NAME || 'JV Trades';
-export const BRAND_AVATAR_URL = process.env.BRAND_AVATAR_URL || '';
-export const USE_WEBHOOK = String(process.env.USE_WEBHOOK || 'true').toLowerCase() === 'true';
+  ownerId: req('OWNER_ID'),
 
-// Safety checks
-[
-  'DISCORD_TOKEN',
-  'APPLICATION_ID',
-  'GUILD_ID',
-  'SIGNALS_CHANNEL_ID',
-  'CURRENT_TRADES_CHANNEL_ID',
-  'OWNER_ID',
-].forEach((k) => {
-  if (!eval(k)) console.warn(`[config] Missing ${k} in environment.`);
-});
+  // Optional brand/webhook identity
+  brandName: process.env.BRAND_NAME || 'JV Trades',
+  brandAvatarUrl: process.env.BRAND_AVATAR_URL || '',
+  // You said you don’t want to force any PFP/name -> default false.
+  useWebhook: String(process.env.USE_WEBHOOK || 'false').toLowerCase() === 'true',
+
+  // Optional role to ping when posting a signal
+  mentionRoleId: process.env.TRADER_ROLE_ID || process.env.MENTION_ROLE_ID || null,
+
+  summaryTitle: '📊 JV Current Active Trades'
+};
+
+export default cfg;
