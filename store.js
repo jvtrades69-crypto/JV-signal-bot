@@ -1,68 +1,92 @@
-import fs from "fs-extra";
-import path from "path";
+// Simple JSON file store for signals + message/webhook bookkeeping.
+import { readFile, writeFile, access } from 'fs/promises';
+import { constants as fsConst } from 'fs';
 
-const { readJSON, writeJSON, pathExists } = fs;
-const STORE_PATH = path.join(process.cwd(), "signals.json");
+const DB_PATH = './signals.json';
 
-// Ensure signals.json exists
-async function ensureStore() {
-  if (!(await pathExists(STORE_PATH))) {
-    await writeJSON(STORE_PATH, { signals: [], summaryMessageId: null }, { spaces: 2 });
+async function ensureDb() {
+  try {
+    await access(DB_PATH, fsConst.F_OK);
+  } catch {
+    const empty = {
+      signals: [],
+      summaryMessageId: null,
+      webhooks: {} // channelId -> { id, token }
+    };
+    await writeFile(DB_PATH, JSON.stringify(empty, null, 2), 'utf8');
   }
 }
 
-async function getStore() {
-  await ensureStore();
-  return await readJSON(STORE_PATH);
+async function load() {
+  await ensureDb();
+  const raw = await readFile(DB_PATH, 'utf8');
+  return JSON.parse(raw);
 }
 
-async function saveStore(store) {
-  await writeJSON(STORE_PATH, store, { spaces: 2 });
+async function save(db) {
+  await writeFile(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
 }
 
-// === PUBLIC API ===
+/** SIGNAL CRUD **/
+
 export async function saveSignal(signal) {
-  const store = await getStore();
-  store.signals.push(signal);
-  await saveStore(store);
+  const db = await load();
+  db.signals.push(signal);
+  await save(db);
   return signal;
 }
 
 export async function getSignal(id) {
-  const store = await getStore();
-  return store.signals.find((s) => s.id === id) || null;
+  const db = await load();
+  return db.signals.find(s => s.id === id) || null;
 }
 
 export async function updateSignal(id, patch) {
-  const store = await getStore();
-  const idx = store.signals.findIndex((s) => s.id === id);
+  const db = await load();
+  const idx = db.signals.findIndex(s => s.id === id);
   if (idx === -1) return null;
-  store.signals[idx] = { ...store.signals[idx], ...patch };
-  await saveStore(store);
-  return store.signals[idx];
+  db.signals[idx] = { ...db.signals[idx], ...patch };
+  await save(db);
+  return db.signals[idx];
 }
 
 export async function deleteSignal(id) {
-  const store = await getStore();
-  store.signals = store.signals.filter((s) => s.id !== id);
-  await saveStore(store);
+  const db = await load();
+  const idx = db.signals.findIndex(s => s.id === id);
+  if (idx === -1) return false;
+  db.signals.splice(idx, 1);
+  await save(db);
+  return true;
 }
 
 export async function listActive() {
-  const store = await getStore();
-  return store.signals.filter((s) => {
-    const status = (s.status || "").toLowerCase();
-    return status === "active" || status === "running";
-  });
+  const db = await load();
+  // Active = running (valid or BE)
+  return db.signals.filter(s => s.status === 'RUN_VALID' || s.status === 'RUN_BE');
 }
+
+/** SUMMARY MESSAGE ID **/
 
 export async function getSummaryMessageId() {
-  const store = await getStore();
-  return store.summaryMessageId || null;
+  const db = await load();
+  return db.summaryMessageId || null;
+}
+export async function setSummaryMessageId(messageId) {
+  const db = await load();
+  db.summaryMessageId = messageId;
+  await save(db);
+  return messageId;
 }
 
-export async function setSummaryMessageId(id) {
-  const store = await getStore();
-  store.summaryMessageId = id;
-  await saveStore(store);
+/** WEBHOOK CACHE PER CHANNEL **/
+
+export async function getChannelWebhook(channelId) {
+  const db = await load();
+  return db.webhooks[channelId] || null;
+}
+export async function setChannelWebhook(channelId, data /* {id, token} */) {
+  const db = await load();
+  db.webhooks[channelId] = data;
+  await save(db);
+  return data;
 }
