@@ -1,6 +1,5 @@
 {
-  "signals": {},
-  "summaryMessageId": "",
-  "ownerPanelMessageIds": {},
-  "channelWebhooks": {}
+  "signals": [],
+  "summaryMessageId": null,
+  "ownerPanels": {}
 }
