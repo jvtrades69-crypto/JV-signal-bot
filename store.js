@@ -1,17 +1,20 @@
-import { readJSON, writeJSON, pathExists } from "fs-extra";
+// store.js
+import fs from "fs-extra";
 
 const DB_PATH = "./signals.json";
 
 async function load() {
-  if (!(await pathExists(DB_PATH))) {
+  const exists = await fs.pathExists(DB_PATH);
+  if (!exists) {
     const init = { signals: [], summaryMessageId: null, webhooks: {} };
-    await writeJSON(DB_PATH, init, { spaces: 2 });
+    await fs.writeJson(DB_PATH, init, { spaces: 2 });
     return init;
   }
-  return readJSON(DB_PATH);
+  return fs.readJson(DB_PATH);
 }
+
 async function save(data) {
-  await writeJSON(DB_PATH, data, { spaces: 2 });
+  await fs.writeJson(DB_PATH, data, { spaces: 2 });
 }
 
 /* Signals */
@@ -21,14 +24,17 @@ export async function saveSignal(signal) {
   await save(db);
   return signal;
 }
+
 export async function getSignals() {
   const db = await load();
   return db.signals;
 }
+
 export async function getSignal(id) {
   const db = await load();
   return db.signals.find(s => s.id === id) || null;
 }
+
 export async function updateSignal(id, patch) {
   const db = await load();
   const i = db.signals.findIndex(s => s.id === id);
@@ -37,6 +43,7 @@ export async function updateSignal(id, patch) {
   await save(db);
   return db.signals[i];
 }
+
 export async function deleteSignal(id) {
   const db = await load();
   db.signals = db.signals.filter(s => s.id !== id);
