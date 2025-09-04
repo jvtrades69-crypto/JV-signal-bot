@@ -1,5 +1,7 @@
 {
   "signals": [],
   "summaryMessageId": null,
-  "ownerPanels": {}
+  "ownerPanels": {},
+  "threads": {},
+  "webhooks": {}
 }
