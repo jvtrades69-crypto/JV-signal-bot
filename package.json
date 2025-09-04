@@ -1,15 +1,17 @@
 {
   "name": "jv-signal-bot",
   "version": "1.0.0",
-  "description": "Discord Trade Signal Bot for JV Trades",
-  "type": "module",
+  "description": "Discord bot to post clean trading signals with updates and closing.",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "register": "node register-commands.js"
   },
+  "license": "MIT",
   "dependencies": {
-    "discord.js": "^14.15.3",
+    "discord.js": "^14.16.3",
     "dotenv": "^16.4.5",
-    "uuid": "^9.0.1"
+    "fs-extra": "^11.2.0",
+    "nanoid": "^5.0.7"
   }
 }
