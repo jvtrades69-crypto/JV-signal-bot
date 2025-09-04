@@ -2,12 +2,8 @@ import { REST, Routes, SlashCommandBuilder } from 'discord.js';
 import config from './config.js';
 
 const commands = [
-  // Health check
-  new SlashCommandBuilder()
-    .setName('ping')
-    .setDescription('Health check'),
+  new SlashCommandBuilder().setName('ping').setDescription('Health check'),
 
-  // Create a trade signal
   new SlashCommandBuilder()
     .setName('signal')
     .setDescription('Create a new trade signal')

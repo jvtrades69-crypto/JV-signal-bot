@@ -1,4 +1,3 @@
-// Reads all configuration from env and exposes a default config object.
 import 'dotenv/config';
 
 function req(key) {
@@ -19,6 +18,7 @@ const cfg = {
 
   // Optional
   brandName: process.env.BRAND_NAME || 'JV Trades',
+  brandAvatarUrl: process.env.BRAND_AVATAR_URL || null,
   mentionRoleId: process.env.TRADER_ROLE_ID || process.env.MENTION_ROLE_ID || null
 };
 
