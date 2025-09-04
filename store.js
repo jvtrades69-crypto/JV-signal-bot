@@ -1,49 +1,66 @@
-import fs from "fs-extra";
+import { readJSON, writeJSON, pathExists } from "fs-extra";
 
-const DB_FILE = "./signals.json";
+const DB_PATH = "./signals.json";
 
-export function loadDB() {
-  if (!fs.existsSync(DB_FILE)) {
-    fs.writeJsonSync(DB_FILE, { signals: [], summaryMessageId: null });
+async function load() {
+  if (!(await pathExists(DB_PATH))) {
+    const init = { signals: [], summaryMessageId: null, webhooks: {} };
+    await writeJSON(DB_PATH, init, { spaces: 2 });
+    return init;
   }
-  return fs.readJsonSync(DB_FILE);
+  return readJSON(DB_PATH);
+}
+async function save(data) {
+  await writeJSON(DB_PATH, data, { spaces: 2 });
 }
 
-export function saveDB(db) {
-  fs.writeJsonSync(DB_FILE, db, { spaces: 2 });
-}
-
-export function saveSignal(signal) {
-  const db = loadDB();
+/* Signals */
+export async function saveSignal(signal) {
+  const db = await load();
   db.signals.push(signal);
-  saveDB(db);
+  await save(db);
+  return signal;
 }
-
-export function getSignals() {
-  return loadDB().signals;
+export async function getSignals() {
+  const db = await load();
+  return db.signals;
 }
-
-export function updateSignal(id, updates) {
-  const db = loadDB();
-  const index = db.signals.findIndex(s => s.id === id);
-  if (index >= 0) {
-    db.signals[index] = { ...db.signals[index], ...updates };
-    saveDB(db);
-  }
+export async function getSignal(id) {
+  const db = await load();
+  return db.signals.find(s => s.id === id) || null;
 }
-
-export function deleteSignal(id) {
-  const db = loadDB();
+export async function updateSignal(id, patch) {
+  const db = await load();
+  const i = db.signals.findIndex(s => s.id === id);
+  if (i === -1) return null;
+  db.signals[i] = { ...db.signals[i], ...patch };
+  await save(db);
+  return db.signals[i];
+}
+export async function deleteSignal(id) {
+  const db = await load();
   db.signals = db.signals.filter(s => s.id !== id);
-  saveDB(db);
+  await save(db);
 }
 
-export function setSummaryMessageId(id) {
-  const db = loadDB();
+/* Summary message */
+export async function getSummaryMessageId() {
+  const db = await load();
+  return db.summaryMessageId || null;
+}
+export async function setSummaryMessageId(id) {
+  const db = await load();
   db.summaryMessageId = id;
-  saveDB(db);
+  await save(db);
 }
 
-export function getSummaryMessageId() {
-  return loadDB().summaryMessageId;
+/* Webhook cache (id+token) per channel */
+export async function getWebhook(channelId) {
+  const db = await load();
+  return db.webhooks[channelId] || null;
+}
+export async function setWebhook(channelId, webhook) {
+  const db = await load();
+  db.webhooks[channelId] = webhook; // { id, token }
+  await save(db);
 }
