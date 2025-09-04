@@ -1,64 +1,53 @@
-// store.js (ESM) — tiny JSON “DB”
-import fse from 'fs-extra';
-import { join } from 'node:path';
+import { readJson, writeJson, pathExists } from 'fs-extra';
 
-const DB_PATH = join(process.cwd(), 'signals.json');
+const DB_PATH = './signals.json';
 
-async function load() {
-  const exists = await fse.pathExists(DB_PATH);
-  if (!exists) {
-    return { trades: [], summaryMessageId: null };
+async function loadDb() {
+  if (!(await pathExists(DB_PATH))) {
+    await writeJson(DB_PATH, { signals: [], summaryMessageId: null }, { spaces: 2 });
   }
-  return fse.readJson(DB_PATH);
+  return readJson(DB_PATH);
 }
 
-async function save(db) {
-  await fse.writeJson(DB_PATH, db, { spaces: 2 });
+async function saveDb(db) {
+  await writeJson(DB_PATH, db, { spaces: 2 });
 }
 
+// Create
 export async function saveSignal(signal) {
-  const db = await load();
-  // if this trade already exists (by messageId), update; else push
-  const idx = db.trades.findIndex((t) => t.messageId === signal.messageId);
-  if (idx >= 0) db.trades[idx] = signal;
-  else db.trades.push(signal);
-  await save(db);
-  return signal;
+  const db = await loadDb();
+  db.signals.unshift(signal);
+  await saveDb(db);
 }
 
+// Read
+export async function getSignals() {
+  const db = await loadDb();
+  return db.signals;
+}
+
+// Update
 export async function updateSignal(id, patch) {
-  const db = await load();
-  const idx = db.trades.findIndex((t) => t.messageId === id || t.id === id);
-  if (idx === -1) return null;
-  db.trades[idx] = { ...db.trades[idx], ...patch };
-  await save(db);
-  return db.trades[idx];
+  const db = await loadDb();
+  db.signals = db.signals.map(s => (s.id === id ? { ...s, ...patch } : s));
+  await saveDb(db);
 }
 
+// Delete
 export async function deleteSignal(id) {
-  const db = await load();
-  db.trades = db.trades.filter((t) => t.messageId !== id && t.id !== id);
-  await save(db);
+  const db = await loadDb();
+  db.signals = db.signals.filter(s => s.id !== id);
+  await saveDb(db);
 }
 
-export async function getSignal(id) {
-  const db = await load();
-  return db.trades.find((t) => t.messageId === id || t.id === id) || null;
-}
-
-export async function listActive() {
-  const db = await load();
-  // active means not deleted and status !== 'stopped'
-  return db.trades.filter((t) => !t.deleted && (t.status ?? 'running') !== 'stopped');
-}
-
+// Summary message id helpers
 export async function getSummaryMessageId() {
-  const db = await load();
+  const db = await loadDb();
   return db.summaryMessageId || null;
 }
 
-export async function setSummaryMessageId(messageId) {
-  const db = await load();
-  db.summaryMessageId = messageId;
-  await save(db);
+export async function setSummaryMessageId(id) {
+  const db = await loadDb();
+  db.summaryMessageId = id;
+  await saveDb(db);
 }
