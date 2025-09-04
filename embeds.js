@@ -1,35 +1,52 @@
 import { EmbedBuilder } from "discord.js";
 
-export function renderSignalEmbed(signal) {
-  const embed = new EmbedBuilder()
-    .setTitle(`${signal.asset} | ${signal.direction} ${signal.direction === "Long" ? "🟢" : "🔴"}`)
-    .addFields(
-      { name: "Entry", value: `${signal.entry}`, inline: true },
-      { name: "Stop Loss", value: `${signal.stopLoss}`, inline: true }
-    )
-    .setColor(signal.direction === "Long" ? 0x00ff00 : 0xff0000)
-    .setFooter({ text: `Status: ${signal.status}` });
+const dirEmoji = d => (d === "Long" ? "🟢" : "🔴");
 
-  if (signal.tp1) embed.addFields({ name: "TP1", value: signal.tp1.toString(), inline: true });
-  if (signal.tp2) embed.addFields({ name: "TP2", value: signal.tp2.toString(), inline: true });
-  if (signal.tp3) embed.addFields({ name: "TP3", value: signal.tp3.toString(), inline: true });
-  if (signal.reason) embed.addFields({ name: "Reason", value: signal.reason });
+export function renderSignalEmbed(signal, brand = "JV Trades") {
+  const e = new EmbedBuilder()
+    .setColor(signal.direction === "Long" ? 0x2ecc71 : 0xe74c3c)
+    .setTitle(`${signal.asset} | ${signal.direction} ${dirEmoji(signal.direction)}`)
+    .setFooter({ text: `${brand} • Status: ${signal.status}` });
 
-  return embed;
-}
+  const lines = [
+    `**Entry:** ${signal.entry}`,
+    `**Stop Loss:** ${signal.stopLoss}`
+  ];
+  if (signal.tp1) lines.push(`**TP1:** ${signal.tp1}`);
+  if (signal.tp2) lines.push(`**TP2:** ${signal.tp2}`);
+  if (signal.tp3) lines.push(`**TP3:** ${signal.tp3}`);
 
-export function renderSummaryEmbed(signals) {
-  if (signals.length === 0) {
-    return new EmbedBuilder()
-      .setTitle("📊 JV Current Active Trades 📊")
-      .setDescription("• There are currently no ongoing trades valid for entry — stay posted for future trades.");
+  e.addFields({ name: "📊 Trade Details", value: lines.join("\n") });
+
+  if (signal.reason) {
+    e.addFields({ name: "📝 Reason", value: signal.reason.slice(0, 1024) });
   }
 
-  let desc = "";
-  signals.forEach((s, i) => {
-    desc += `**${i + 1}. ${s.asset} ${s.direction === "Long" ? "🟢" : "🔴"}** — jump\n`;
-    desc += `Entry: ${s.entry}\nStop Loss: ${s.stopLoss}\n\n`;
+  e.addFields({
+    name: "📌 Status",
+    value: `${signal.status}${signal.valid ? " • Valid for re-entry: **Yes**" : " • Valid for re-entry: **No**"}`
   });
 
-  return new EmbedBuilder().setTitle("📊 JV Current Active Trades 📊").setDescription(desc);
+  return e;
+}
+
+export function renderSummaryEmbed(trades, brand = "JV Trades") {
+  const e = new EmbedBuilder().setColor(0x3498db).setTitle(`📊 ${brand} Current Active Trades`);
+
+  if (!trades.length) {
+    e.setDescription("• There are currently no ongoing trades **valid** for entry — stay posted for future trades.");
+    return e;
+    }
+
+  const parts = trades.map((t, i) => {
+    const url = t.messageId
+      ? `https://discord.com/channels/${t.guildId}/${t.channelId}/${t.messageId}`
+      : null;
+    const head = `${i + 1}. **${t.asset} ${dirEmoji(t.direction)}**${url ? ` — [jump](${url})` : ""}`;
+    const body = `Entry: ${t.entry}\nStop Loss: ${t.stopLoss}`;
+    return `${head}\n${body}`;
+  });
+
+  e.setDescription(parts.join("\n\n"));
+  return e;
 }
