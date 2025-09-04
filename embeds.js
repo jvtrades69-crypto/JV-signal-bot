@@ -1,52 +1,80 @@
+// embeds.js
 import { EmbedBuilder } from "discord.js";
 
-const dirEmoji = d => (d === "Long" ? "🟢" : "🔴");
+/** helpers */
+const dashIfEmpty = (v) => {
+  if (v === 0) return "0";
+  return (v === undefined || v === null || String(v).trim() === "") ? "–" : String(v).trim();
+};
+const uc = (s) => (s ? String(s).toUpperCase() : s);
 
-export function renderSignalEmbed(signal, brand = "JV Trades") {
-  const e = new EmbedBuilder()
-    .setColor(signal.direction === "Long" ? 0x2ecc71 : 0xe74c3c)
-    .setTitle(`${signal.asset} | ${signal.direction} ${dirEmoji(signal.direction)}`)
-    .setFooter({ text: `${brand} • Status: ${signal.status}` });
+/** Status line renderer */
+function statusBlock(signal) {
+  const statusEmoji =
+    signal.status === "active" ? "🟩"
+    : signal.status === "tp1" || signal.status === "tp2" || signal.status === "tp3" ? "🟧"
+    : signal.status === "stopped" || signal.status === "stopped_be" ? "🟥"
+    : "🟩";
 
-  const lines = [
-    `**Entry:** ${signal.entry}`,
-    `**Stop Loss:** ${signal.stopLoss}`
-  ];
-  if (signal.tp1) lines.push(`**TP1:** ${signal.tp1}`);
-  if (signal.tp2) lines.push(`**TP2:** ${signal.tp2}`);
-  if (signal.tp3) lines.push(`**TP3:** ${signal.tp3}`);
+  const valid = signal.validForReentry === false ? "No" : "Yes";
 
-  e.addFields({ name: "📊 Trade Details", value: lines.join("\n") });
-
-  if (signal.reason) {
-    e.addFields({ name: "📝 Reason", value: signal.reason.slice(0, 1024) });
-  }
-
-  e.addFields({
-    name: "📌 Status",
-    value: `${signal.status}${signal.valid ? " • Valid for re-entry: **Yes**" : " • Valid for re-entry: **No**"}`
-  });
-
-  return e;
+  return [
+    "📌 **Status**",
+    `Active ${statusEmoji} — trade is still running`,
+    `Valid **for** re-entry: **${valid}**`
+  ].join("\n");
 }
 
-export function renderSummaryEmbed(trades, brand = "JV Trades") {
-  const e = new EmbedBuilder().setColor(0x3498db).setTitle(`📊 ${brand} Current Active Trades`);
+/** Big trade card */
+export function renderSignalEmbed(signal) {
+  const titleDot =
+    signal.direction?.toLowerCase() === "short" ? "🔴" : "🟢";
 
-  if (!trades.length) {
-    e.setDescription("• There are currently no ongoing trades **valid** for entry — stay posted for future trades.");
-    return e;
-    }
+  const lines = [
+    "📊 **Trade Details**",
+    `**Entry:** ${dashIfEmpty(signal.entry)}`,
+    `**Stop Loss:** ${dashIfEmpty(signal.stopLoss)}`,
+    `**TP1:** ${dashIfEmpty(signal.tp1)}`,
+    `**TP2:** ${dashIfEmpty(signal.tp2)}`,
+    `**TP3:** ${dashIfEmpty(signal.tp3)}`,
+    "", // spacer
+  ];
 
-  const parts = trades.map((t, i) => {
-    const url = t.messageId
-      ? `https://discord.com/channels/${t.guildId}/${t.channelId}/${t.messageId}`
-      : null;
-    const head = `${i + 1}. **${t.asset} ${dirEmoji(t.direction)}**${url ? ` — [jump](${url})` : ""}`;
-    const body = `Entry: ${t.entry}\nStop Loss: ${t.stopLoss}`;
-    return `${head}\n${body}`;
-  });
+  // Reason (only if present)
+  const reason = (signal.reason ?? "").trim();
+  if (reason) {
+    lines.push("📋✏️ **Reasoning**");
+    lines.push(reason);
+    lines.push(""); // spacer
+  }
 
-  e.setDescription(parts.join("\n\n"));
-  return e;
+  // Status block (always)
+  lines.push(statusBlock(signal));
+
+  const embed = new EmbedBuilder()
+    .setColor(signal.direction?.toLowerCase() === "short" ? 0xff4d4f : 0x22c55e)
+    .setTitle(`${uc(signal.asset)} | ${uc(signal.direction)} ${titleDot}`)
+    .setDescription(lines.join("\n"));
+
+  // No footer (avoid duplicate status)
+  return embed;
+}
+
+/** Compact summary list embed for "Current Active Trades" */
+export function renderSummaryEmbed(trades, title = "JV Current Active Trades") {
+  const desc = trades.length === 0
+    ? "• There are currently no ongoing trades **valid** for entry — stay posted for future trades."
+    : trades.map((t, i) => {
+        const dot = t.direction?.toLowerCase() === "short" ? "🔴" : "🟢";
+        return [
+          `**${i + 1}. ${uc(t.asset)} ${uc(t.direction)} ${dot} — jump**`,
+          `   Entry: ${dashIfEmpty(t.entry)}`,
+          `   Stop Loss: ${dashIfEmpty(t.stopLoss)}`
+        ].join("\n");
+      }).join("\n\n");
+
+  return new EmbedBuilder()
+    .setColor(0x3b82f6)
+    .setTitle(`📊 ${title}`)
+    .setDescription(desc);
 }
