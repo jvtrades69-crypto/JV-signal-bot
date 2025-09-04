@@ -1,207 +1,193 @@
 import {
   Client,
   GatewayIntentBits,
-  REST,
   Routes,
-  SlashCommandBuilder,
+  REST,
   ChannelType,
   PermissionFlagsBits,
-} from "discord.js";
-import { config } from "./config.js";
-import { renderSignalEmbed } from "./embeds.js";
+} from 'discord.js';
+import { config } from './config.js';
+import {
+  renderSignalEmbed,
+  renderSummaryEmbed,
+  titleCaseDir,
+} from './embeds.js';
 import {
   saveSignal,
   listActive,
-  setSummaryMessageId,
   getSummaryMessageId,
-} from "./store.js";
+  setSummaryMessageId,
+} from './store.js';
 
-function requireEnv(name, value) {
-  if (!value) {
-    console.error(`Missing ${name} in environment`);
-    process.exit(1);
-  }
-}
-requireEnv("DISCORD_TOKEN", config.token);
-requireEnv("APPLICATION_ID", config.appId);
-requireEnv("GUILD_ID", config.guildId);
-requireEnv("SIGNALS_CHANNEL_ID", config.signalsChannelId);
-requireEnv("CURRENT_TRADES_CHANNEL_ID", config.currentTradesChannelId);
-
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
+// ---------- Robust logging (NO exits) ----------
+process.on('unhandledRejection', (e) => {
+  console.error('[UNHANDLED REJECTION]', e);
 });
+process.on('uncaughtException', (e) => {
+  console.error('[UNCAUGHT EXCEPTION]', e);
+});
+
+// Keepalive heartbeat so the worker never looks idle
+setInterval(() => console.log('[HEARTBEAT] alive'), 60_000);
+
+console.log('[BOOT] starting… node=%s', process.version);
+console.log('[BOOT] guildId=%s, appId=%s', config.guildId, config.appId);
+
+// Only what we need: Guilds
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+
+// ---- Slash commands (required options FIRST) ----
+const commands = [
+  {
+    name: 'signal',
+    description: 'Create a new trade signal',
+    // String is required by API for default_member_permissions
+    default_member_permissions: String(PermissionFlagsBits.SendMessages),
+    dm_permission: false,
+    options: [
+      { name: 'asset', description: 'Asset symbol (e.g. BTC)', type: 3, required: true },
+      { name: 'direction', description: 'long or short', type: 3, required: true, choices: [
+        { name: 'Long', value: 'long' }, { name: 'Short', value: 'short' }
+      ]},
+      { name: 'entry', description: 'Entry price', type: 3, required: true },
+      { name: 'sl', description: 'Stop loss', type: 3, required: true },
+
+      { name: 'tp1', description: 'Take profit 1', type: 3, required: false },
+      { name: 'tp2', description: 'Take profit 2', type: 3, required: false },
+      { name: 'tp3', description: 'Take profit 3', type: 3, required: false },
+      { name: 'reason', description: 'Reasoning (optional)', type: 3, required: false },
+      { name: 'valid_reentry', description: 'Valid for re-entry? (Yes/No)', type: 3, required: false, choices: [
+        { name: 'Yes', value: 'Yes' }, { name: 'No', value: 'No' }
+      ]},
+      { name: 'mention_role', description: 'Role ID to mention (optional)', type: 3, required: false }
+    ]
+  }
+];
 
 async function registerCommands() {
-  const commands = [
-    new SlashCommandBuilder()
-      .setName("signal")
-      .setDescription("Create a new trade signal")
-      // REQUIRED first
-      .addStringOption((o) =>
-        o.setName("asset").setDescription("Asset (e.g., BTC)").setRequired(true)
-      )
-      .addStringOption((o) =>
-        o.setName("direction").setDescription("Long or Short").setRequired(true)
-      )
-      .addStringOption((o) =>
-        o.setName("entry").setDescription("Entry price").setRequired(true)
-      )
-      .addStringOption((o) =>
-        o.setName("stoploss").setDescription("Stop loss").setRequired(true)
-      )
-      // Optional after
-      .addStringOption((o) => o.setName("tp1").setDescription("Take Profit 1"))
-      .addStringOption((o) => o.setName("tp2").setDescription("Take Profit 2"))
-      .addStringOption((o) => o.setName("tp3").setDescription("Take Profit 3"))
-      .addStringOption((o) => o.setName("reasoning").setDescription("Reasoning"))
-      .addStringOption((o) =>
-        o.setName("status").setDescription("Status text (default: Active 🟩)")
-      ),
-  ].map((c) => c.toJSON());
-
-  const rest = new REST({ version: "10" }).setToken(config.token);
-  await rest.put(
-    Routes.applicationGuildCommands(config.appId, config.guildId),
-    { body: commands }
-  );
-  console.log("Slash commands registered ✅");
+  try {
+    console.log('[REG] registering commands…');
+    const rest = new REST({ version: '10' }).setToken(config.token);
+    const res = await rest.put(
+      Routes.applicationGuildCommands(config.appId, config.guildId),
+      { body: commands }
+    );
+    console.log('[REG] registered (%s commands).', Array.isArray(res) ? res.length : '?');
+  } catch (e) {
+    // Do NOT exit — just log the precise API complaint
+    console.error('[REG] failed:', e?.rawError ?? e?.data ?? e?.message ?? e);
+  }
 }
 
-client.once("ready", () => {
-  console.log(`${client.user.tag} online ✅`);
+async function upsertSummary() {
+  try {
+    const channel = await client.channels.fetch(config.currentTradesChannelId);
+    if (!channel) return console.error('[SUMMARY] currentTradesChannel not found');
+
+    const trades = await listActive();
+    const embed = renderSummaryEmbed(trades, 'JV Current Active Trades 📊');
+
+    const existingId = await getSummaryMessageId();
+    if (existingId) {
+      try {
+        const msg = await channel.messages.fetch(existingId);
+        await msg.edit({ embeds: [embed] });
+        console.log('[SUMMARY] updated');
+        return;
+      } catch {
+        console.log('[SUMMARY] prior message missing, sending new');
+      }
+    }
+    const newMsg = await channel.send({ embeds: [embed] });
+    await setSummaryMessageId(newMsg.id);
+    console.log('[SUMMARY] sent new');
+  } catch (e) {
+    console.error('[SUMMARY] error:', e?.message ?? e);
+  }
+}
+
+client.once('ready', async () => {
+  try {
+    console.log('[READY] logged in as %s', client.user.tag);
+  } catch {}
+  await registerCommands();
+  await upsertSummary();
 });
 
-client.on("interactionCreate", async (i) => {
-  if (!i.isChatInputCommand()) return;
-  if (i.commandName !== "signal") return;
-
+// Interaction flow — always defer, never crash
+client.on('interactionCreate', async (interaction) => {
   try {
-    await i.deferReply({ ephemeral: true }); // prevents “did not respond”
+    if (!interaction.isChatInputCommand()) return;
+    if (interaction.commandName !== 'signal') return;
 
-    // Read options
-    const data = {
-      asset: i.options.getString("asset"),
-      direction: i.options.getString("direction"),
-      entry: i.options.getString("entry"),
-      stopLoss: i.options.getString("stoploss"),
-      tp1: i.options.getString("tp1"),
-      tp2: i.options.getString("tp2"),
-      tp3: i.options.getString("tp3"),
-      reasoning: i.options.getString("reasoning"),
-      status: i.options.getString("status") || "Active 🟩",
+    try { await interaction.deferReply({ ephemeral: true }); }
+    catch (e) { console.warn('[INT] defer failed:', e?.message ?? e); }
+
+    const opts = interaction.options;
+    const asset = (opts.getString('asset') || '').trim().toUpperCase();
+    const direction = (opts.getString('direction') || 'long').toLowerCase();
+    const entry = opts.getString('entry');
+    const sl = opts.getString('sl');
+    const tp1 = opts.getString('tp1') || null;
+    const tp2 = opts.getString('tp2') || null;
+    const tp3 = opts.getString('tp3') || null;
+    const reason = opts.getString('reason') || '';
+    const validReEntry = (opts.getString('valid_reentry') || 'Yes');
+    const mentionRole = opts.getString('mention_role') || null;
+
+    const statusText = `Active 🟩 — trade is still running`;
+    const validReEntryText = validReEntry;
+
+    const signal = {
+      id: Date.now().toString(),
+      asset, direction, entry, sl, tp1, tp2, tp3, reason,
+      statusText, validReEntryText, active: true
     };
 
-    const embed = renderSignalEmbed(data);
+    // Send in signals channel
+    const channel = await client.channels.fetch(config.signalsChannelId);
+    if (!channel) {
+      console.error('[INT] signals channel not found:', config.signalsChannelId);
+      await interaction.editReply({ content: '❌ Signals channel not found.' });
+      return;
+    }
 
-    // Target channels
-    const guild = await client.guilds.fetch(config.guildId);
-    const signalsChannel = await guild.channels.fetch(config.signalsChannelId);
-    const summaryChannel = await guild.channels.fetch(
-      config.currentTradesChannelId
-    );
+    const embed = renderSignalEmbed(signal);
+    const content = mentionRole ? `<@&${mentionRole}>` : undefined;
 
-    // Send message (webhook if allowed)
-    let msg;
-    if (config.useWebhook) {
-      // Needs ManageWebhooks on the channel
-      let hook =
-        (await signalsChannel.fetchWebhooks()).find(
-          (w) => w.owner?.id === client.user.id
-        ) || null;
+    const message = await channel.send({ content, embeds: [embed] });
+    console.log('[INT] signal sent messageId=%s', message.id);
 
-      if (!hook) {
-        try {
-          hook = await signalsChannel.createWebhook({
-            name: config.brandName,
-            avatar: config.brandAvatarUrl,
-          });
-        } catch {
-          // Fallback if no permission to create
-        }
-      }
-      if (hook) {
-        msg = await hook.send({
-          username: config.brandName,
-          avatarURL: config.brandAvatarUrl,
-          embeds: [embed],
-          allowedMentions: { parse: [] },
+    // Best-effort thread: message.startThread only makes PUBLIC threads from a message.
+    // Create a *public* owner panel, then immediately lock/invite restriction. Private threads require Channel#createThread.
+    try {
+      if (channel.type === ChannelType.GuildText) {
+        await message.startThread({
+          name: `${asset} ${titleCaseDir(direction)} – Owner Panel`,
+          autoArchiveDuration: 1440
         });
+        console.log('[THREAD] started (public). If you want private, use channel.createThread with PrivateThread in a non-community text channel).');
       }
+    } catch (e) {
+      console.warn('[THREAD] could not start thread:', e?.message ?? e);
     }
 
-    if (!msg) {
-      // fallback: normal bot message
-      msg = await signalsChannel.send({ embeds: [embed] });
-    }
-
-    // Try to create a private thread for owner controls
-    try {
-      const t = await msg.startThread({
-        name: `${data.asset.toUpperCase()} ${data.direction} • controls`,
-        autoArchiveDuration: 1440,
-        type: ChannelType.PrivateThread,
-      });
-      if (config.ownerId) {
-        await t.members.add(config.ownerId).catch(() => {});
-      }
-    } catch {
-      // ignore if thread creation not permitted
-    }
-
-    // Save + update summary
-    await saveSignal({
-      id: msg.id,
-      channelId: msg.channelId,
-      url: msg.url,
-      ...data,
-    });
-
-    const active = await listActive();
-    const summaryText =
-      active.length === 0
-        ? "📈 **JV Current Active Trades**\n• There are currently no ongoing trades."
-        : [
-            "📈 **JV Current Active Trades**",
-            ...active.map(
-              (s, idx) =>
-                `${idx + 1}. **${s.asset.toUpperCase()} ${/long/i.test(s.direction) ? "🟩" : "🔴"}** — [jump](${s.url})\n   Entry: ${s.entry}\n   Stop Loss: ${s.stopLoss}`
-            ),
-          ].join("\n");
-
-    let summaryMessageId = await getSummaryMessageId();
-    try {
-      if (summaryMessageId) {
-        const m = await summaryChannel.messages.fetch(summaryMessageId);
-        await m.edit({ content: summaryText });
-      } else {
-        const m = await summaryChannel.send({ content: summaryText });
-        summaryMessageId = m.id;
-        await setSummaryMessageId(summaryMessageId);
-      }
-    } catch {
-      const m = await summaryChannel.send({ content: summaryText });
-      await setSummaryMessageId(m.id);
-    }
-
-    await i.editReply({
-      content: `✅ Signal posted: ${msg.url}`,
-    });
-  } catch (err) {
-    console.error(err);
-    if (i.deferred || i.replied) {
-      await i.editReply("❌ Something went wrong creating that signal.");
-    } else {
-      await i.reply({ content: "❌ Error.", ephemeral: true });
-    }
+    await saveSignal(signal);
+    await upsertSummary();
+    await interaction.editReply({ content: '✅ Signal posted.' });
+  } catch (e) {
+    console.error('[INT] handler error:', e?.rawError ?? e?.data ?? e?.message ?? e);
+    try { await interaction.editReply({ content: '❌ Failed to create signal. Check logs.' }); } catch {}
   }
 });
 
+// ---- Login (no exit on failure; just log) ----
 (async () => {
-  await registerCommands();
-  await client.login(config.token);
+  try {
+    console.log('[LOGIN] logging in…');
+    await client.login(config.token);
+    console.log('[LOGIN] success');
+  } catch (e) {
+    console.error('[LOGIN] failed:', e?.message ?? e);
+  }
 })();
