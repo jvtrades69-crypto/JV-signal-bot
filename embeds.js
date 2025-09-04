@@ -1,119 +1,72 @@
-// embeds.js
-import { EmbedBuilder } from "discord.js";
+import { EmbedBuilder } from 'discord.js';
 
-// Emojis (kept simple and consistent)
-const EMO = {
-  chart: "📊",
-  memo: "📝",
-  pin: "📍",
-  greenDot: "🟢",
-  redDot: "🔴",
-};
+const GREEN_DOT = '🟩';
+const RED_DOT = '🔴';
+const BROWN = '🟫';
+const BLACK = '⬛';
 
-function circleForDirection(direction) {
-  return direction.toLowerCase() === "long" ? EMO.greenDot : EMO.redDot;
+export function statusLabel(signal) {
+  switch (signal.status) {
+    case 'RUN_VALID':   return `Active ${GREEN_DOT} — trade is still running`;
+    case 'RUN_BE':      return `Active ${BROWN} — running at break-even`;
+    case 'STOPPED_OUT': return `Stopped Out ${RED_DOT}`;
+    case 'STOPPED_BE':  return `Stopped BE ${BLACK}`;
+    default:            return '—';
+  }
 }
 
-function toUpperAsset(asset) {
-  return (asset || "").trim().toUpperCase();
+export function titleLine(signal) {
+  const d = signal.direction === 'LONG' ? GREEN_DOT : RED_DOT;
+  const dirWord = signal.direction === 'LONG' ? 'Long' : 'Short';
+  return `${signal.asset} | ${dirWord} ${d}`;
 }
 
-function fieldIf(label, value) {
-  if (!value && value !== 0) return null;
-  const str = String(value).trim();
-  if (!str) return null;
-  return { name: label, value: str, inline: false };
+const fmt = (v) => (v ?? '—');
+
+export function renderSignalEmbed(signal, brand = 'JV Trades') {
+  const e = new EmbedBuilder()
+    .setColor(signal.direction === 'LONG' ? 0x22c55e : 0xef4444)
+    .setTitle(titleLine(signal))
+    .setDescription([
+      '📊 **Trade Details**',
+      `**Entry:** ${fmt(signal.entry)}`,
+      `**Stop Loss:** ${fmt(signal.stop)}`,
+      ...(signal.tp1 || signal.tp2 || signal.tp3
+        ? [
+            `**TP1:** ${fmt(signal.tp1)}`,
+            `**TP2:** ${fmt(signal.tp2)}`,
+            `**TP3:** ${fmt(signal.tp3)}`
+          ]
+        : []),
+      '',
+      ...(signal.reason ? ['📝 **Reasoning (only if provided)**', signal.reason, ''] : []),
+      '📍 **Status**',
+      statusLabel(signal),
+      `Valid for re-entry: ${signal.validReentry ? 'Yes' : 'No'}`
+    ].join('\n'))
+    .setFooter({ text: brand });
+
+  return e;
 }
 
-/**
- * Main trade signal embed
- * - Title: BTC | Long 🟢
- * - Sections:
- *    📊 Trade Details
- *    📝 Reasoning (only if provided)
- *    📍 Status
- * - Neutral color (no green strip). Leaving color undefined keeps Discord’s default subtle edge.
- */
-export function renderSignalEmbed(signal) {
-  const {
-    asset,
-    direction,
-    entry,
-    stop,
-    tp1,
-    tp2,
-    tp3,
-    reason,
-    statusText = "Active — trade is still running",
-    validReentry = "Yes",
-  } = signal;
-
-  const title = `${toUpperAsset(asset)} | ${capitalize(direction)} ${circleForDirection(
-    direction
-  )}`;
-
-  const detailsLines = [
-    `**Entry:** ${entry ?? "-"}`,
-    `**Stop Loss:** ${stop ?? "-"}`,
-  ];
-  if (tp1) detailsLines.push(`**TP1:** ${tp1}`);
-  if (tp2) detailsLines.push(`**TP2:** ${tp2}`);
-  if (tp3) detailsLines.push(`**TP3:** ${tp3}`);
-
-  const embed = new EmbedBuilder()
-    .setTitle(title)
-    .setDescription(
-      [
-        `**${EMO.chart}  Trade Details**`,
-        detailsLines.join("\n"),
-        reason
-          ? `\n**${EMO.memo}  Reasoning**\n${String(reason)}`
-          : null,
-        `\n**${EMO.pin}  Status**`,
-        `${statusText}`,
-        `Valid for re-entry: ${validReentry}`,
-      ]
-        .filter(Boolean)
-        .join("\n")
-    );
-  // NOTE: no .setColor() -> avoids the strong colored strip
-
-  return embed;
-}
-
-/**
- * Compact summary embed for “Current Active Trades” channel.
- * One embed that lists several trades; each item can include a jump link.
- */
-export function renderSummaryEmbed(trades, title = "JV Current Active Trades") {
-  const embed = new EmbedBuilder().setTitle(`📊 ${title}`);
-
-  if (!trades?.length) {
-    embed.setDescription(
-      "• There are currently **no** ongoing trades **valid** for entry — stay posted for future trades."
-    );
-    return embed;
+export function renderSummaryEmbed(trades, title = '📊 JV Current Active Trades') {
+  if (!trades.length) {
+    return new EmbedBuilder()
+      .setColor(0x60a5fa)
+      .setTitle(title)
+      .setDescription('There are currently **no** ongoing trades **valid for entry** — stay posted for future trades.');
   }
 
   const lines = trades.map((t, i) => {
-    const bullet =
-      t.direction?.toLowerCase() === "long" ? EMO.greenDot : EMO.redDot;
-    const jump = t.jumpUrl ? ` — [jump](${t.jumpUrl})` : "";
-    const header = `${i + 1}. ${toUpperAsset(t.asset)} ${capitalize(
-      t.direction
-    )} ${bullet}${jump}`;
-    const body = [`Entry: ${t.entry ?? "-"}`, `Stop Loss: ${t.stop ?? "-"}`]
-      .filter(Boolean)
-      .join("\n");
-
-    return `**${header}**\n${body}`;
+    const dot = t.direction === 'LONG' ? '🟩' : '🔴';
+    const jump = t.jumpUrl ? ` — [jump](${t.jumpUrl})` : '';
+    return `${i + 1}. **${t.asset} ${t.direction === 'LONG' ? 'Long' : 'Short'} ${dot}**${jump}\n` +
+           `   **Entry:** ${fmt(t.entry)}\n` +
+           `   **Stop Loss:** ${fmt(t.stop)}`;
   });
 
-  embed.setDescription(lines.join("\n\n"));
-  return embed;
-}
-
-function capitalize(s) {
-  if (!s) return "";
-  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+  return new EmbedBuilder()
+    .setColor(0x60a5fa)
+    .setTitle(title)
+    .setDescription(lines.join('\n\n'));
 }
