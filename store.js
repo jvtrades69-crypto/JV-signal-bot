@@ -1,8 +1,11 @@
-import { readJson, writeJson, pathExists } from 'fs-extra';
+// store.js — CJS/ESM safe import style for fs-extra
+import fs from 'fs-extra';
+
+const { readJson, writeJson, pathExists } = fs;
 
 const DB_PATH = './signals.json';
 
-async function loadDb() {
+async function ensureDb() {
   if (!(await pathExists(DB_PATH))) {
     await writeJson(
       DB_PATH,
@@ -15,6 +18,10 @@ async function loadDb() {
       { spaces: 2 }
     );
   }
+}
+
+async function loadDb() {
+  await ensureDb();
   return readJson(DB_PATH);
 }
 
@@ -25,7 +32,6 @@ async function saveDb(db) {
 // ---------- Signals CRUD ----------
 export async function saveSignal(signal) {
   const db = await loadDb();
-  // put newest first
   db.signals = [{ ...signal }, ...db.signals.filter(s => s.id !== signal.id)];
   await saveDb(db);
 }
@@ -49,12 +55,10 @@ export async function updateSignal(id, patch) {
 export async function deleteSignal(id) {
   const db = await loadDb();
   db.signals = db.signals.filter(s => s.id !== id);
-  // also clear owner panel mapping
   delete db.ownerPanels?.[id];
   await saveDb(db);
 }
 
-// Only those considered valid/active for the summary
 export async function listActive() {
   const db = await loadDb();
   return db.signals.filter(s => s.status === 'RUN_VALID' || s.status === 'RUN_BE');
@@ -85,7 +89,7 @@ export async function setOwnerPanelMessageId(signalId, messageId) {
   await saveDb(db);
 }
 
-// ---------- Webhook tokens per-channel (for editing webhook messages) ----------
+// ---------- Webhook tokens per-channel ----------
 export async function getStoredWebhook(channelId) {
   const db = await loadDb();
   return db.webhooks?.[channelId] || null;
