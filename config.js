@@ -1,25 +1,18 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-function get(name, required = true) {
-  let v = process.env[name];
-  if (typeof v === "string") v = v.trim();
-  if (!v && required) console.error(`❌ Missing env var: ${name}`);
-  return v;
-}
+export const config = {
+  token: process.env.DISCORD_TOKEN,
+  appId: process.env.APPLICATION_ID,
+  guildId: process.env.GUILD_ID,
 
-export default {
-  token: get("DISCORD_TOKEN"),
-  appId: get("APPLICATION_ID"),
-  guildId: get("GUILD_ID"),
+  signalsChannelId: process.env.SIGNALS_CHANNEL_ID,
+  currentTradesChannelId: process.env.CURRENT_TRADES_CHANNEL_ID,
 
-  signalsChannelId: get("SIGNALS_CHANNEL_ID"),
-  currentTradesChannelId: get("CURRENT_TRADES_CHANNEL_ID"),
+  ownerId: process.env.OWNER_ID || null,
 
-  ownerId: get("OWNER_ID"),
-  traderRoleId: get("TRADER_ROLE_ID", false) || null,
-
-  brandName: get("BRAND_NAME", false) || "JV Trades",
-  brandAvatarUrl: get("BRAND_AVATAR_URL", false) || null,
-  useWebhook: (get("USE_WEBHOOK", false) || "false").toLowerCase() === "true"
+  brandName: process.env.BRAND_NAME || "JV Trades",
+  brandAvatarUrl:
+    process.env.BRAND_AVATAR_URL || "https://your-logo-or-avatar.png",
+  useWebhook: String(process.env.USE_WEBHOOK || "true").toLowerCase() === "true",
 };
