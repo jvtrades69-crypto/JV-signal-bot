@@ -59,7 +59,7 @@ export async function setSummaryMessageId(id) {
   await saveDb(db);
 }
 
-// ---------- Owner panel / thread tracking ----------
+// ---------- Thread tracking ----------
 export async function getThreadId(signalId) {
   const db = await loadDb();
   return db.threads?.[signalId] || null;
@@ -71,7 +71,7 @@ export async function setThreadId(signalId, threadId) {
   await saveDb(db);
 }
 
-// ---------- Webhook storage (per channel) ----------
+// ---------- Webhook storage ----------
 export async function getStoredWebhook(channelId) {
   const db = await loadDb();
   return db.webhooks?.[channelId] || null;
