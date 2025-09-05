@@ -27,24 +27,22 @@ const pendingSignals = new Map(); // modalId -> { fields... }
 // ---------- Formatting ----------
 const fmt = v => (v ?? '—');
 const dirWord = d => (d === 'LONG' ? 'Long' : 'Short');
-const dirDot = d => (d === 'LONG' ? '🟩' : '🟥'); // used in summary (we keep active icon green for Long, red for Short)
 
 function highestTpHit(s) {
-  if (s.tpHit === 'TP3') return 'TP3';
-  if (s.tpHit === 'TP2') return 'TP2';
-  if (s.tpHit === 'TP1') return 'TP1';
-  return null;
+  // s.tpHit is one of: 'TP1' | 'TP2' | 'TP3' | null
+  return s.tpHit === 'TP3' ? 'TP3' : s.tpHit === 'TP2' ? 'TP2' : s.tpHit === 'TP1' ? 'TP1' : null;
 }
 
+// 🚦 Status block rules
 function statusLines(s) {
-  // ACTIVE (only running valid)
+  // Active only when RUN_VALID
   if (s.status === 'RUN_VALID') {
     const left = s.tpHit ? `Active 🟩 | ${s.tpHit} hit` : 'Active 🟩';
-    const right = `Valid for re-entry: ✅ Yes`;
+    const right = `Valid for re-entry: Yes`;
     return [left, right];
   }
 
-  // INACTIVE for everything else (stopped out / be / closed)
+  // Inactive for: STOPPED_OUT, STOPPED_BE, CLOSED (BE = closed)
   let reason = '—';
   if (s.status === 'STOPPED_OUT') reason = 'Stopped out';
   if (s.status === 'STOPPED_BE') {
@@ -56,11 +54,11 @@ function statusLines(s) {
     reason = `Fully closed${tp ? ` after ${tp}` : ''}`;
   }
   const left = `Inactive 🟥 | ${reason}`;
-  const right = `Valid for re-entry: ❌ No`;
+  const right = `Valid for re-entry: No`;
   return [left, right];
 }
 
-function renderSignalText(s) {
+function renderSignalText(s, mentionLine = '') {
   const lines = [];
   lines.push(`**${s.asset} | ${dirWord(s.direction)} ${s.direction === 'LONG' ? '🟢' : '🔴'}**`, ``);
   lines.push(`📊 **Trade Details**`);
@@ -70,14 +68,17 @@ function renderSignalText(s) {
   if (s.tp2) lines.push(`TP2: ${s.tp2}`);
   if (s.tp3) lines.push(`TP3: ${s.tp3}`);
   if (s.reason) lines.push(``, `📝 **Reasoning**`, s.reason);
-  lines.push(``, `📍 **Status**`);
+  lines.push(``, `🚦 **Status**`);
   const [l1, l2] = statusLines(s);
   lines.push(l1, l2);
+  if (mentionLine) {
+    lines.push('', mentionLine); // blank line before mentions
+  }
   return lines.join('\n');
 }
 
 function renderSummaryText(trades) {
-  const title = `📊 **JV Current Active Trades**`;
+  const title = `**JV Current Active Trades** 📊`;
   if (!trades.length) {
     return `${title}\n\n• There are currently no ongoing trades valid for entry – stay posted for future trades.`;
   }
@@ -102,10 +103,15 @@ function extractRoleIds(extraRoleRaw) {
 }
 
 function allowedMentionsForRoles(roleIds) {
-  return { parse: [], roles: roleIds }; // only ping the specific roles
+  return { parse: [], roles: roleIds }; // only ping the specific roles we provide
 }
 
-// ---------- Webhook helpers ----------
+function buildMentionLine(roleIds) {
+  if (!roleIds?.length) return '';
+  return roleIds.map(id => `<@&${id}>`).join(' ');
+}
+
+// ---------- Webhook helpers (ensure same name+avatar) ----------
 async function getOrCreateWebhook(channel) {
   const stored = await getStoredWebhook(channel.id);
   if (stored) return new WebhookClient({ id: stored.id, token: stored.token });
@@ -117,6 +123,18 @@ async function getOrCreateWebhook(channel) {
       name: config.brandName,
       avatar: config.brandAvatarUrl || null
     });
+  } else {
+    // keep branding consistent
+    const needsRename = hook.name !== config.brandName;
+    const needsAvatar = !!config.brandAvatarUrl && !hook.avatar;
+    if ((needsRename || needsAvatar) && hook.edit) {
+      try {
+        await hook.edit({
+          name: config.brandName,
+          avatar: config.brandAvatarUrl || undefined
+        });
+      } catch {}
+    }
   }
   await setStoredWebhook(channel.id, { id: hook.id, token: hook.token });
   return new WebhookClient({ id: hook.id, token: hook.token });
@@ -152,7 +170,7 @@ client.on('interactionCreate', async (interaction) => {
       const extraRole = interaction.options.getString('extra_role');
 
       if (assetSel === 'OTHER') {
-        // open modal to collect asset text
+        // OPEN MODAL — do not defer here
         const pid = nano();
         pendingSignals.set(pid, { direction, entry, stop, tp1, tp2, tp3, reason, extraRole });
         const modal = new ModalBuilder()
@@ -223,27 +241,33 @@ client.on('interactionCreate', async (interaction) => {
         if (tp2) { patch.tp2 = tp2; changes.push(`TP2 → ${tp2}`); }
         if (tp3) { patch.tp3 = tp3; changes.push(`TP3 → ${tp3}`); }
 
-        const willPing = ['entry','sl','tp1','tp2','tp3'].some(k => !!(k==='entry'?entry: k==='sl'?sl: k==='tp1'?tp1: k==='tp2'?tp2: tp3));
-        await updateSignal(id, patch);
-        const updated = await getSignal(id);
-        await editSignalWebhookMessage(updated);
+        const willPing = Boolean(entry || sl || tp1 || tp2 || tp3);
 
-        // audit note in private thread
-        const tid = await getThreadId(id);
-        if (tid && changes.length) {
-          try {
-            const thread = await client.channels.fetch(tid);
-            await thread.send(`Updated: ${changes.join(', ')}`);
-          } catch {}
+        try {
+          await updateSignal(id, patch);
+          const updated = await getSignal(id);
+          await editSignalWebhookMessage(updated);
+
+          // audit note in private thread
+          const tid = await getThreadId(id);
+          if (tid && changes.length) {
+            try {
+              const thread = await client.channels.fetch(tid);
+              await thread.send(`Updated: ${changes.join(', ')}`);
+            } catch {}
+          }
+
+          // smart ping only on impactful changes
+          if (willPing) {
+            await postUpdatePing(updated, changes);
+          }
+
+          await updateSummaryText();
+          return interaction.editReply({ content: '✅ Levels updated.' });
+        } catch (err) {
+          console.error('update modal error', err);
+          return interaction.editReply({ content: '❌ Update failed. Check logs.' });
         }
-
-        // smart ping: only if impactful fields changed
-        if (willPing) {
-          await postUpdatePing(updated, changes);
-        }
-
-        await updateSummaryText();
-        return interaction.editReply({ content: '✅ Levels updated.' });
       }
     }
 
@@ -253,19 +277,8 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: 'Only the owner can use these controls.', ephemeral: true });
       }
 
-      await interaction.deferReply({ ephemeral: true });
+      // SPECIAL: do NOT defer before showing a modal
       const [action, id] = interaction.customId.split('_');
-      const signal = await getSignal(id);
-      if (!signal) return interaction.editReply({ content: 'Signal not found.' });
-
-      if (action === 'del') {
-        await deleteSignalMessage(signal).catch(() => {});
-        await deleteOwnerThread(id);
-        await deleteSignal(id);
-        await updateSummaryText();
-        return interaction.editReply({ content: '❌ Trade deleted.' });
-      }
-
       if (action === 'update') {
         const modal = new ModalBuilder()
           .setCustomId(`modal_update_${id}`)
@@ -285,24 +298,31 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.showModal(modal);
       }
 
+      await interaction.deferReply({ ephemeral: true });
+
+      const signal = await getSignal(id);
+      if (!signal) return interaction.editReply({ content: 'Signal not found.' });
+
+      if (action === 'del') {
+        await deleteSignalMessage(signal).catch(() => {});
+        await deleteOwnerThread(id);
+        await deleteSignal(id);
+        await updateSummaryText();
+        return interaction.editReply({ content: '❌ Trade deleted.' });
+      }
+
       // status + TP hits
       const patches = {
         tp1hit: { tpHit: 'TP1' },
         tp2hit: { tpHit: 'TP2' },
         tp3hit: { tpHit: 'TP3' },
-        run:    { status: 'RUN_VALID', validReentry: true },
         stopped:{ status: 'STOPPED_OUT', validReentry: false },
         stopbe: { status: 'STOPPED_BE', validReentry: false },
-        closed: { status: 'CLOSED', validReentry: false }
+        closed: { status: 'CLOSED',     validReentry: false }
       };
 
       if (patches[action]) {
-        // If a higher TP is hit, overwrite to that TP
-        if (action.startsWith('tp')) {
-          await updateSignal(id, patches[action]);
-        } else {
-          await updateSignal(id, patches[action]);
-        }
+        await updateSignal(id, patches[action]);
       }
 
       const updated = await getSignal(id);
@@ -310,7 +330,7 @@ client.on('interactionCreate', async (interaction) => {
 
       // thread actions per rules
       if (action === 'stopped' || action === 'stopbe') {
-        await deleteOwnerThread(id);
+        await deleteOwnerThread(id); // delete thread for stopped out / stopped BE
       }
       if (action === 'closed') {
         // keep thread
@@ -334,7 +354,7 @@ async function createAndPostSignal(payload) {
     asset: payload.asset,
     direction: payload.direction,
     entry: payload.entry,
-    stop: payload.stop,      // <-- SL preserved
+    stop: payload.stop,      // SL preserved
     tp1: payload.tp1,
     tp2: payload.tp2,
     tp3: payload.tp3,
@@ -350,13 +370,17 @@ async function createAndPostSignal(payload) {
 
   const signalsChannel = await client.channels.fetch(config.signalsChannelId);
   const webhook = await getOrCreateWebhook(signalsChannel);
-  const text = renderSignalText(signal);
 
+  // mentions at the BOTTOM
   const roleIds = extractRoleIds(signal.extraRole);
-  const mentionStr = roleIds.map(id => `<@&${id}>`).join(' ');
-  const content = roleIds.length ? `${mentionStr}\n\n${text}` : text;
+  const mentionLine = buildMentionLine(roleIds);
 
-  const sent = await webhook.send({ content, allowedMentions: allowedMentionsForRoles(roleIds) });
+  const text = renderSignalText(signal, mentionLine);
+  const sent = await webhook.send({
+    content: text,
+    allowedMentions: allowedMentionsForRoles(roleIds)
+  });
+
   await updateSignal(signal.id, { jumpUrl: sent.url, messageId: sent.id });
 
   // owner private thread
@@ -372,8 +396,7 @@ async function createAndPostSignal(payload) {
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`tp1hit_${signal.id}`).setLabel('🎯 TP1 Hit').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`tp2hit_${signal.id}`).setLabel('🎯 TP2 Hit').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`tp3hit_${signal.id}`).setLabel('🎯 TP3 Hit').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`run_${signal.id}`).setLabel('🟩 Running (Valid)').setStyle(ButtonStyle.Primary)
+    new ButtonBuilder().setCustomId(`tp3hit_${signal.id}`).setLabel('🎯 TP3 Hit').setStyle(ButtonStyle.Success)
   );
   const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`stopbe_${signal.id}`).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
@@ -394,17 +417,24 @@ async function editSignalWebhookMessage(signal) {
   const hook = hooks.find(h => h.name === config.brandName);
   if (!hook || !signal.messageId) return;
   const clientHook = new WebhookClient({ id: hook.id, token: hook.token });
-  await clientHook.editMessage(signal.messageId, { content: renderSignalText(signal) }).catch(() => {});
+
+  // rebuild mention line at bottom each edit
+  const roleIds = extractRoleIds(signal.extraRole);
+  const mentionLine = buildMentionLine(roleIds);
+
+  await clientHook.editMessage(signal.messageId, {
+    content: renderSignalText(signal, mentionLine),
+    allowedMentions: allowedMentionsForRoles(roleIds)
+  }).catch(() => {});
 }
 
 async function postUpdatePing(signal, changes) {
   const channel = await client.channels.fetch(config.signalsChannelId);
   const webhook = await getOrCreateWebhook(channel);
   const roleIds = extractRoleIds(signal.extraRole);
-  const mentionStr = roleIds.map(id => `<@&${id}>`).join(' ');
   const summary = changes && changes.length ? `Updated: ${changes.join(', ')}` : 'Levels updated';
   const link = signal.jumpUrl ? `\n${signal.jumpUrl}` : '';
-  const content = roleIds.length ? `${mentionStr}\n\n${summary}${link}` : `${summary}${link}`;
+  const content = `${summary}${link}`;
   await webhook.send({ content, allowedMentions: allowedMentionsForRoles(roleIds) });
 }
 
