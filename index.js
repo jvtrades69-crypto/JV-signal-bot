@@ -70,7 +70,9 @@ function renderSignalText(s, mentionLine = '') {
   lines.push(``, `🚦 **Status**`);
   const [l1, l2] = statusLines(s);
   lines.push(l1, l2);
-  if (mentionLine) lines.push('', mentionLine); // blank line before mentions
+  if (mentionLine) {
+    lines.push('', mentionLine); // blank line before mentions
+  }
   return lines.join('\n');
 }
 
@@ -94,12 +96,19 @@ function extractRoleIds(extraRoleRaw) {
   if (config.mentionRoleId) ids.push(config.mentionRoleId);
 
   if (!extraRoleRaw) return ids;
-  const m = extraRoleRaw.match(/\d{6,}/g); // match IDs in <@&id> or raw digits
+  const m = extraRoleRaw.match(/\d{6,}/g); // find numeric IDs in <@&id> or raw digits
   if (m) ids.push(...m);
   return Array.from(new Set(ids));
 }
-const allowedMentionsForRoles = (roleIds) => ({ parse: [], roles: roleIds });
-const buildMentionLine = (roleIds) => (roleIds?.length ? roleIds.map(id => `<@&${id}>`).join(' ') : '');
+
+function allowedMentionsForRoles(roleIds) {
+  return { parse: [], roles: roleIds }; // only ping the specific roles we provide
+}
+
+function buildMentionLine(roleIds) {
+  if (!roleIds?.length) return '';
+  return roleIds.map(id => `<@&${id}>`).join(' ');
+}
 
 // ---------- Webhook helpers (ensure same name+avatar) ----------
 async function getOrCreateWebhook(channel) {
@@ -114,6 +123,7 @@ async function getOrCreateWebhook(channel) {
       avatar: config.brandAvatarUrl || null
     });
   } else {
+    // keep branding consistent
     const needsRename = hook.name !== config.brandName;
     const needsAvatar = !!config.brandAvatarUrl && !hook.avatar;
     if ((needsRename || needsAvatar) && hook.edit) {
@@ -137,12 +147,12 @@ client.once('ready', () => {
 // ---------- Interaction handling ----------
 client.on('interactionCreate', async (interaction) => {
   try {
-    // /ping
+    // --- /ping ---
     if (interaction.isChatInputCommand() && interaction.commandName === 'ping') {
       return interaction.reply({ content: '🏓 pong', ephemeral: true });
     }
 
-    // /signal
+    // --- /signal ---
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', ephemeral: true });
@@ -151,7 +161,7 @@ client.on('interactionCreate', async (interaction) => {
       const assetSel = interaction.options.getString('asset');
       const direction = interaction.options.getString('direction');
       const entry = interaction.options.getString('entry');
-      const stop = interaction.options.getString('sl');
+      const stop = interaction.options.getString('sl'); // SL
       const tp1 = interaction.options.getString('tp1');
       const tp2 = interaction.options.getString('tp2');
       const tp3 = interaction.options.getString('tp3');
@@ -159,7 +169,7 @@ client.on('interactionCreate', async (interaction) => {
       const extraRole = interaction.options.getString('extra_role');
 
       if (assetSel === 'OTHER') {
-        // Open asset modal (do NOT defer)
+        // OPEN MODAL — do not defer here
         const pid = nano();
         pendingSignals.set(pid, { direction, entry, stop, tp1, tp2, tp3, reason, extraRole });
         const modal = new ModalBuilder()
@@ -178,26 +188,38 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.deferReply({ ephemeral: true });
       await createAndPostSignal({
-        asset: assetSel, direction, entry, stop, tp1, tp2, tp3, reason, extraRole
+        asset: assetSel,
+        direction,
+        entry,
+        stop,
+        tp1,
+        tp2,
+        tp3,
+        reason,
+        extraRole
       });
-      return interaction.editReply({ content: '✅ Trade signal posted.' });
+
+      await interaction.editReply({ content: '✅ Trade signal posted.' });
+      return;
     }
 
-    // Modals
+    // --- Modals ---
     if (interaction.isModalSubmit()) {
-      // Modal: asset from /signal
+      // custom asset from /signal
       if (interaction.customId.startsWith('modal_asset_')) {
         await interaction.deferReply({ ephemeral: true });
         const pid = interaction.customId.replace('modal_asset_', '');
         const data = pendingSignals.get(pid);
         pendingSignals.delete(pid);
-        if (!data) return interaction.editReply({ content: '❌ Session expired. Please use /signal again.' });
+        if (!data) {
+          return interaction.editReply({ content: '❌ Session expired. Please use /signal again.' });
+        }
         const assetValue = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
         await createAndPostSignal({ asset: assetValue, ...data });
         return interaction.editReply({ content: '✅ Trade signal posted.' });
       }
 
-      // Modal: update levels
+      // update levels modal
       if (interaction.customId.startsWith('modal_update_')) {
         await interaction.deferReply({ ephemeral: true });
         const id = interaction.customId.replace('modal_update_', '');
@@ -211,23 +233,32 @@ client.on('interactionCreate', async (interaction) => {
         const tp3 = interaction.fields.getTextInputValue('upd_tp3')?.trim();
 
         const patch = {};
-        if (entry) patch.entry = entry;
-        if (sl) patch.stop = sl;
-        if (tp1) patch.tp1 = tp1;
-        if (tp2) patch.tp2 = tp2;
-        if (tp3) patch.tp3 = tp3;
+        const changes = [];
+        if (entry) { patch.entry = entry; changes.push(`Entry → ${entry}`); }
+        if (sl) { patch.stop = sl; changes.push(`SL → ${sl}`); }
+        if (tp1) { patch.tp1 = tp1; changes.push(`TP1 → ${tp1}`); }
+        if (tp2) { patch.tp2 = tp2; changes.push(`TP2 → ${tp2}`); }
+        if (tp3) { patch.tp3 = tp3; changes.push(`TP3 → ${tp3}`); }
 
-        const impactful = Boolean(entry || sl || tp1 || tp2 || tp3);
+        const willPing = Boolean(entry || sl || tp1 || tp2 || tp3);
 
         try {
           await updateSignal(id, patch);
-          let updated = await getSignal(id);
+          const updated = await getSignal(id);
+          await editSignalWebhookMessage(updated);
 
-          if (impactful) {
-            // repost to retag roles
-            updated = await repostSignal(updated);
-          } else {
-            await editSignalWebhookMessage(updated);
+          // audit note in private thread
+          const tid = await getThreadId(id);
+          if (tid && changes.length) {
+            try {
+              const thread = await client.channels.fetch(tid);
+              await thread.send(`Updated: ${changes.join(', ')}`);
+            } catch {}
+          }
+
+          // smart ping only on impactful changes
+          if (willPing) {
+            await postUpdatePing(updated, changes);
           }
 
           await updateSummaryText();
@@ -237,52 +268,9 @@ client.on('interactionCreate', async (interaction) => {
           return interaction.editReply({ content: '❌ Update failed. Check logs.' });
         }
       }
-
-      // Modal: update meta (asset/direction/reason/extra role)
-      if (interaction.customId.startsWith('modal_meta_')) {
-        await interaction.deferReply({ ephemeral: true });
-        const id = interaction.customId.replace('modal_meta_', '');
-        const signal = await getSignal(id);
-        if (!signal) return interaction.editReply({ content: 'Signal not found.' });
-
-        const asset = interaction.fields.getTextInputValue('upd_asset')?.trim();
-        const direction = interaction.fields.getTextInputValue('upd_dir')?.trim();
-        const reason = interaction.fields.getTextInputValue('upd_reason')?.trim();
-        const extra = interaction.fields.getTextInputValue('upd_extra')?.trim();
-
-        const patch = {};
-        if (asset) patch.asset = asset.toUpperCase();
-        if (direction) {
-          const d = direction.toLowerCase();
-          if (d === 'long' || d === 'l') patch.direction = 'LONG';
-          else if (d === 'short' || d === 's') patch.direction = 'SHORT';
-        }
-        if (typeof reason === 'string' && reason.length >= 0) patch.reason = reason; // allow clearing by entering empty string? Not in modal UI
-        if (extra) patch.extraRole = extra;
-
-        const impactful = Boolean(patch.asset || patch.direction);
-
-        try {
-          await updateSignal(id, patch);
-          let updated = await getSignal(id);
-
-          if (impactful) {
-            // repost to ping roles if asset/dir changed (you asked for retag on impactful)
-            updated = await repostSignal(updated);
-          } else {
-            await editSignalWebhookMessage(updated);
-          }
-
-          await updateSummaryText();
-          return interaction.editReply({ content: '✅ Details updated.' });
-        } catch (err) {
-          console.error('meta modal error', err);
-          return interaction.editReply({ content: '❌ Update failed. Check logs.' });
-        }
-      }
     }
 
-    // Buttons
+    // --- Buttons ---
     if (interaction.isButton()) {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use these controls.', ephemeral: true });
@@ -294,10 +282,12 @@ client.on('interactionCreate', async (interaction) => {
       const action = sep === -1 ? cid : cid.slice(0, sep);
       const id = sep === -1 ? null : cid.slice(sep + 1);
 
-      // SHOW MODAL buttons must not defer
+      // SHOW MODAL path must not defer
       if (action === 'update') {
         if (!id) return interaction.reply({ content: 'Bad button ID.', ephemeral: true });
-        const modal = new ModalBuilder().setCustomId(`modal_update_${id}`).setTitle('Update Levels');
+        const modal = new ModalBuilder()
+          .setCustomId(`modal_update_${id}`)
+          .setTitle('Update Levels');
         const i1 = new TextInputBuilder().setCustomId('upd_entry').setLabel('Entry').setStyle(TextInputStyle.Short).setRequired(false);
         const i2 = new TextInputBuilder().setCustomId('upd_sl').setLabel('SL').setStyle(TextInputStyle.Short).setRequired(false);
         const i3 = new TextInputBuilder().setCustomId('upd_tp1').setLabel('TP1').setStyle(TextInputStyle.Short).setRequired(false);
@@ -309,21 +299,6 @@ client.on('interactionCreate', async (interaction) => {
           new ActionRowBuilder().addComponents(i3),
           new ActionRowBuilder().addComponents(i4),
           new ActionRowBuilder().addComponents(i5)
-        );
-        return interaction.showModal(modal);
-      }
-      if (action === 'meta') {
-        if (!id) return interaction.reply({ content: 'Bad button ID.', ephemeral: true });
-        const modal = new ModalBuilder().setCustomId(`modal_meta_${id}`).setTitle('Update Details');
-        const m1 = new TextInputBuilder().setCustomId('upd_asset').setLabel('Asset (e.g., BTC)').setStyle(TextInputStyle.Short).setRequired(false);
-        const m2 = new TextInputBuilder().setCustomId('upd_dir').setLabel('Direction (Long/Short)').setStyle(TextInputStyle.Short).setRequired(false);
-        const m3 = new TextInputBuilder().setCustomId('upd_reason').setLabel('Reason').setStyle(TextInputStyle.Paragraph).setRequired(false);
-        const m4 = new TextInputBuilder().setCustomId('upd_extra').setLabel('Extra role (ID or @mention)').setStyle(TextInputStyle.Short).setRequired(false);
-        modal.addComponents(
-          new ActionRowBuilder().addComponents(m1),
-          new ActionRowBuilder().addComponents(m2),
-          new ActionRowBuilder().addComponents(m3),
-          new ActionRowBuilder().addComponents(m4)
         );
         return interaction.showModal(modal);
       }
@@ -352,8 +327,12 @@ client.on('interactionCreate', async (interaction) => {
       await editSignalWebhookMessage(updated);
 
       // thread actions per rules
-      if (action === 'stopped' || action === 'stopbe') await deleteOwnerThread(id);
-      // closed: keep the thread
+      if (action === 'stopped' || action === 'stopbe') {
+        await deleteOwnerThread(id); // delete thread for stopped out / stopped BE
+      }
+      if (action === 'closed') {
+        // keep thread
+      }
 
       await updateSummaryText();
       return interaction.editReply({ content: '✅ Updated.' });
@@ -422,42 +401,12 @@ async function createAndPostSignal(payload) {
     new ButtonBuilder().setCustomId(`stopped_${signal.id}`).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(`closed_${signal.id}`).setLabel('✅ Fully Closed').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`update_${signal.id}`).setLabel('✏️ Update Levels').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`meta_${signal.id}`).setLabel('🧾 Update Details').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`del_${signal.id}`).setLabel('❌ Delete').setStyle(ButtonStyle.Secondary)
   );
 
   await thread.send({ content: 'Owner Control Panel', components: [row1, row2] });
 
   await updateSummaryText();
-}
-
-async function repostSignal(signal) {
-  // send new message (so mentions can ping), delete old, update ids/links
-  const channel = await client.channels.fetch(config.signalsChannelId);
-  const webhook = await getOrCreateWebhook(channel);
-
-  const roleIds = extractRoleIds(signal.extraRole);
-  const mentionLine = buildMentionLine(roleIds);
-  const text = renderSignalText(signal, mentionLine);
-
-  const sent = await webhook.send({
-    content: text,
-    allowedMentions: allowedMentionsForRoles(roleIds)
-  });
-
-  // delete old
-  try {
-    const hooks = await channel.fetchWebhooks();
-    const hook = hooks.find(h => h.name === config.brandName);
-    if (hook && signal.messageId) {
-      const wh = new WebhookClient({ id: hook.id, token: hook.token });
-      await wh.deleteMessage(signal.messageId).catch(() => {});
-    }
-  } catch {}
-
-  // update stored ids
-  await updateSignal(signal.id, { messageId: sent.id, jumpUrl: sent.url });
-  return await getSignal(signal.id);
 }
 
 async function editSignalWebhookMessage(signal) {
@@ -467,6 +416,7 @@ async function editSignalWebhookMessage(signal) {
   if (!hook || !signal.messageId) return;
   const clientHook = new WebhookClient({ id: hook.id, token: hook.token });
 
+  // rebuild mention line at bottom each edit
   const roleIds = extractRoleIds(signal.extraRole);
   const mentionLine = buildMentionLine(roleIds);
 
@@ -474,6 +424,16 @@ async function editSignalWebhookMessage(signal) {
     content: renderSignalText(signal, mentionLine),
     allowedMentions: allowedMentionsForRoles(roleIds)
   }).catch(() => {});
+}
+
+async function postUpdatePing(signal, changes) {
+  const channel = await client.channels.fetch(config.signalsChannelId);
+  const webhook = await getOrCreateWebhook(channel);
+  const roleIds = extractRoleIds(signal.extraRole);
+  const summary = changes && changes.length ? `Updated: ${changes.join(', ')}` : 'Levels updated';
+  const link = signal.jumpUrl ? `\n${signal.jumpUrl}` : '';
+  const content = `${summary}${link}`;
+  await webhook.send({ content, allowedMentions: allowedMentionsForRoles(roleIds) });
 }
 
 async function updateSummaryText() {
