@@ -27,6 +27,7 @@ const pendingSignals = new Map(); // modalId -> { fields... }
 const fmt = v => (v ?? '—');
 const dirWord = d => (d === 'LONG' ? 'Long' : 'Short');
 
+<<<<<<< HEAD
 // ---------- R & TP helpers ----------
 const toNum = (x) => {
   if (x === null || x === undefined || x === '') return null;
@@ -39,6 +40,10 @@ function riskPerUnit(entry, sl, dir) {
   if (e == null || s == null) return null;
   const r = Math.abs(e - s);
   return r > 0 ? r : null;
+=======
+function highestTpHit(s) {
+  return s.tpHit === 'TP3' ? 'TP3' : s.tpHit === 'TP2' ? 'TP2' : s.tpHit === 'TP1' ? 'TP1' : null;
+>>>>>>> 0ce2bdde75ba7bc626d6d9dc1aaa1590efbf84e9
 }
 
 function rForExit(entry, sl, dir, price) {
@@ -483,12 +488,17 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: 'Only the owner can use these controls.', ephemeral: true });
       }
 
+<<<<<<< HEAD
       // parse action/id
+=======
+      // robust parsing: action is before first "_", id is everything after
+>>>>>>> 0ce2bdde75ba7bc626d6d9dc1aaa1590efbf84e9
       const cid = interaction.customId;
       const sep = cid.indexOf('_');
       const action = sep === -1 ? cid : cid.slice(0, sep);
       const id = sep === -1 ? null : cid.slice(sep + 1);
 
+<<<<<<< HEAD
       // show-modals (no defer)
       if (action === 'update') {
         if (!id) return interaction.reply({ content: 'Bad button ID.', ephemeral: true });
@@ -520,6 +530,19 @@ client.on('interactionCreate', async (interaction) => {
         const m2 = new TextInputBuilder().setCustomId('upd_dir').setLabel('Direction (Long/Short)').setStyle(TextInputStyle.Short).setRequired(false);
         const m3 = new TextInputBuilder().setCustomId('upd_reason').setLabel('Reason').setStyle(TextInputStyle.Paragraph).setRequired(false);
         const m4 = new TextInputBuilder().setCustomId('upd_extra').setLabel('Extra role (ID or @mention)').setStyle(TextInputStyle.Short).setRequired(false);
+=======
+      // SHOW MODAL path must not defer
+      if (action === 'update') {
+        if (!id) return interaction.reply({ content: 'Bad button ID.', ephemeral: true });
+        const modal = new ModalBuilder()
+          .setCustomId(`modal_update_${id}`)
+          .setTitle('Update Levels');
+        const i1 = new TextInputBuilder().setCustomId('upd_entry').setLabel('Entry').setStyle(TextInputStyle.Short).setRequired(false);
+        const i2 = new TextInputBuilder().setCustomId('upd_sl').setLabel('SL').setStyle(TextInputStyle.Short).setRequired(false);
+        const i3 = new TextInputBuilder().setCustomId('upd_tp1').setLabel('TP1').setStyle(TextInputStyle.Short).setRequired(false);
+        const i4 = new TextInputBuilder().setCustomId('upd_tp2').setLabel('TP2').setStyle(TextInputStyle.Short).setRequired(false);
+        const i5 = new TextInputBuilder().setCustomId('upd_tp3').setLabel('TP3').setStyle(TextInputStyle.Short).setRequired(false);
+>>>>>>> 0ce2bdde75ba7bc626d6d9dc1aaa1590efbf84e9
         modal.addComponents(
           new ActionRowBuilder().addComponents(m1),
           new ActionRowBuilder().addComponents(m2),
@@ -529,6 +552,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.showModal(modal);
       }
 
+<<<<<<< HEAD
       if (action === 'plan') {
         if (!id) return interaction.reply({ content: 'Bad button ID.', ephemeral: true });
         const modal = new ModalBuilder().setCustomId(`modal_plan_${id}`).setTitle('Set TP Plan (%)');
@@ -542,6 +566,11 @@ client.on('interactionCreate', async (interaction) => {
         );
         return interaction.showModal(modal);
       }
+=======
+      // all other buttons can defer
+      await interaction.deferReply({ ephemeral: true });
+      if (!id) return interaction.editReply({ content: 'Bad button ID.' });
+>>>>>>> 0ce2bdde75ba7bc626d6d9dc1aaa1590efbf84e9
 
       if (action === 'close') {
         if (!id) return interaction.reply({ content: 'Bad button ID.', ephemeral: true });
@@ -652,6 +681,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.editReply({ content: 'Use the Fully Closed button (modal) to enter close price.' });
       }
 
+<<<<<<< HEAD
       if (action === 'del') {
         // delete the posted signal message + thread + db
         await deleteSignalMessage(sig).catch(() => {});
@@ -662,6 +692,34 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       return interaction.editReply({ content: 'No-op.' });
+=======
+      const patches = {
+        tp1hit: { tpHit: 'TP1' },
+        tp2hit: { tpHit: 'TP2' },
+        tp3hit: { tpHit: 'TP3' },
+        stopped:{ status: 'STOPPED_OUT', validReentry: false },
+        stopbe: { status: 'STOPPED_BE', validReentry: false },
+        closed: { status: 'CLOSED',     validReentry: false }
+      };
+
+      if (patches[action]) {
+        await updateSignal(id, patches[action]);
+      }
+
+      const updated = await getSignal(id);
+      await editSignalWebhookMessage(updated);
+
+      // thread actions per rules
+      if (action === 'stopped' || action === 'stopbe') {
+        await deleteOwnerThread(id); // delete thread for stopped out / stopped BE
+      }
+      if (action === 'closed') {
+        // keep thread
+      }
+
+      await updateSummaryText();
+      return interaction.editReply({ content: '✅ Updated.' });
+>>>>>>> 0ce2bdde75ba7bc626d6d9dc1aaa1590efbf84e9
     }
   } catch (e) {
     console.error('interaction error:', e);
