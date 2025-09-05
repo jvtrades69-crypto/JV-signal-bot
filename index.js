@@ -29,7 +29,6 @@ const fmt = v => (v ?? '—');
 const dirWord = d => (d === 'LONG' ? 'Long' : 'Short');
 
 function highestTpHit(s) {
-  // s.tpHit is one of: 'TP1' | 'TP2' | 'TP3' | null
   return s.tpHit === 'TP3' ? 'TP3' : s.tpHit === 'TP2' ? 'TP2' : s.tpHit === 'TP1' ? 'TP1' : null;
 }
 
@@ -277,9 +276,15 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: 'Only the owner can use these controls.', ephemeral: true });
       }
 
-      // SPECIAL: do NOT defer before showing a modal
-      const [action, id] = interaction.customId.split('_');
+      // robust parsing: action is before first "_", id is everything after
+      const cid = interaction.customId;
+      const sep = cid.indexOf('_');
+      const action = sep === -1 ? cid : cid.slice(0, sep);
+      const id = sep === -1 ? null : cid.slice(sep + 1);
+
+      // SHOW MODAL path must not defer
       if (action === 'update') {
+        if (!id) return interaction.reply({ content: 'Bad button ID.', ephemeral: true });
         const modal = new ModalBuilder()
           .setCustomId(`modal_update_${id}`)
           .setTitle('Update Levels');
@@ -298,20 +303,13 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.showModal(modal);
       }
 
+      // all other buttons can defer
       await interaction.deferReply({ ephemeral: true });
+      if (!id) return interaction.editReply({ content: 'Bad button ID.' });
 
       const signal = await getSignal(id);
       if (!signal) return interaction.editReply({ content: 'Signal not found.' });
 
-      if (action === 'del') {
-        await deleteSignalMessage(signal).catch(() => {});
-        await deleteOwnerThread(id);
-        await deleteSignal(id);
-        await updateSummaryText();
-        return interaction.editReply({ content: '❌ Trade deleted.' });
-      }
-
-      // status + TP hits
       const patches = {
         tp1hit: { tpHit: 'TP1' },
         tp2hit: { tpHit: 'TP2' },
