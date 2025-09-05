@@ -10,9 +10,9 @@ async function ensureDb() {
       {
         signals: [],
         summaryMessageId: null,
-        ownerPanels: {},     // { [signalId]: messageId }  (optional)
-        threads: {},         // { [signalId]: threadId }
-        webhooks: {}         // { [channelId]: { id, token } }
+        ownerPanels: {},
+        threads: {},
+        webhooks: {}
       },
       { spaces: 2 }
     );
@@ -47,10 +47,6 @@ export async function deleteSignal(id) {
   delete db.threads?.[id];
   await saveDb(db);
 }
-export async function listActive() {
-  const db = await loadDb();
-  return db.signals.filter(s => s.status === 'RUN_VALID' || s.status === 'RUN_BE');
-}
 
 // ---------- Summary tracking ----------
 export async function getSummaryMessageId() {
@@ -64,12 +60,6 @@ export async function setSummaryMessageId(id) {
 }
 
 // ---------- Owner panel / thread tracking ----------
-export async function setOwnerPanelMessageId(signalId, messageId) {
-  const db = await loadDb();
-  db.ownerPanels = db.ownerPanels || {};
-  db.ownerPanels[signalId] = messageId;
-  await saveDb(db);
-}
 export async function getThreadId(signalId) {
   const db = await loadDb();
   return db.threads?.[signalId] || null;
