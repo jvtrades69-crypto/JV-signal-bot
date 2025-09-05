@@ -1,6 +1,6 @@
 {
   "name": "jv-signal-bot",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Discord bot to post clean trading signals with updates and closing.",
   "type": "module",
   "main": "index.js",
