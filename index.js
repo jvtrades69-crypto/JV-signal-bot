@@ -1,3 +1,5 @@
+// index.js (drop-in replacement)
+
 import {
   Client,
   GatewayIntentBits,
@@ -321,21 +323,41 @@ client.on('interactionCreate', async (interaction) => {
 
       if (patches[action]) {
         await updateSignal(id, patches[action]);
+        const updated = await getSignal(id);
+        await editSignalWebhookMessage(updated);
+
+        // thread actions per rules
+        if (action === 'stopped' || action === 'stopbe') {
+          await deleteOwnerThread(id); // delete thread for stopped out / stopped BE
+        }
+        if (action === 'closed') {
+          // keep thread
+        }
+
+        await updateSummaryText();
+        return interaction.editReply({ content: '✅ Updated.' });
       }
 
-      const updated = await getSignal(id);
-      await editSignalWebhookMessage(updated);
-
-      // thread actions per rules
-      if (action === 'stopped' || action === 'stopbe') {
-        await deleteOwnerThread(id); // delete thread for stopped out / stopped BE
+      // NEW: Delete flow
+      if (action === 'del') {
+        // delete webhook message (if present), thread, db record, then refresh summary
+        try {
+          await deleteSignalMessage(signal);
+        } catch {}
+        try {
+          await deleteOwnerThread(id);
+        } catch {}
+        try {
+          await deleteSignal(id);
+        } catch {}
+        try {
+          await updateSummaryText();
+        } catch {}
+        return interaction.editReply({ content: '🗑️ Signal deleted.' });
       }
-      if (action === 'closed') {
-        // keep thread
-      }
 
-      await updateSummaryText();
-      return interaction.editReply({ content: '✅ Updated.' });
+      // Unknown action
+      return interaction.editReply({ content: 'Unrecognized action.' });
     }
   } catch (e) {
     console.error('interaction error:', e);
