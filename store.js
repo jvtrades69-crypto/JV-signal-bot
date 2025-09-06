@@ -1,15 +1,17 @@
-// store.js (drop-in replacement)
-// Persistent JSON store with render disk support
+// store.js — Persistent JSON store (Render disk ready) + easy rename via DB_PATH
+//
+// Default DB path uses Render Persistent Disk at /data.
+// To change the filename, set env: DB_PATH=/data/jv-signals.json
 
 import fs from 'fs-extra';
 const { readJson, writeJson, pathExists, ensureDir } = fs;
 
-// Use persistent disk if available; fallback to local file.
+// Use persistent disk if available; fallback to local file for dev.
 const DB_PATH = process.env.DB_PATH || '/data/signals.json';
 const DB_DIR  = DB_PATH.includes('/') ? DB_PATH.slice(0, DB_PATH.lastIndexOf('/')) : '.';
 
 async function ensureDb() {
-  // Make sure directory exists (important for /data on first boot)
+  // Ensure directory exists (important for /data on first boot)
   await ensureDir(DB_DIR);
 
   if (!(await pathExists(DB_PATH))) {
