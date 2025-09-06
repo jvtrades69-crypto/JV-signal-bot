@@ -14,14 +14,12 @@ const cfg = {
   signalsChannelId: req('SIGNALS_CHANNEL_ID'),
   currentTradesChannelId: req('CURRENT_TRADES_CHANNEL_ID'),
 
-  ownerId: req('OWNER_USER_ID'),
+  ownerId: req('OWNER_ID'),
 
-  // Branding
+  // Optional
   brandName: process.env.BRAND_NAME || 'JV Trades',
   brandAvatarUrl: process.env.BRAND_AVATAR_URL || null,
-
-  // Mentions
-  mentionRoleId: process.env.MENTION_ROLE_ID || null
+  mentionRoleId: process.env.TRADER_ROLE_ID || process.env.MENTION_ROLE_ID || null
 };
 
 export default cfg;
