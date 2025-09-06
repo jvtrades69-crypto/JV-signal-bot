@@ -55,9 +55,9 @@ function calcR(signal) {
     if (!exit) return;
     const size = c.size || 100;
     if (signal.direction === "Long") {
-      pnl += (exit - entry) / risk * (size / 100);
+      pnl += ((exit - entry) / risk) * (size / 100);
     } else {
-      pnl += (entry - exit) / risk * (size / 100);
+      pnl += ((entry - exit) / risk) * (size / 100);
     }
   });
 
@@ -138,14 +138,12 @@ async function ensureWebhook(channel) {
   return new WebhookClient({ id: hook.id, token: hook.token });
 }
 
-async function ensureSummary() {
+async function updateSummary() {
   const all = await store.getSignals();
   const channel = await client.channels.fetch(config.currentTradesChannelId);
   const webhook = await ensureWebhook(channel);
   const text = renderSummary(all);
-  const sent = await webhook.send({ content: text });
-  // store summary ID not needed, always edit fresh for simplicity
-  return sent;
+  await webhook.send({ content: text });
 }
 
 // -------------------- Interactions --------------------
@@ -208,7 +206,7 @@ client.on("interactionCreate", async (interaction) => {
       signal.jumpUrl = msg.url;
       await store.updateSignal(signal.id, signal);
 
-      await ensureSummary();
+      await updateSummary();
 
       return interaction.reply({
         content: `✅ Signal posted: ${msg.url}`,
@@ -216,14 +214,53 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    // Buttons & Modals (TP hits, SL→BE, closed, etc.)
-    // Due to size, truncated here — but this section handles:
-    // - TP1..TP5 Hit buttons → push close % from plan → update message + summary
-    // - SL→BE Active → set slAtBE true
-    // - Stopped BE / Out / Fully Closed → set status, close thread, update message
-    // - Update Levels / Details / Plan → modals with text inputs
-    // - Override R → modal to input number
-    // - Delete → remove message + DB + thread
+    // Buttons
+    if (interaction.isButton()) {
+      if (interaction.user.id !== config.ownerId) {
+        return interaction.reply({
+          content: "Only owner can use controls.",
+          ephemeral: true
+        });
+      }
+
+      const [action, id] = interaction.customId.split("_");
+      const signal = await store.getSignal(id);
+      if (!signal)
+        return interaction.reply({ content: "Not found", ephemeral: true });
+
+      if (action.startsWith("tp")) {
+        const n = action.replace("tp", "");
+        if (!signal.tpHit.includes(n)) signal.tpHit.push(n);
+      }
+      if (action === "slbe") {
+        signal.slAtBE = true;
+      }
+      if (action === "stopbe") {
+        signal.status = "STOPPED_BE";
+        signal.validReentry = false;
+      }
+      if (action === "stopped") {
+        signal.status = "STOPPED_OUT";
+        signal.validReentry = false;
+      }
+      if (action === "closed") {
+        signal.status = "CLOSED";
+        signal.validReentry = false;
+      }
+      if (action === "delete") {
+        await store.deleteSignal(id);
+        return interaction.reply({ content: "Deleted", ephemeral: true });
+      }
+
+      await store.updateSignal(signal.id, signal);
+
+      const channel = await client.channels.fetch(config.signalsChannelId);
+      const webhook = await ensureWebhook(channel);
+      await webhook.editMessage(signal.messageId, renderSignal(signal));
+
+      await updateSummary();
+      return interaction.reply({ content: "Updated", ephemeral: true });
+    }
   } catch (err) {
     console.error("interaction error", err);
   }
