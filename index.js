@@ -1,4 +1,4 @@
-// index.js (drop-in replacement with single-message summary + working Delete button)
+// index.js — summary upsert + working Delete + your current features kept
 
 import {
   Client,
@@ -406,10 +406,10 @@ async function postUpdatePing(signal, changes) {
   await webhook.send({ content, allowedMentions: allowedMentionsForRoles(roleIds) });
 }
 
-// *** FIXED: Single-message summary with upsert+cleanup ***
+// Single-message summary with upsert + cleanup
 async function updateSummaryText() {
   const all = await getSignals();
-  const trades = all.filter(s => s.status === 'RUN_VALID'); // only running valid:contentReference[oaicite:1]{index=1}
+  const trades = all.filter(s => s.status === 'RUN_VALID');
   const channel = await client.channels.fetch(config.currentTradesChannelId);
   const webhook = await getOrCreateWebhook(channel);
   const text = renderSummaryText(trades);
@@ -418,9 +418,8 @@ async function updateSummaryText() {
   if (existingId) {
     try {
       await webhook.editMessage(existingId, { content: text });
-      return; // edited successfully, keep single message
+      return;
     } catch {
-      // editing failed (stale id or different webhook) — try to delete the old one
       try { await webhook.deleteMessage(existingId); } catch {}
     }
   }
