@@ -1,9 +1,17 @@
-import fs from 'fs-extra';
-const { readJson, writeJson, pathExists } = fs;
+// store.js (drop-in replacement)
+// Persistent JSON store with render disk support
 
-const DB_PATH = './signals.json';
+import fs from 'fs-extra';
+const { readJson, writeJson, pathExists, ensureDir } = fs;
+
+// Use persistent disk if available; fallback to local file.
+const DB_PATH = process.env.DB_PATH || '/data/signals.json';
+const DB_DIR  = DB_PATH.includes('/') ? DB_PATH.slice(0, DB_PATH.lastIndexOf('/')) : '.';
 
 async function ensureDb() {
+  // Make sure directory exists (important for /data on first boot)
+  await ensureDir(DB_DIR);
+
   if (!(await pathExists(DB_PATH))) {
     await writeJson(
       DB_PATH,
@@ -19,7 +27,7 @@ async function ensureDb() {
   }
 }
 async function loadDb() { await ensureDb(); return readJson(DB_PATH); }
-async function saveDb(db) { await writeJson(DB_PATH, db, { spaces: 2 }); }
+async function saveDb(db) { await ensureDb(); await writeJson(DB_PATH, db, { spaces: 2 }); }
 
 // ---------- Signals CRUD ----------
 export async function saveSignal(signal) {
