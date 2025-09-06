@@ -1,18 +1,25 @@
-{
-  "name": "jv-signal-bot",
-  "version": "1.3.0",
-  "description": "Discord bot to post clean trading signals with updates and closing.",
-  "type": "module",
-  "main": "index.js",
-  "scripts": {
-    "start": "node index.js",
-    "register": "node register-commands.js"
-  },
-  "license": "MIT",
-  "dependencies": {
-    "discord.js": "^14.16.3",
-    "dotenv": "^16.4.5",
-    "fs-extra": "^11.2.0",
-    "nanoid": "^5.0.7"
-  }
+import 'dotenv/config';
+
+function req(key) {
+  const v = process.env[key];
+  if (!v) throw new Error(`Missing required env: ${key}`);
+  return v;
 }
+
+const cfg = {
+  token: req('DISCORD_TOKEN'),
+  appId: req('APPLICATION_ID'),
+  guildId: req('GUILD_ID'),
+
+  signalsChannelId: req('SIGNALS_CHANNEL_ID'),
+  currentTradesChannelId: req('CURRENT_TRADES_CHANNEL_ID'),
+
+  ownerId: req('OWNER_ID'),
+
+  // Optional
+  brandName: process.env.BRAND_NAME || 'JV Trades',
+  brandAvatarUrl: process.env.BRAND_AVATAR_URL || null,
+  mentionRoleId: process.env.TRADER_ROLE_ID || process.env.MENTION_ROLE_ID || null
+};
+
+export default cfg;
