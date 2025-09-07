@@ -794,3 +794,11 @@ async function createSignal(payload) {
 }
 
 client.login(config.token);
+
+process.on('unhandledRejection', err => {
+  console.error('Unhandled promise rejection:', err);
+});
+process.on('uncaughtException', err => {
+  console.error('Uncaught exception:', err);
+});
+
