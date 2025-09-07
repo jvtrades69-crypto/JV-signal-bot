@@ -1,18 +1,11 @@
-// register-commands.js — Registers /ping and /signal (with TP1–TP5 + planned %)
+// register-commands.js — Registers /ping and /signal (BTC/ETH/SOL/OTHER)
 
 import { REST, Routes, SlashCommandBuilder } from 'discord.js';
 import config from './config.js';
 
-const {
-  token,
-  clientId,     // alias of appId
-  guildId,
-} = config;
+const { token, clientId, guildId } = config;
 
-const ASSETS = [
-  'BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'PEPE', 'OP', 'ARB', 'LINK', 'ADA', 'BNB', 'MATIC',
-  'APT', 'SUI', 'DOT', 'ATOM', 'AVAX', 'NEAR', 'RNDR', 'TIA', 'WIF', 'BONK', 'SEI', 'OTHER'
-];
+const ASSETS = ['BTC', 'ETH', 'SOL', 'OTHER'];
 
 const pingCmd = new SlashCommandBuilder()
   .setName('ping')
@@ -23,7 +16,7 @@ const signalCmd = new SlashCommandBuilder()
   .setDescription('Create a new trade signal.')
   .addStringOption(opt =>
     opt.setName('asset').setDescription('Asset').setRequired(true)
-      .addChoices(...Array.from(new Set(ASSETS)).map(a => ({ name: a, value: a })))
+      .addChoices(...ASSETS.map(a => ({ name: a, value: a })))
   )
   .addStringOption(opt =>
     opt.setName('direction').setDescription('Trade direction').setRequired(true)
@@ -43,7 +36,7 @@ const signalCmd = new SlashCommandBuilder()
   .addStringOption(opt => opt.setName('tp4_pct').setDescription('Planned % at TP4 (0–100)').setRequired(false))
   .addStringOption(opt => opt.setName('tp5_pct').setDescription('Planned % at TP5 (0–100)').setRequired(false))
   .addStringOption(opt => opt.setName('reason').setDescription('Reason (optional)').setRequired(false))
-  .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role to tag (ID or @mention)').setRequired(false));
+  .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)').setRequired(false));
 
 const commands = [pingCmd, signalCmd].map(c => c.toJSON());
 
