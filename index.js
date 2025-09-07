@@ -314,7 +314,13 @@ function makeFullCloseModal(id) {
   const modal = new ModalBuilder().setCustomId(`modal_full_${id}`).setTitle('Fully Close Position');
   const price = new TextInputBuilder().setCustomId('close_price').setLabel('Close Price').setStyle(TextInputStyle.Short).setRequired(true);
   const pct = new TextInputBuilder().setCustomId('close_pct').setLabel('Close % (default = remaining)').setStyle(TextInputStyle.Short).setRequired(false);
-  const finalR = new TextInputBuilder().setCustomId('final_r').setLabel('Final R (optional; overrides calc)').setStyle(TextInputStyle.Short).setRequired(false);
+  const finalR = new TextInputBuilder()
+  .setCustomId('final_r')
+  .setLabel('Final R (optional)')
+  .setPlaceholder('e.g., 0, -0.5, -1 — overrides calc')
+  .setStyle(TextInputStyle.Short)
+  .setRequired(false);
+
   modal.addComponents(new ActionRowBuilder().addComponents(price));
   modal.addComponents(new ActionRowBuilder().addComponents(pct));
   modal.addComponents(new ActionRowBuilder().addComponents(finalR));
@@ -323,7 +329,13 @@ function makeFullCloseModal(id) {
 
 function makeFinalRModal(id, kind) {
   const modal = new ModalBuilder().setCustomId(`modal_finalr_${kind}_${id}`).setTitle(kind === 'BE' ? 'Stopped Breakeven' : 'Stopped Out');
-  const r = new TextInputBuilder().setCustomId('final_r').setLabel('Final R (e.g., 0, -0.5, -1; optional override)').setStyle(TextInputStyle.Short).setRequired(false);
+  const r = new TextInputBuilder()
+  .setCustomId('final_r')
+  .setLabel('Final R (optional)')
+  .setPlaceholder('e.g., 0, -0.5, -1 — overrides calc')
+  .setStyle(TextInputStyle.Short)
+  .setRequired(false);
+
   modal.addComponents(new ActionRowBuilder().addComponents(r));
   return modal;
 }
