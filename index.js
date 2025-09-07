@@ -658,10 +658,34 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // ===== Buttons =====
-    if (interaction.isButton()) {
-      if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use these controls.', ephemeral: true });
-      }
+if (interaction.isButton()) {
+  if (interaction.user.id !== config.ownerId) {
+    return interaction.reply({ content: 'Only the owner can use these controls.', ephemeral: true });
+  }
+
+  const cid = interaction.customId;
+  const cut = cid.lastIndexOf('_');
+  if (cut === -1) {
+    return interaction.reply({ content: 'Bad button ID.', ephemeral: true });
+  }
+  const action = cid.slice(0, cut);  // e.g., 'upd_tpprices'
+  const id = cid.slice(cut + 1);     // e.g., 'abc123'
+  if (!id) {
+    return interaction.reply({ content: 'Bad button ID.', ephemeral: true });
+  }
+
+  // rest of your handler stays the same:
+  // if (action === 'upd_tpprices') return interaction.showModal(makeUpdateTPPricesModal(id));
+  // if (action === 'upd_plan')     return interaction.showModal(makeUpdatePlanModal(id));
+  // if (action === 'upd_trade')    return interaction.showModal(makeUpdateTradeInfoModal(id));
+  // if (action === 'upd_roles')    return interaction.showModal(makeUpdateRolesModal(id));
+  // if (action === 'fullclose')    return interaction.showModal(makeFullCloseModal(id));
+  // if (action === 'stopbe')       return interaction.showModal(makeFinalRModal(id, 'BE'));
+  // if (action === 'stopped')      return interaction.showModal(makeFinalRModal(id, 'OUT'));
+  // if (action === 'del') { ... }
+  // if (['tp1','tp2','tp3','tp4','tp5'].includes(action)) { ... }
+}
+
       const [action, id] = interaction.customId.split('_');
       if (!id) return interaction.reply({ content: 'Bad button ID.', ephemeral: true });
 
