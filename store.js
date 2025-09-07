@@ -1,19 +1,64 @@
-// store.js — Persistent JSON store (Render disk ready) + easy rename via DB_PATH
+// store.js — Robust JSON store with automatic writable-path fallback
 //
-// Default DB path uses Render Persistent Disk at /data.
-// To change the filename, set env: DB_PATH=/data/jv-signals.json
+// Priority order for the DB file:
+// 1) process.env.DB_PATH        (if provided)
+// 2) /data/signals.json         (Render Persistent Disk, if mounted)
+// 3) ./signals.json             (app working directory)
+// 4) /tmp/jv-signals.json       (ephemeral but always writable)
+//
+// You can still set DB_PATH=/data/jv-signals.json later when you add a disk.
 
 import fs from 'fs-extra';
 const { readJson, writeJson, pathExists, ensureDir } = fs;
 
-// Use persistent disk if available; fallback to local file for dev.
-const DB_PATH = process.env.DB_PATH || '/data/signals.json';
-const DB_DIR  = DB_PATH.includes('/') ? DB_PATH.slice(0, DB_PATH.lastIndexOf('/')) : '.';
+const CANDIDATES = [
+  process.env.DB_PATH || null,         // explicit override
+  '/data/signals.json',                // preferred (persistent disk)
+  './signals.json',                    // local file
+  '/tmp/jv-signals.json'               // always writable fallback
+].filter(Boolean);
+
+let DB_PATH = null;
+let DB_DIR  = null;
+let resolved = false;
+
+async function isWritable(filePath) {
+  try {
+    const dir = filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : '.';
+    await ensureDir(dir);
+    // try a tiny write or create if missing
+    if (!(await pathExists(filePath))) {
+      await writeJson(filePath, { __probe: true }, { spaces: 0 });
+    } else {
+      const data = await readJson(filePath).catch(() => ({}));
+      await writeJson(filePath, { ...data, __probe: true }, { spaces: 0 });
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolvePath() {
+  if (resolved) return;
+  for (const p of CANDIDATES) {
+    if (await isWritable(p)) {
+      DB_PATH = p;
+      DB_DIR  = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '.';
+      resolved = true;
+      break;
+    }
+  }
+  if (!resolved) {
+    // last-ditch: fallback to /tmp
+    DB_PATH = '/tmp/jv-signals.json';
+    DB_DIR  = '/tmp';
+    await ensureDir(DB_DIR);
+  }
+}
 
 async function ensureDb() {
-  // Ensure directory exists (important for /data on first boot)
-  await ensureDir(DB_DIR);
-
+  await resolvePath();
   if (!(await pathExists(DB_PATH))) {
     await writeJson(
       DB_PATH,
@@ -26,6 +71,15 @@ async function ensureDb() {
       },
       { spaces: 2 }
     );
+  } else {
+    // strip probe key if present
+    try {
+      const d = await readJson(DB_PATH);
+      if (d && d.__probe !== undefined) {
+        delete d.__probe;
+        await writeJson(DB_PATH, d, { spaces: 2 });
+      }
+    } catch { /* ignore */ }
   }
 }
 async function loadDb() { await ensureDb(); return readJson(DB_PATH); }
