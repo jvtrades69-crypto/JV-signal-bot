@@ -1,4 +1,4 @@
-// index.js — JV Signal Bot (bot-identity posts, embeds, TP1–TP5, modals, RR math, summary upsert)
+// index.js — JV Signal Bot (plain-text posts, TP plans + auto-exec, two-button updates, hard-purge summary)
 
 import {
   Client,
@@ -10,19 +10,19 @@ import {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  StringSelectMenuBuilder,
 } from 'discord.js';
 
 import { customAlphabet } from 'nanoid';
 import config from './config.js';
 import {
   saveSignal, getSignal, getSignals, updateSignal, deleteSignal,
-  getSummaryMessageId, setSummaryMessageId,
   getThreadId, setThreadId
 } from './store.js';
 
 import {
-  renderSignalEmbed,
-  renderSummaryEmbed,
+  renderSignalText,
+  renderSummaryText,
 } from './embeds.js';
 
 const nano = customAlphabet('1234567890abcdef', 10);
@@ -44,38 +44,32 @@ const STATUS = {
 
 const TP_KEYS = ['tp1', 'tp2', 'tp3', 'tp4', 'tp5'];
 
-// compute R at any price
-function rAtPrice(direction, entry, sl, price) {
-  if (!isNum(entry) || !isNum(sl) || !isNum(price)) return null;
-  entry = Number(entry); sl = Number(sl); price = Number(price);
+function rAtPrice(direction, entry, slOriginal, price) {
+  if (!isNum(entry) || !isNum(slOriginal) || !isNum(price)) return null;
+  const E = Number(entry), S = Number(slOriginal), P = Number(price);
   if (direction === DIR.LONG) {
-    const risk = entry - sl;
-    if (risk <= 0) return null;
-    return (price - entry) / risk;
+    const risk = E - S; if (risk <= 0) return null;
+    return (P - E) / risk;
   } else {
-    const risk = sl - entry;
-    if (risk <= 0) return null;
-    return (entry - price) / risk;
+    const risk = S - E; if (risk <= 0) return null;
+    return (E - P) / risk;
   }
 }
 
-// compute RR chips per provided TP levels
 function computeRRChips(signal) {
-  const { direction, entry, sl } = signal;
   const chips = [];
   for (const key of TP_KEYS) {
     const tpVal = toNumOrNull(signal[key]);
     if (tpVal === null) continue;
-    const r = rAtPrice(direction, entry, sl, tpVal);
+    const r = rAtPrice(signal.direction, signal.entry, signal.sl, tpVal);
     if (r === null) continue;
     chips.push({ key: key.toUpperCase(), r: Number(r.toFixed(2)) });
   }
-  return chips; // [{key:'TP1', r:0.4}, ...]
+  return chips;
 }
 
-// compute weighted realized R from fills
 function computeRealized(signal) {
-  const fills = signal.fills || []; // [{pct, price, source:'TP1'|'MANUAL'|'FINAL'}]
+  const fills = signal.fills || [];
   if (!fills.length) return { realized: 0, textParts: [] };
   let sum = 0;
   const parts = [];
@@ -84,35 +78,77 @@ function computeRealized(signal) {
     const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, f.price);
     if (!isNum(pct) || r === null) continue;
     sum += (pct * r) / 100;
-    if (f.source?.startsWith('TP')) {
-      parts.push(`${pct}% closed at ${f.source}`);
-    } else if (f.source === 'FINAL_CLOSE') {
-      parts.push(`${pct}% closed at ${f.price}`);
-    } else if (f.source === 'STOP_BE') {
-      parts.push(`${pct}% closed at BE`);
-    } else if (f.source === 'STOP_OUT') {
-      parts.push(`${pct}% closed at SL`);
-    }
+    const src = String(f.source || '').toUpperCase();
+    if (src.startsWith('TP')) parts.push(`${pct}% closed at ${src}`);
+    else if (src === 'FINAL_CLOSE') parts.push(`${pct}% closed at ${f.price}`);
+    else if (src === 'STOP_BE') parts.push(`${pct}% closed at BE`);
+    else if (src === 'STOP_OUT') parts.push(`${pct}% closed at SL`);
   }
   return { realized: Number(sum.toFixed(2)), textParts: parts };
 }
 
-// normalize a signal object
 function normalizeSignal(raw) {
   const s = { ...raw };
   s.entry = toNumOrNull(s.entry);
   s.sl = toNumOrNull(s.sl);
-  s.slOriginal = s.slOriginal ?? s.sl; // remember the first SL for R math if you later move SL=Entry
+  s.slOriginal = s.slOriginal ?? s.sl;
   for (const k of TP_KEYS) s[k] = toNumOrNull(s[k]);
   s.fills = Array.isArray(s.fills) ? s.fills : [];
   s.latestTpHit = s.latestTpHit || null; // 'TP1'...'TP5'
   s.status = s.status || STATUS.RUN_VALID;
   if (typeof s.validReentry !== 'boolean') s.validReentry = true;
   s.extraRole = s.extraRole || '';
+  // plan percentages (TP1..TP5) — nullable numbers
+  s.plan = s.plan && typeof s.plan === 'object' ? s.plan : {};
+  for (const K of ['TP1','TP2','TP3','TP4','TP5']) {
+    const v = s.plan[K];
+    s.plan[K] = isNum(v) ? Number(v) : null;
+  }
   return s;
 }
 
-// mention helpers
+// “show planned/executed % next to TP price”
+function getExecOrPlannedPct(signal, tpKeyUC) {
+  // sum executed for that TP first
+  const exec = (signal.fills || [])
+    .filter(f => String(f.source || '').toUpperCase() === tpKeyUC)
+    .reduce((a, f) => a + Number(f.pct || 0), 0);
+  if (exec > 0) return Math.round(exec);
+  // otherwise planned
+  const planned = signal.plan?.[tpKeyUC];
+  return isNum(planned) ? Math.round(Number(planned)) : 0;
+}
+
+// “Active and SL == Entry after a TP hit” = SL moved to BE (still active)
+function isSlMovedToBE(signal) {
+  const s = normalizeSignal(signal);
+  return s.status === STATUS.RUN_VALID && isNum(s.entry) && isNum(s.sl) && Number(s.entry) === Number(s.sl) && !!s.latestTpHit;
+}
+
+// Title chip builder (follows your final rules)
+function buildTitleChip(signal) {
+  const s = normalizeSignal(signal);
+  const rr = computeRealized(s).realized;
+
+  if (s.status === STATUS.STOPPED_OUT) {
+    return { show: true, text: `Loss -${Math.abs(rr).toFixed(2)}R` };
+  }
+  if (s.status === STATUS.STOPPED_BE) {
+    // if no TP was hit → pure breakeven
+    const anyFill = (s.fills || []).length > 0;
+    return { show: true, text: anyFill ? `Win +${rr.toFixed(2)}R` : 'Breakeven' };
+  }
+  if (s.status === STATUS.CLOSED) {
+    return { show: true, text: `Win +${rr.toFixed(2)}R` };
+  }
+  // Active: show "+x.xxR so far" only if we have any partial fills
+  if ((s.fills || []).length > 0) {
+    return { show: true, text: `Win +${rr.toFixed(2)}R so far` };
+  }
+  return { show: false, text: '' };
+}
+
+// mentions
 function extractRoleIds(defaultRoleId, extraRoleRaw) {
   const ids = [];
   if (defaultRoleId) ids.push(defaultRoleId);
@@ -130,56 +166,19 @@ function buildMentions(defaultRoleId, extraRoleRaw) {
   };
 }
 
-// title chip logic helper (returns {titleChipText, show})
-function buildTitleChip(signal) {
-  const s = normalizeSignal(signal);
-  // chips only after a TP or SL has been hit (i.e., has fills or final states)
-  const hasTPFill = (s.fills || []).some(f => String(f.source || '').startsWith('TP') && Number(f.pct) > 0);
-  const isFinalBE = s.status === STATUS.STOPPED_BE;
-  const isFinalOut = s.status === STATUS.STOPPED_OUT;
-  const isFinalClosed = s.status === STATUS.CLOSED;
-  const rr = computeRealized(s).realized;
-
-  // latest TP hit for title wording (if any)
-  let latestTP = s.latestTpHit;
-
-  if (isFinalOut) {
-    return { show: true, text: `Loss -${Math.abs(rr).toFixed(2)}R` };
-  }
-  if (isFinalBE) {
-    if (hasTPFill && latestTP) {
-      return { show: true, text: `Win +${rr.toFixed(2)}R Stopped BE after ${latestTP}` };
-    }
-    return { show: true, text: 'Breakeven' };
-  }
-  if (isFinalClosed && latestTP) {
-    return { show: true, text: `Win +${rr.toFixed(2)}R fully closed after ${latestTP}` };
-  }
-  if (hasTPFill && latestTP) {
-    return { show: true, text: `Win +${rr.toFixed(2)}R so far - ${latestTP} hit` };
-  }
-  return { show: false, text: '' };
-}
-
-// compute if SL moved to BE (active)
-function isSlMovedToBE(signal) {
-  const s = normalizeSignal(signal);
-  return s.status === STATUS.RUN_VALID && isNum(s.entry) && isNum(s.sl) && Number(s.entry) === Number(s.sl) && !!s.latestTpHit;
-}
-
 // ------------------------------
-// Message Posting & Editing
+// Message Posting & Editing (plain text)
 // ------------------------------
 async function postSignalMessage(signal) {
   const channel = await client.channels.fetch(config.signalsChannelId);
   const rrChips = computeRRChips(signal);
   const titleChip = buildTitleChip(signal);
-  const embed = renderSignalEmbed(normalizeSignal(signal), rrChips, titleChip, isSlMovedToBE(signal));
+  const text = renderSignalText(normalizeSignal(signal), rrChips, titleChip, isSlMovedToBE(signal));
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole);
 
   const sent = await channel.send({
-    embeds: [embed],
-    ...(mentionLine ? { content: mentionLine, allowedMentions } : {})
+    content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+    ...(mentionLine ? { allowedMentions } : {})
   });
   return sent.id;
 }
@@ -190,13 +189,12 @@ async function editSignalMessage(signal) {
   if (!msg) return false;
   const rrChips = computeRRChips(signal);
   const titleChip = buildTitleChip(signal);
-  const embed = renderSignalEmbed(normalizeSignal(signal), rrChips, titleChip, isSlMovedToBE(signal));
+  const text = renderSignalText(normalizeSignal(signal), rrChips, titleChip, isSlMovedToBE(signal));
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole);
 
-  // We keep mentions separate (bottom line). On edit, Discord won't re-ping anyway; still pass strict allowedMentions.
   await msg.edit({
-    embeds: [embed],
-    ...(mentionLine ? { content: mentionLine, allowedMentions } : { content: null })
+    content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+    ...(mentionLine ? { allowedMentions } : {})
   }).catch(() => {});
   return true;
 }
@@ -208,32 +206,40 @@ async function deleteSignalMessage(signal) {
 }
 
 // ------------------------------
-// Summary (single-message upsert)
+// Summary (HARD PURGE then post fresh)
 // ------------------------------
+async function hardPurgeChannel(channelId) {
+  const channel = await client.channels.fetch(channelId);
+  // Repeatedly fetch and delete messages (handles >14 days by single delete)
+  while (true) {
+    const batch = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+    if (!batch || batch.size === 0) break;
+    // Try bulk delete for young messages, then fall back to singles for leftovers
+    const young = batch.filter(m => (Date.now() - m.createdTimestamp) < 13 * 24 * 60 * 60 * 1000);
+    if (young.size > 1) {
+      try { await channel.bulkDelete(young, true); } catch {}
+    }
+    const leftovers = batch.filter(m => !young.has(m.id));
+    for (const m of leftovers.values()) {
+      try { await m.delete(); } catch {}
+    }
+    if (batch.size < 100) break; // no more
+  }
+}
+
 async function updateSummary() {
+  await hardPurgeChannel(config.currentTradesChannelId);
+
   const channel = await client.channels.fetch(config.currentTradesChannelId);
   const signals = (await getSignals()).map(normalizeSignal);
   const active = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
-  const embed = renderSummaryEmbed(active);
-  const existingId = await getSummaryMessageId();
 
-  if (existingId) {
-    const existing = await channel.messages.fetch(existingId).catch(() => null);
-    if (existing) {
-      await existing.edit({ embeds: [embed] }).catch(async () => {
-        try { await existing.delete(); } catch {}
-        const newMsg = await channel.send({ embeds: [embed] });
-        await setSummaryMessageId(newMsg.id);
-      });
-      return;
-    }
-  }
-  const sent = await channel.send({ embeds: [embed] });
-  await setSummaryMessageId(sent.id);
+  const text = renderSummaryText(active);
+  await channel.send({ content: text });
 }
 
 // ------------------------------
-// Control Thread (private) & Buttons
+// Control Thread UI (two-button update flow)
 // ------------------------------
 function controlRows(signalId) {
   const row1 = new ActionRowBuilder().addComponents(
@@ -244,7 +250,8 @@ function controlRows(signalId) {
   const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`tp4_${signalId}`).setLabel('🎯 TP4 Hit').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`tp5_${signalId}`).setLabel('🎯 TP5 Hit').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`update_${signalId}`).setLabel('✏️ Update Signal').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId(`upd_levels_${signalId}`).setLabel('✏️ Update Levels').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`upd_more_${signalId}`).setLabel('⚙️ More Updates').setStyle(ButtonStyle.Secondary),
   );
   const row3 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`fullclose_${signalId}`).setLabel('✅ Fully Close').setStyle(ButtonStyle.Primary),
@@ -264,6 +271,8 @@ async function createControlThread(signal) {
   });
   await thread.members.add(config.ownerId);
   await setThreadId(signal.id, thread.id);
+
+  // Attach “More Updates” select menu (shown when pressing the button)
   await thread.send({ content: 'Owner Control Panel', components: controlRows(signal.id) });
   return thread.id;
 }
@@ -278,42 +287,99 @@ async function deleteControlThread(signalId) {
 }
 
 // ------------------------------
-// Interaction IDs & Modals
+// Modals / Menus
 // ------------------------------
-function makeUpdateModal(id) {
+function makeUpdateLevelsModal(id) {
   const modal = new ModalBuilder()
-    .setCustomId(`modal_update_${id}`)
-    .setTitle('Update Signal');
-
+    .setCustomId(`modal_updlevels_${id}`)
+    .setTitle('Update Levels (Entry/SL/TP1–TP3)');
   const fields = [
-    ['upd_asset', 'Asset (e.g., BTC, ETH)', TextInputStyle.Short],
-    ['upd_dir', 'Direction (LONG/SHORT)', TextInputStyle.Short],
     ['upd_entry', 'Entry', TextInputStyle.Short],
     ['upd_sl', 'SL', TextInputStyle.Short],
     ['upd_tp1', 'TP1', TextInputStyle.Short],
     ['upd_tp2', 'TP2', TextInputStyle.Short],
     ['upd_tp3', 'TP3', TextInputStyle.Short],
-    ['upd_tp4', 'TP4', TextInputStyle.Short],
-    ['upd_tp5', 'TP5', TextInputStyle.Short],
+  ];
+  for (const [cid, label, style] of fields) {
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId(cid).setLabel(label).setStyle(style).setRequired(false)
+    ));
+  }
+  return modal;
+}
+
+function makeMoreUpdatesMenu(id) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`menu_more_${id}`)
+      .setPlaceholder('Choose what to update…')
+      .addOptions(
+        { label: 'TP4 & TP5', value: 'more_tp45' },
+        { label: 'TP % Plans (TP1–TP5)', value: 'more_plans' },
+        { label: 'Meta (Asset / Direction / Reason / Extra role)', value: 'more_meta' },
+      )
+  );
+}
+
+function makeTp45Modal(id) {
+  const modal = new ModalBuilder()
+    .setCustomId(`modal_tp45_${id}`)
+    .setTitle('Update TP4 & TP5');
+  for (const [cid, label] of [['upd_tp4','TP4'],['upd_tp5','TP5']]) {
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId(cid).setLabel(label).setStyle(TextInputStyle.Short).setRequired(false)
+    ));
+  }
+  return modal;
+}
+
+function makePlansModal(id) {
+  const modal = new ModalBuilder()
+    .setCustomId(`modal_plans_${id}`)
+    .setTitle('Update TP % Plans (0–100)');
+  for (const t of ['tp1','tp2','tp3','tp4','tp5']) {
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId(`plan_${t}`).setLabel(`${t.toUpperCase()} planned %`).setStyle(TextInputStyle.Short).setRequired(false)
+    ));
+  }
+  return modal;
+}
+
+function makeMetaModal(id) {
+  const modal = new ModalBuilder()
+    .setCustomId(`modal_meta_${id}`)
+    .setTitle('Update Meta');
+  const fields = [
+    ['upd_asset', 'Asset (e.g., BTC, ETH)', TextInputStyle.Short],
+    ['upd_dir', 'Direction (LONG/SHORT)', TextInputStyle.Short],
     ['upd_reason', 'Reason (optional)', TextInputStyle.Paragraph],
     ['upd_role', 'Extra role mention (optional)', TextInputStyle.Short],
   ];
-  for (const [idKey, label, style] of fields) {
-    const input = new TextInputBuilder().setCustomId(idKey).setLabel(label).setStyle(style).setRequired(false);
-    modal.addComponents(new ActionRowBuilder().addComponents(input));
+  for (const [cid, label, style] of fields) {
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId(cid).setLabel(label).setStyle(style).setRequired(false)
+    ));
   }
   return modal;
 }
 
 function makeTPModal(id, tpKey) {
-  const modal = new ModalBuilder().setCustomId(`modal_tp_${tpKey}_${id}`).setTitle(`${tpKey.toUpperCase()} Hit`);
-  const pct = new TextInputBuilder().setCustomId('tp_pct').setLabel('Close % (0 - 100)').setStyle(TextInputStyle.Short).setRequired(true);
+  const modal = new ModalBuilder()
+    .setCustomId(`modal_tp_${tpKey}_${id}`)
+    .setTitle(`${tpKey.toUpperCase()} Hit`);
+  const pct = new TextInputBuilder()
+    .setCustomId('tp_pct')
+    .setLabel('Close % (0 - 100; leave blank to skip)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false);
   modal.addComponents(new ActionRowBuilder().addComponents(pct));
   return modal;
 }
 
 function makeFullCloseModal(id) {
-  const modal = new ModalBuilder().setCustomId(`modal_full_${id}`).setTitle('Fully Close Position');
+  const modal = new ModalBuilder()
+    .setCustomId(`modal_full_${id}`)
+    .setTitle('Fully Close Position');
   const price = new TextInputBuilder().setCustomId('close_price').setLabel('Close Price').setStyle(TextInputStyle.Short).setRequired(true);
   const pct = new TextInputBuilder().setCustomId('close_pct').setLabel('Close % (default = remaining)').setStyle(TextInputStyle.Short).setRequired(false);
   modal.addComponents(new ActionRowBuilder().addComponents(price));
@@ -322,8 +388,14 @@ function makeFullCloseModal(id) {
 }
 
 function makeFinalRModal(id, kind) {
-  const modal = new ModalBuilder().setCustomId(`modal_finalr_${kind}_${id}`).setTitle(kind === 'BE' ? 'Stopped Breakeven' : 'Stopped Out');
-  const r = new TextInputBuilder().setCustomId('final_r').setLabel('Final R (e.g., 0, -0.5, -1)').setStyle(TextInputStyle.Short).setRequired(true);
+  const modal = new ModalBuilder()
+    .setCustomId(`modal_finalr_${kind}_${id}`)
+    .setTitle(kind === 'BE' ? 'Stopped Breakeven' : 'Stopped Out');
+  const r = new TextInputBuilder()
+    .setCustomId('final_r')
+    .setLabel('Final R (e.g., 0, -0.5, -1)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true);
   modal.addComponents(new ActionRowBuilder().addComponents(r));
   return modal;
 }
@@ -334,6 +406,8 @@ function makeFinalRModal(id, kind) {
 client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 });
+
+const pendingSignals = new Map();
 
 client.on('interactionCreate', async (interaction) => {
   try {
@@ -359,17 +433,26 @@ client.on('interactionCreate', async (interaction) => {
       const reason = interaction.options.getString('reason');
       const extraRole = interaction.options.getString('extra_role');
 
+      // planned %
+      const tp1_pct = interaction.options.getString('tp1_pct');
+      const tp2_pct = interaction.options.getString('tp2_pct');
+      const tp3_pct = interaction.options.getString('tp3_pct');
+      const tp4_pct = interaction.options.getString('tp4_pct');
+      const tp5_pct = interaction.options.getString('tp5_pct');
+
       let asset = assetSel;
       if (assetSel === 'OTHER') {
-        // inline modal for asset name
         const pid = nano();
-        const modal = new ModalBuilder()
-          .setCustomId(`modal_asset_${pid}`)
-          .setTitle('Enter custom asset');
+        const modal = new ModalBuilder().setCustomId(`modal_asset_${pid}`).setTitle('Enter custom asset');
         const input = new TextInputBuilder().setCustomId('asset_value').setLabel('Asset (e.g., PEPE, XRP)').setStyle(TextInputStyle.Short).setRequired(true);
         modal.addComponents(new ActionRowBuilder().addComponents(input));
-        // stash temporary
-        pendingSignals.set(pid, { direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole });
+        pendingSignals.set(pid, { direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole, plan: {
+          TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
+          TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
+          TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
+          TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
+          TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
+        }});
         return interaction.showModal(modal);
       }
 
@@ -381,13 +464,20 @@ client.on('interactionCreate', async (interaction) => {
         sl,
         tp1, tp2, tp3, tp4, tp5,
         reason,
-        extraRole
+        extraRole,
+        plan: {
+          TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
+          TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
+          TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
+          TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
+          TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
+        }
       });
       await interaction.editReply({ content: `✅ Trade signal posted for ${signal.asset}.` });
       return;
     }
 
-    // asset modal
+    // asset modal submit
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_asset_')) {
       await interaction.deferReply({ ephemeral: true });
       const pid = interaction.customId.replace('modal_asset_', '');
@@ -400,102 +490,155 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // Update Signal modal
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_update_')) {
+    // ===== Update flows =====
+
+    // Update Levels modal (Entry/SL/TP1–TP3)
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_updlevels_')) {
       await interaction.deferReply({ ephemeral: true });
-      const id = interaction.customId.replace('modal_update_', '');
+      const id = interaction.customId.replace('modal_updlevels_', '');
       const signal = await getSignal(id);
       if (!signal) return interaction.editReply({ content: 'Signal not found.' });
 
-      const patch = {};
       const before = normalizeSignal(signal);
+      const patch = {};
 
-      const asset = interaction.fields.getTextInputValue('upd_asset')?.trim();
-      const dir = interaction.fields.getTextInputValue('upd_dir')?.trim()?.toUpperCase();
       const entry = interaction.fields.getTextInputValue('upd_entry')?.trim();
       const sl = interaction.fields.getTextInputValue('upd_sl')?.trim();
       const tp1 = interaction.fields.getTextInputValue('upd_tp1')?.trim();
       const tp2 = interaction.fields.getTextInputValue('upd_tp2')?.trim();
       const tp3 = interaction.fields.getTextInputValue('upd_tp3')?.trim();
-      const tp4 = interaction.fields.getTextInputValue('upd_tp4')?.trim();
-      const tp5 = interaction.fields.getTextInputValue('upd_tp5')?.trim();
-      const reason = interaction.fields.getTextInputValue('upd_reason')?.trim();
-      const extraRole = interaction.fields.getTextInputValue('upd_role')?.trim();
 
-      if (asset) patch.asset = asset.toUpperCase();
-      if (dir === 'LONG' || dir === 'SHORT') patch.direction = dir;
       if (entry) patch.entry = entry;
       if (sl) patch.sl = sl;
       if (tp1 !== undefined && tp1 !== '') patch.tp1 = tp1;
       if (tp2 !== undefined && tp2 !== '') patch.tp2 = tp2;
       if (tp3 !== undefined && tp3 !== '') patch.tp3 = tp3;
-      if (tp4 !== undefined && tp4 !== '') patch.tp4 = tp4;
-      if (tp5 !== undefined && tp5 !== '') patch.tp5 = tp5;
-      if (reason !== undefined) patch.reason = reason;
-      if (extraRole !== undefined) patch.extraRole = extraRole;
 
-      // apply patch
       await updateSignal(id, patch);
       const updated = normalizeSignal(await getSignal(id));
 
-      // smart retag only if asset/direction/entry/sl/any TP price changed
-      const changedKeys = ['asset', 'direction', 'entry', 'sl', ...TP_KEYS];
+      const changedKeys = ['entry', 'sl', 'tp1', 'tp2', 'tp3'];
       const retag = changedKeys.some(k => String(before[k] ?? '') !== String(updated[k] ?? ''));
 
-      // detect SL moved to BE -> validReentry false (only when active and a TP was hit)
       if (isSlMovedToBE(updated)) {
         updated.validReentry = false;
         await updateSignal(id, { validReentry: false });
       }
 
-      // edit main message
       await editSignalMessage(updated);
-
-      // minimal ping if retag-worthy
-      if (retag) {
-        await sendMinimalPing(updated);
-      }
-
+      if (retag) await sendMinimalPing(updated);
       await updateSummary();
-      return interaction.editReply({ content: '✅ Signal updated.' });
+
+      return interaction.editReply({ content: '✅ Levels updated.' });
     }
 
-    // TP modal submit
+    // TP4 & TP5 modal
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_tp45_')) {
+      await interaction.deferReply({ ephemeral: true });
+      const id = interaction.customId.replace('modal_tp45_', '');
+      const signal = await getSignal(id);
+      if (!signal) return interaction.editReply({ content: 'Signal not found.' });
+
+      const before = normalizeSignal(signal);
+      const patch = {};
+      const tp4 = interaction.fields.getTextInputValue('upd_tp4')?.trim();
+      const tp5 = interaction.fields.getTextInputValue('upd_tp5')?.trim();
+      if (tp4 !== undefined && tp4 !== '') patch.tp4 = tp4;
+      if (tp5 !== undefined && tp5 !== '') patch.tp5 = tp5;
+
+      await updateSignal(id, patch);
+      const updated = normalizeSignal(await getSignal(id));
+
+      const retag = ['tp4','tp5'].some(k => String(before[k] ?? '') !== String(updated[k] ?? ''));
+      await editSignalMessage(updated);
+      if (retag) await sendMinimalPing(updated);
+      await updateSummary();
+
+      return interaction.editReply({ content: '✅ TP4/TP5 updated.' });
+    }
+
+    // TP % plans modal
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_plans_')) {
+      await interaction.deferReply({ ephemeral: true });
+      const id = interaction.customId.replace('modal_plans_', '');
+      const sig = normalizeSignal(await getSignal(id));
+      if (!sig) return interaction.editReply({ content: 'Signal not found.' });
+
+      const patchPlan = { ...sig.plan };
+      for (const t of ['tp1','tp2','tp3','tp4','tp5']) {
+        const raw = interaction.fields.getTextInputValue(`plan_${t}`)?.trim();
+        if (raw === '' || raw === undefined) continue;
+        if (isNum(raw)) patchPlan[t.toUpperCase()] = Number(raw);
+      }
+      await updateSignal(id, { plan: patchPlan });
+
+      await editSignalMessage(normalizeSignal(await getSignal(id)));
+      await updateSummary();
+      return interaction.editReply({ content: '✅ TP % plans updated.' });
+    }
+
+    // Meta modal (asset/direction/reason/extra role)
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_meta_')) {
+      await interaction.deferReply({ ephemeral: true });
+      const id = interaction.customId.replace('modal_meta_', '');
+      const signal = await getSignal(id);
+      if (!signal) return interaction.editReply({ content: 'Signal not found.' });
+
+      const before = normalizeSignal(signal);
+      const patch = {};
+
+      const asset = interaction.fields.getTextInputValue('upd_asset')?.trim();
+      const dir = interaction.fields.getTextInputValue('upd_dir')?.trim()?.toUpperCase();
+      const reason = interaction.fields.getTextInputValue('upd_reason')?.trim();
+      const extraRole = interaction.fields.getTextInputValue('upd_role')?.trim();
+
+      if (asset) patch.asset = asset.toUpperCase();
+      if (dir === 'LONG' || dir === 'SHORT') patch.direction = dir;
+      if (reason !== undefined) patch.reason = reason;
+      if (extraRole !== undefined) patch.extraRole = extraRole;
+
+      await updateSignal(id, patch);
+      const updated = normalizeSignal(await getSignal(id));
+
+      const retag = ['asset','direction'].some(k => String(before[k] ?? '') !== String(updated[k] ?? ''));
+      await editSignalMessage(updated);
+      if (retag) await sendMinimalPing(updated);
+      await updateSummary();
+
+      return interaction.editReply({ content: '✅ Meta updated.' });
+    }
+
+    // TP Hit modal submit (optional %)
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_tp_')) {
       await interaction.deferReply({ ephemeral: true });
       const [_prefix, _tp, tpKey, id] = interaction.customId.split('_'); // modal_tp_tp1_<id>
-      const pctStr = interaction.fields.getTextInputValue('tp_pct')?.trim();
-      const pct = Number(pctStr);
-      if (isNaN(pct) || pct < 0 || pct > 100) {
-        return interaction.editReply({ content: '❌ Close % must be between 0 and 100.' });
-      }
-
-      let signal = await getSignal(id);
+      let signal = normalizeSignal(await getSignal(id));
       if (!signal) return interaction.editReply({ content: 'Signal not found.' });
-      signal = normalizeSignal(signal);
 
-      // record fill only if pct > 0 (else no bracket)
-      const tpNum = signal[tpKey];
-      if (pct > 0 && isNum(tpNum)) {
-        signal.fills.push({ pct, price: Number(tpNum), source: tpKey.toUpperCase() });
+      const pctRaw = interaction.fields.getTextInputValue('tp_pct')?.trim();
+      const hasPct = pctRaw !== undefined && pctRaw !== null && pctRaw !== '';
+      const pct = hasPct ? Number(pctRaw) : null;
+      if (hasPct && (isNaN(pct) || pct < 0 || pct > 100)) {
+        return interaction.editReply({ content: '❌ Close % must be between 0 and 100 (or leave blank to skip).' });
+      }
+      const tpPrice = signal[tpKey];
+      if (hasPct && pct > 0 && isNum(tpPrice)) {
+        signal.fills.push({ pct: Number(pct), price: Number(tpPrice), source: tpKey.toUpperCase() });
       }
       signal.latestTpHit = tpKey.toUpperCase();
 
-      // Active state remains RUN_VALID; validReentry stays as-is unless SL moved to BE separately
       await updateSignal(id, { fills: signal.fills, latestTpHit: signal.latestTpHit });
       await editSignalMessage(signal);
-
       await updateSummary();
-      return interaction.editReply({ content: `✅ ${tpKey.toUpperCase()} recorded.` });
+      return interaction.editReply({ content: `✅ ${tpKey.toUpperCase()} recorded${hasPct && pct > 0 ? ` (${pct}%).` : '.'}` });
     }
 
     // Fully Close modal submit
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_full_')) {
       await interaction.deferReply({ ephemeral: true });
       const id = interaction.customId.replace('modal_full_', '');
-      let signal = await getSignal(id);
+      let signal = normalizeSignal(await getSignal(id));
       if (!signal) return interaction.editReply({ content: 'Signal not found.' });
-      signal = normalizeSignal(signal);
 
       const price = Number(interaction.fields.getTextInputValue('close_price')?.trim());
       if (!isNum(price)) return interaction.editReply({ content: '❌ Close Price must be a number.' });
@@ -508,7 +651,7 @@ client.on('interactionCreate', async (interaction) => {
       if (pct > 0) {
         signal.fills.push({ pct, price, source: 'FINAL_CLOSE' });
       }
-      // mark final closed
+      // final close
       const latest = signal.latestTpHit || TP_KEYS.find(k => signal[k] !== null)?.toUpperCase() || null;
       signal.status = STATUS.CLOSED;
       signal.validReentry = false;
@@ -520,45 +663,34 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.editReply({ content: '✅ Fully closed.' });
     }
 
-    // Final R modal submit (Stopped BE / Stopped Out)
+    // Final R modal (Stopped BE / Stopped Out)
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_finalr_')) {
       await interaction.deferReply({ ephemeral: true });
-      const parts = interaction.customId.split('_'); // modal_finalr_BE_<id> or modal_finalr_OUT_<id>
+      const parts = interaction.customId.split('_'); // modal_finalr_BE_<id>
       const kind = parts[2];
       const id = parts.slice(3).join('_');
-
-      let signal = await getSignal(id);
+      let signal = normalizeSignal(await getSignal(id));
       if (!signal) return interaction.editReply({ content: 'Signal not found.' });
-      signal = normalizeSignal(signal);
 
       const finalR = Number(interaction.fields.getTextInputValue('final_r')?.trim());
       if (!isNum(finalR)) return interaction.editReply({ content: '❌ Final R must be a number (e.g., 0, -1, -0.5).' });
 
-      // Convert R to a synthetic fill % so our realized math/format matches:
-      // We will push a synthetic 100% fill at the price producing that R relative to entry/sl.
-      // price = entry + R * (entry - sl) for LONG, entry - R * (sl - entry) for SHORT
       let price = null;
       if (signal.direction === DIR.LONG) {
         price = Number(signal.entry) + finalR * (Number(signal.entry) - Number(signal.slOriginal ?? signal.sl));
       } else {
         price = Number(signal.entry) - finalR * (Number(signal.slOriginal ?? signal.sl) - Number(signal.entry));
       }
-      // cap: we only care about R display; price is not shown in BE/out wording anyway
-      signal.fills.push({
-        pct: 100 - (signal.fills?.reduce((a, f) => a + Number(f.pct || 0), 0) || 0),
-        price,
-        source: kind === 'BE' ? 'STOP_BE' : 'STOP_OUT'
-      });
-
-      if (kind === 'BE') {
-        signal.status = STATUS.STOPPED_BE;
-      } else {
-        signal.status = STATUS.STOPPED_OUT;
+      const remaining = 100 - (signal.fills || []).reduce((a, f) => a + Number(f.pct || 0), 0);
+      if (remaining > 0) {
+        signal.fills.push({ pct: remaining, price, source: kind === 'BE' ? 'STOP_BE' : 'STOP_OUT' });
       }
+
+      if (kind === 'BE') signal.status = STATUS.STOPPED_BE;
+      else signal.status = STATUS.STOPPED_OUT;
       signal.validReentry = false;
 
       await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false });
-
       await editSignalMessage(signal);
       await updateSummary();
       await deleteControlThread(id);
@@ -566,26 +698,27 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.editReply({ content: kind === 'BE' ? '✅ Stopped at breakeven.' : '✅ Stopped out.' });
     }
 
-    // Buttons
+    // ===== Buttons / Menus =====
     if (interaction.isButton()) {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use these controls.', ephemeral: true });
       }
-      const [action, id] = interaction.customId.split('_'); // e.g., tp1_<id>
+      const [action, id] = interaction.customId.split('_');
       if (!id) return interaction.reply({ content: 'Bad button ID.', ephemeral: true });
 
-      if (action === 'update') {
-        return interaction.showModal(makeUpdateModal(id));
+      // Update Levels
+      if (action === 'updlevels') {
+        return interaction.showModal(makeUpdateLevelsModal(id));
       }
-      if (action === 'fullclose') {
-        return interaction.showModal(makeFullCloseModal(id));
+      // More Updates (send ephemeral menu)
+      if (action === 'updmore') {
+        return interaction.reply({ content: 'Choose what to update:', components: [makeMoreUpdatesMenu(id)], ephemeral: true });
       }
-      if (action === 'stopbe') {
-        return interaction.showModal(makeFinalRModal(id, 'BE'));
-      }
-      if (action === 'stopped') {
-        return interaction.showModal(makeFinalRModal(id, 'OUT'));
-      }
+
+      if (action === 'fullclose') return interaction.showModal(makeFullCloseModal(id));
+      if (action === 'stopbe')   return interaction.showModal(makeFinalRModal(id, 'BE'));
+      if (action === 'stopped')  return interaction.showModal(makeFinalRModal(id, 'OUT'));
+
       if (action === 'del') {
         await interaction.deferReply({ ephemeral: true });
         const sig = await getSignal(id);
@@ -597,11 +730,50 @@ client.on('interactionCreate', async (interaction) => {
         }
         return interaction.editReply({ content: '🗑️ Signal deleted.' });
       }
-      // TP buttons
-      if (['tp1', 'tp2', 'tp3', 'tp4', 'tp5'].includes(action)) {
-        return interaction.showModal(makeTPModal(id, action));
+
+      // TP buttons — auto-exec if a plan exists; else optional modal
+      if (['tp1','tp2','tp3','tp4','tp5'].includes(action)) {
+        const sig = normalizeSignal(await getSignal(id));
+        if (!sig) return interaction.reply({ content: 'Signal not found.', ephemeral: true });
+        const planPct = sig.plan?.[action.toUpperCase()];
+        const tpPrice = sig[action];
+        if (isNum(planPct) && Number(planPct) > 0 && isNum(tpPrice)) {
+          // auto execute
+          sig.fills.push({ pct: Number(planPct), price: Number(tpPrice), source: action.toUpperCase() });
+          sig.latestTpHit = action.toUpperCase();
+          await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit });
+          await editSignalMessage(sig);
+          await updateSummary();
+          return interaction.reply({ content: `✅ ${action.toUpperCase()} executed (${planPct}%).`, ephemeral: true });
+        }
+        // else show optional modal (prefill with plan or blank)
+        const modal = makeTPModal(id, action);
+        if (isNum(planPct)) {
+          modal.components[0].components[0].setValue(String(planPct));
+        }
+        return interaction.showModal(modal);
       }
+
       return interaction.reply({ content: 'Unknown action.', ephemeral: true });
+    }
+
+    // Handle More Updates menu selections
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('menu_more_')) {
+      const id = interaction.customId.replace('menu_more_', '');
+      const value = interaction.values[0];
+      if (value === 'more_tp45') {
+        await interaction.update({ content: 'Opening TP4/TP5 modal…', components: [] });
+        return interaction.followUp({ ephemeral: true, content: ' ', components: [] }).then(() => interaction.showModal(makeTp45Modal(id)));
+      }
+      if (value === 'more_plans') {
+        await interaction.update({ content: 'Opening TP % plans modal…', components: [] });
+        return interaction.followUp({ ephemeral: true, content: ' ', components: [] }).then(() => interaction.showModal(makePlansModal(id)));
+      }
+      if (value === 'more_meta') {
+        await interaction.update({ content: 'Opening Meta modal…', components: [] });
+        return interaction.followUp({ ephemeral: true, content: ' ', components: [] }).then(() => interaction.showModal(makeMetaModal(id)));
+      }
+      return interaction.update({ content: 'No action.', components: [] });
     }
   } catch (err) {
     console.error('interaction error:', err);
@@ -618,8 +790,6 @@ client.on('interactionCreate', async (interaction) => {
 // ------------------------------
 // Create & Save Signal
 // ------------------------------
-const pendingSignals = new Map();
-
 async function createSignal(payload) {
   const signal = normalizeSignal({
     id: nano(),
@@ -630,6 +800,7 @@ async function createSignal(payload) {
     tp1: payload.tp1, tp2: payload.tp2, tp3: payload.tp3, tp4: payload.tp4, tp5: payload.tp5,
     reason: payload.reason || '',
     extraRole: payload.extraRole || '',
+    plan: payload.plan || { TP1:null, TP2:null, TP3:null, TP4:null, TP5:null },
     status: STATUS.RUN_VALID,
     validReentry: true,
     latestTpHit: null,
@@ -638,30 +809,24 @@ async function createSignal(payload) {
     jumpUrl: null
   });
 
-  // store
   await saveSignal(signal);
 
-  // post message as bot
   const msgId = await postSignalMessage(signal);
   signal.messageId = msgId;
 
-  // set jumpUrl
   const channel = await client.channels.fetch(config.signalsChannelId);
   const msg = await channel.messages.fetch(msgId);
   signal.jumpUrl = msg.url;
 
   await updateSignal(signal.id, { messageId: signal.messageId, jumpUrl: signal.jumpUrl });
 
-  // control thread
   await createControlThread(signal);
-
-  // update summary
   await updateSummary();
 
   return signal;
 }
 
-// Minimal ping message when retag-worthy fields changed
+// Minimal ping when retag-worthy things change
 async function sendMinimalPing(signal) {
   const channel = await client.channels.fetch(config.signalsChannelId);
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole);

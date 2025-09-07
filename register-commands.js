@@ -1,26 +1,63 @@
-import 'dotenv/config';
+// register-commands.js — Registers /ping and /signal (with TP1–TP5 + planned %)
 
-function req(key) {
-  const v = process.env[key];
-  if (!v) throw new Error(`Missing required env: ${key}`);
-  return v;
+import { REST, Routes, SlashCommandBuilder } from 'discord.js';
+import config from './config.js';
+
+const {
+  token,
+  clientId,     // alias of appId
+  guildId,
+} = config;
+
+const ASSETS = [
+  'BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'PEPE', 'OP', 'ARB', 'LINK', 'ADA', 'BNB', 'MATIC',
+  'APT', 'SUI', 'DOT', 'ATOM', 'AVAX', 'NEAR', 'RNDR', 'TIA', 'WIF', 'BONK', 'SEI', 'OTHER'
+];
+
+const pingCmd = new SlashCommandBuilder()
+  .setName('ping')
+  .setDescription('Simple health check (owner only answers).');
+
+const signalCmd = new SlashCommandBuilder()
+  .setName('signal')
+  .setDescription('Create a new trade signal.')
+  .addStringOption(opt =>
+    opt.setName('asset').setDescription('Asset').setRequired(true)
+      .addChoices(...Array.from(new Set(ASSETS)).map(a => ({ name: a, value: a })))
+  )
+  .addStringOption(opt =>
+    opt.setName('direction').setDescription('Trade direction').setRequired(true)
+      .addChoices({ name: 'Long', value: 'LONG' }, { name: 'Short', value: 'SHORT' })
+  )
+  .addStringOption(opt => opt.setName('entry').setDescription('Entry (free text number)').setRequired(true))
+  .addStringOption(opt => opt.setName('sl').setDescription('SL (free text number)').setRequired(true))
+  .addStringOption(opt => opt.setName('tp1').setDescription('TP1 (optional)').setRequired(false))
+  .addStringOption(opt => opt.setName('tp2').setDescription('TP2 (optional)').setRequired(false))
+  .addStringOption(opt => opt.setName('tp3').setDescription('TP3 (optional)').setRequired(false))
+  .addStringOption(opt => opt.setName('tp4').setDescription('TP4 (optional)').setRequired(false))
+  .addStringOption(opt => opt.setName('tp5').setDescription('TP5 (optional)').setRequired(false))
+  // planned percentages (optional)
+  .addStringOption(opt => opt.setName('tp1_pct').setDescription('Planned % at TP1 (0–100)').setRequired(false))
+  .addStringOption(opt => opt.setName('tp2_pct').setDescription('Planned % at TP2 (0–100)').setRequired(false))
+  .addStringOption(opt => opt.setName('tp3_pct').setDescription('Planned % at TP3 (0–100)').setRequired(false))
+  .addStringOption(opt => opt.setName('tp4_pct').setDescription('Planned % at TP4 (0–100)').setRequired(false))
+  .addStringOption(opt => opt.setName('tp5_pct').setDescription('Planned % at TP5 (0–100)').setRequired(false))
+  .addStringOption(opt => opt.setName('reason').setDescription('Reason (optional)').setRequired(false))
+  .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role to tag (ID or @mention)').setRequired(false));
+
+const commands = [pingCmd, signalCmd].map(c => c.toJSON());
+
+async function main() {
+  if (!token || !clientId || !guildId) {
+    throw new Error('Missing token/clientId/guildId in config.js.');
+  }
+  const rest = new REST({ version: '10' }).setToken(token);
+  console.log('🔧 Registering application commands (guild)…');
+  await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
+  console.log('✅ Successfully registered guild commands.');
 }
 
-const cfg = {
-  token: req('DISCORD_TOKEN'),
-  appId: req('APPLICATION_ID'),
-  clientId: req('APPLICATION_ID'),   // 👈 added alias for register-commands.js
-  guildId: req('GUILD_ID'),
-
-  signalsChannelId: req('SIGNALS_CHANNEL_ID'),
-  currentTradesChannelId: req('CURRENT_TRADES_CHANNEL_ID'),
-
-  ownerId: req('OWNER_ID'),
-
-  // Optional
-  brandName: process.env.BRAND_NAME || 'JV Trades',
-  brandAvatarUrl: process.env.BRAND_AVATAR_URL || null,
-  mentionRoleId: process.env.TRADER_ROLE_ID || process.env.MENTION_ROLE_ID || null
-};
-
-export default cfg;
+main().catch(err => {
+  console.error('❌ Failed to register commands:', err);
+  process.exit(1);
+});
