@@ -121,6 +121,30 @@ function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
   return { content, allowedMentions: { parse: [], roles: ids } };
 }
 
+
+// --- Ack helpers ---
+async function ensureDeferred(interaction) {
+  try {
+    if (!interaction.deferred && !interaction.replied) {
+      await ensureDeferred(interaction);
+    }
+  } catch {}
+}
+async function safeEditReply(interaction, payload) {
+  try {
+    if (!interaction.deferred && !interaction.replied) {
+      await ensureDeferred(interaction);
+    }
+  } catch {}
+  try { return await interaction.editReply(payload); }
+  catch (e) {
+    try {
+      if (!interaction.replied) return await interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
+    } catch {}
+    throw e;
+  }
+}
+
 // ------------------------------
 // Posting / Editing messages
 // ------------------------------
@@ -165,26 +189,16 @@ async function hardPurgeChannel(channelId) {
   try {
     const channel = await client.channels.fetch(channelId);
     while (true) {
-      const batch = await channel.messages.fetch({ limit: 100 }).catch((e) => {
-        console.error('purge: fetch failed', e);
-        return null;
-      });
+      const batch = await channel.messages.fetch({ limit: 100 }).catch(() => null);
       if (!batch || batch.size === 0) break;
-
-      const young = batch.filter(m => (Date.now() - m.createdTimestamp) < 13 * 24 * 60 * 60 * 1000);
-      if (young.size > 1) {
-        try { await channel.bulkDelete(young, true); }
-        catch (e) { console.error('purge: bulkDelete failed', e); }
-      }
-      const oldies = batch.filter(m => !young.has(m.id));
-      for (const m of oldies.values()) {
-        try { await m.delete(); } catch (e) { console.error('purge: single delete failed', e); }
-      }
+      const now = Date.now();
+      const younger = batch.filter(m => (now - m.createdTimestamp) < 14 * 24 * 60 * 60 * 1000);
+      if (younger.size) { try { await channel.bulkDelete(younger, true); } catch {} }
+      const older = batch.filter(m => !younger.has(m.id));
+      for (const m of older.values()) { try { await m.delete(); } catch {} }
       if (batch.size < 100) break;
     }
-  } catch (e) {
-    console.error('hardPurgeChannel outer error:', e);
-  }
+  } catch (e) { console.error('hardPurgeChannel outer error:', e); }
 }
 
 async function updateSummary() {
@@ -192,9 +206,20 @@ async function updateSummary() {
     await hardPurgeChannel(config.currentTradesChannelId);
     const channel = await client.channels.fetch(config.currentTradesChannelId);
     const signals = (await getSignals()).map(normalizeSignal);
-    const active = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
-    const text = renderSummaryText(active);
-    await channel.send({ content: text, allowedMentions: { parse: [] } }).catch(e => console.error('summary send failed:', e));
+    const candidates = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
+    // Check original message still exists
+    const sigChan = await client.channels.fetch(config.signalsChannelId);
+    const active = [];
+    for (const s of candidates) {
+      try { if (s.messageId) await sigChan.messages.fetch(s.messageId); active.push(s); }
+      catch {}
+    }
+    const textOut = active.length === 0
+      ? `**JV Current Active Trades** 📊
+
+• There are currently no ongoing trades valid for entry – stay posted for future trades!`
+      : renderSummaryText(active);
+    await channel.send({ content: textOut, allowedMentions: { parse: [] } }).catch(e => console.error('summary send failed:', e));
   } catch (e) {
     console.error('updateSummary error:', e);
   }
@@ -348,57 +373,10 @@ function makeFinalRModal(id, kind) {
 async function ensureDeferred(interaction) {
   try {
     if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await ensureDeferred(interaction);
     }
   } catch {}
 }
-
-async function safeEditReply(interaction, payload) {
-  try {
-    if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    }
-
-
-// ---- Filesystem-based idempotency (works across multiple processes) ----
-const IX_DIR = './.ix';
-await fs.ensureDir(IX_DIR);
-async function tryClaimInteraction(id) {
-  const p = `${IX_DIR}/${id}`;
-  try {
-    await fs.writeFile(p, String(Date.now()), { flag: 'wx' }); // exclusive create
-    return true;
-  } catch (e) {
-    if (e && (e.code === 'EEXIST' || e.code === 'EISDIR')) return false;
-    return false;
-  }
-}
-// cleanup old marks on boot (older than 24h)
-(async () => {
-  try {
-    const files = await fs.readdir(IX_DIR);
-    const now = Date.now();
-    for (const f of files) {
-      try {
-        const stat = await fs.stat(`${IX_DIR}/${f}`);
-        if (now - stat.mtimeMs > 24*60*60*1000) await fs.remove(`${IX_DIR}/${f}`);
-      } catch {}
-    }
-  } catch {}
-})();
-  } catch {}
-  try {
-    return await interaction.editReply(payload);
-  } catch (e) {
-    try {
-      if (!interaction.replied) {
-        return await interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
-      }
-    } catch {}
-    throw e;
-  }
-}
-
 
 const PENDING_PATH = './.pending.json';
 async function pendLoad() { try { return await fs.readJson(PENDING_PATH); } catch { return {}; } }
@@ -445,10 +423,10 @@ client.on('messageDeleteBulk', async (collection) => {
 // Interactions
 // ------------------------------
 client.on('interactionCreate', async (interaction) => {
-  if (!(await tryClaimInteraction(interaction.id))) return;
   try {
     // /signal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
+      await ensureDeferred(interaction);
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
       }
