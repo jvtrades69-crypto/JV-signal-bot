@@ -22,7 +22,6 @@ import {
   MessageFlags,
 } from 'discord.js';
 import { customAlphabet } from 'nanoid';
-import fs from 'fs-extra';
 import config from './config.js';
 import {
   saveSignal, getSignal, getSignals, updateSignal, deleteSignal,
@@ -121,30 +120,6 @@ function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
   return { content, allowedMentions: { parse: [], roles: ids } };
 }
 
-
-// --- Ack helpers ---
-async function ensureDeferred(interaction) {
-  try {
-    if (!interaction.deferred && !interaction.replied) {
-      await ensureDeferred(interaction);
-    }
-  } catch {}
-}
-async function safeEditReply(interaction, payload) {
-  try {
-    if (!interaction.deferred && !interaction.replied) {
-      await ensureDeferred(interaction);
-    }
-  } catch {}
-  try { return await interaction.editReply(payload); }
-  catch (e) {
-    try {
-      if (!interaction.replied) return await interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
-    } catch {}
-    throw e;
-  }
-}
-
 // ------------------------------
 // Posting / Editing messages
 // ------------------------------
@@ -189,16 +164,26 @@ async function hardPurgeChannel(channelId) {
   try {
     const channel = await client.channels.fetch(channelId);
     while (true) {
-      const batch = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+      const batch = await channel.messages.fetch({ limit: 100 }).catch((e) => {
+        console.error('purge: fetch failed', e);
+        return null;
+      });
       if (!batch || batch.size === 0) break;
-      const now = Date.now();
-      const younger = batch.filter(m => (now - m.createdTimestamp) < 14 * 24 * 60 * 60 * 1000);
-      if (younger.size) { try { await channel.bulkDelete(younger, true); } catch {} }
-      const older = batch.filter(m => !younger.has(m.id));
-      for (const m of older.values()) { try { await m.delete(); } catch {} }
+
+      const young = batch.filter(m => (Date.now() - m.createdTimestamp) < 13 * 24 * 60 * 60 * 1000);
+      if (young.size > 1) {
+        try { await channel.bulkDelete(young, true); }
+        catch (e) { console.error('purge: bulkDelete failed', e); }
+      }
+      const oldies = batch.filter(m => !young.has(m.id));
+      for (const m of oldies.values()) {
+        try { await m.delete(); } catch (e) { console.error('purge: single delete failed', e); }
+      }
       if (batch.size < 100) break;
     }
-  } catch (e) { console.error('hardPurgeChannel outer error:', e); }
+  } catch (e) {
+    console.error('hardPurgeChannel outer error:', e);
+  }
 }
 
 async function updateSummary() {
@@ -206,20 +191,9 @@ async function updateSummary() {
     await hardPurgeChannel(config.currentTradesChannelId);
     const channel = await client.channels.fetch(config.currentTradesChannelId);
     const signals = (await getSignals()).map(normalizeSignal);
-    const candidates = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
-    // Check original message still exists
-    const sigChan = await client.channels.fetch(config.signalsChannelId);
-    const active = [];
-    for (const s of candidates) {
-      try { if (s.messageId) await sigChan.messages.fetch(s.messageId); active.push(s); }
-      catch {}
-    }
-    const textOut = active.length === 0
-      ? `**JV Current Active Trades** 📊
-
-• There are currently no ongoing trades valid for entry – stay posted for future trades!`
-      : renderSummaryText(active);
-    await channel.send({ content: textOut, allowedMentions: { parse: [] } }).catch(e => console.error('summary send failed:', e));
+    const active = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
+    const text = renderSummaryText(active);
+    await channel.send({ content: text, allowedMentions: { parse: [] } }).catch(e => console.error('summary send failed:', e));
   } catch (e) {
     console.error('updateSummary error:', e);
   }
@@ -341,13 +315,7 @@ function makeFullCloseModal(id) {
   const modal = new ModalBuilder().setCustomId(`modal_full_${id}`).setTitle('Fully Close Position');
   const price = new TextInputBuilder().setCustomId('close_price').setLabel('Close Price').setStyle(TextInputStyle.Short).setRequired(true);
   const pct = new TextInputBuilder().setCustomId('close_pct').setLabel('Close % (default = remaining)').setStyle(TextInputStyle.Short).setRequired(false);
-  const finalR = new TextInputBuilder()
-  .setCustomId('final_r')
-  .setLabel('Final R (optional)')
-  .setPlaceholder('e.g., 0, -0.5, -1 — overrides calc')
-  .setStyle(TextInputStyle.Short)
-  .setRequired(false);
-
+  const finalR = new TextInputBuilder().setCustomId('final_r').setLabel('Final R (optional; overrides calc)').setStyle(TextInputStyle.Short).setRequired(false);
   modal.addComponents(new ActionRowBuilder().addComponents(price));
   modal.addComponents(new ActionRowBuilder().addComponents(pct));
   modal.addComponents(new ActionRowBuilder().addComponents(finalR));
@@ -356,32 +324,10 @@ function makeFullCloseModal(id) {
 
 function makeFinalRModal(id, kind) {
   const modal = new ModalBuilder().setCustomId(`modal_finalr_${kind}_${id}`).setTitle(kind === 'BE' ? 'Stopped Breakeven' : 'Stopped Out');
-  const r = new TextInputBuilder()
-  .setCustomId('final_r')
-  .setLabel('Final R (optional)')
-  .setPlaceholder('e.g., 0, -0.5, -1 — overrides calc')
-  .setStyle(TextInputStyle.Short)
-  .setRequired(false);
-
+  const r = new TextInputBuilder().setCustomId('final_r').setLabel('Final R (e.g., 0, -0.5, -1; optional override)').setStyle(TextInputStyle.Short).setRequired(false);
   modal.addComponents(new ActionRowBuilder().addComponents(r));
   return modal;
 }
-
-// ------------------------------
-// Helpers to avoid 10062 + persist custom-asset flow
-// ------------------------------
-async function ensureDeferred(interaction) {
-  try {
-    if (!interaction.deferred && !interaction.replied) {
-      await ensureDeferred(interaction);
-    }
-  } catch {}
-}
-
-const PENDING_PATH = './.pending.json';
-async function pendLoad() { try { return await fs.readJson(PENDING_PATH); } catch { return {}; } }
-async function pendSave(obj) { try { await fs.writeJson(PENDING_PATH, obj, { spaces: 0 }); } catch {} }
-let pendingSignals = await pendLoad();
 
 // ------------------------------
 // Bot lifecycle
@@ -419,6 +365,8 @@ client.on('messageDeleteBulk', async (collection) => {
   }
 });
 
+const pendingSignals = new Map();
+
 // ------------------------------
 // Interactions
 // ------------------------------
@@ -426,9 +374,8 @@ client.on('interactionCreate', async (interaction) => {
   try {
     // /signal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
-      await ensureDeferred(interaction);
       if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
+        return interaction.reply({ content: 'Only the owner can use this command.', ephemeral: true });
       }
       const assetSel   = interaction.options.getString('asset');
       const direction  = interaction.options.getString('direction');
@@ -453,7 +400,7 @@ client.on('interactionCreate', async (interaction) => {
         const modal = new ModalBuilder().setCustomId(`modal_asset_${pid}`).setTitle('Enter custom asset');
         const input = new TextInputBuilder().setCustomId('asset_value').setLabel('Asset (e.g., PEPE, XRP)').setStyle(TextInputStyle.Short).setRequired(true);
         modal.addComponents(new ActionRowBuilder().addComponents(input));
-        pendingSignals[pid] = {
+        pendingSignals.set(pid, {
           direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole,
           plan: {
             TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
@@ -461,14 +408,12 @@ client.on('interactionCreate', async (interaction) => {
             TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
             TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
             TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
-          },
-          ts: Date.now()
-        };
-        await pendSave(pendingSignals);
+          }
+        });
         return interaction.showModal(modal);
       }
 
-      await ensureDeferred(interaction);
+      await interaction.deferReply({ ephemeral: true });
       await createSignal({
         asset: assetSel,
         direction,
@@ -487,12 +432,10 @@ client.on('interactionCreate', async (interaction) => {
 
     // custom asset modal
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_asset_')) {
-      await ensureDeferred(interaction);
+      await interaction.deferReply({ ephemeral: true });
       const pid = interaction.customId.replace('modal_asset_', '');
-      pendingSignals = await pendLoad();
-      const stash = pendingSignals[pid];
-      delete pendingSignals[pid];
-      await pendSave(pendingSignals);
+      const stash = pendingSignals.get(pid);
+      pendingSignals.delete(pid);
       if (!stash) return safeEditReply(interaction, { content: '❌ Session expired. Try /signal again.' });
       const asset = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
       await createSignal({ asset, ...stash });
@@ -503,7 +446,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Update TP Prices (TP1–TP5)
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_tpprices_')) {
-      await ensureDeferred(interaction);
+      await interaction.deferReply({ ephemeral: true });
       const id = interaction.customId.replace('modal_tpprices_', '');
       const signal = await getSignal(id);
       if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
@@ -525,7 +468,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Update TP % Plan
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_plan_')) {
-      await ensureDeferred(interaction);
+      await interaction.deferReply({ ephemeral: true });
       const id = interaction.customId.replace('modal_plan_', '');
       const sig = normalizeSignal(await getSignal(id));
       if (!sig) return safeEditReply(interaction, { content: 'Signal not found.' });
@@ -545,7 +488,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Update Trade Info
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_trade_')) {
-      await ensureDeferred(interaction);
+      await interaction.deferReply({ ephemeral: true });
       const id = interaction.customId.replace('modal_trade_', '');
       const signal = await getSignal(id);
       if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
@@ -574,7 +517,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Update Role Mention(s)
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_roles_')) {
-      await ensureDeferred(interaction);
+      await interaction.deferReply({ ephemeral: true });
       const id = interaction.customId.replace('modal_roles_', '');
       const signal = await getSignal(id);
       if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
@@ -589,7 +532,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // TP Hit modal submit (optional %; one-time)
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_tp_')) {
-      await ensureDeferred(interaction);
+      await interaction.deferReply({ ephemeral: true });
       const [_prefix, _tp, tpKey, id] = interaction.customId.split('_'); // modal_tp_tp1_<id>
       let signal = normalizeSignal(await getSignal(id));
       if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
@@ -622,7 +565,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Fully close modal (optional final R override)
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_full_')) {
-      await ensureDeferred(interaction);
+      await interaction.deferReply({ ephemeral: true });
       const id = interaction.customId.replace('modal_full_', '');
       let signal = normalizeSignal(await getSignal(id));
       if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
@@ -662,7 +605,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Final R modal (Stopped BE / Stopped Out) — optional override
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_finalr_')) {
-      await ensureDeferred(interaction);
+      await interaction.deferReply({ ephemeral: true });
       const parts = interaction.customId.split('_'); // modal_finalr_BE_<id>
       const kind = parts[2];
       const id = parts.slice(3).join('_');
@@ -706,10 +649,10 @@ client.on('interactionCreate', async (interaction) => {
     // ===== Buttons =====
     if (interaction.isButton()) {
       if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use these controls.', flags: MessageFlags.Ephemeral });
+        return interaction.reply({ content: 'Only the owner can use these controls.', ephemeral: true });
       }
       const [action, id] = interaction.customId.split('_');
-      if (!id) return interaction.reply({ content: 'Bad button ID.', flags: MessageFlags.Ephemeral });
+      if (!id) return interaction.reply({ content: 'Bad button ID.', ephemeral: true });
 
       if (action === 'upd_tpprices') return interaction.showModal(makeUpdateTPPricesModal(id));
       if (action === 'upd_plan')     return interaction.showModal(makeUpdatePlanModal(id));
@@ -720,7 +663,7 @@ client.on('interactionCreate', async (interaction) => {
       if (action === 'stopped')      return interaction.showModal(makeFinalRModal(id, 'OUT'));
 
       if (action === 'del') {
-        await ensureDeferred(interaction);
+        await interaction.deferReply({ ephemeral: true });
         const sig = await getSignal(id).catch(() => null);
         if (sig) {
           await deleteSignalMessage(sig).catch(() => {});
@@ -732,13 +675,12 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (['tp1','tp2','tp3','tp4','tp5'].includes(action)) {
-        await ensureDeferred(interaction);
         const sig = normalizeSignal(await getSignal(id));
-        if (!sig) return safeEditReply(interaction, { content: 'Signal not found.' });
+        if (!sig) return interaction.reply({ content: 'Signal not found.', ephemeral: true });
 
         const tpUpper = action.toUpperCase();
         if (sig.tpHits?.[tpUpper]) {
-          return safeEditReply(interaction, { content: `${tpUpper} already recorded.` });
+          return interaction.reply({ content: `${tpUpper} already recorded.`, ephemeral: true });
         }
 
         const planPct = sig.plan?.[tpUpper];
@@ -754,7 +696,7 @@ client.on('interactionCreate', async (interaction) => {
           await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits });
           await editSignalMessage(sig);
           await updateSummary();
-          return safeEditReply(interaction, { content: `✅ ${tpUpper} executed (${planPct}%).` });
+          return interaction.reply({ content: `✅ ${tpUpper} executed (${planPct}%).`, ephemeral: true });
         }
 
         const modal = makeTPModal(id, action);
@@ -762,7 +704,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.showModal(modal);
       }
 
-      return interaction.reply({ content: 'Unknown action.', flags: MessageFlags.Ephemeral });
+      return interaction.reply({ content: 'Unknown action.', ephemeral: true });
     }
   } catch (err) {
     console.error('interaction error:', err);
@@ -770,7 +712,7 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.deferred || interaction.replied) {
         await safeEditReply(interaction, { content: '❌ Internal error.' });
       } else {
-        await interaction.reply({ content: '❌ Internal error.', flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: '❌ Internal error.', ephemeral: true });
       }
     } catch {}
   }
