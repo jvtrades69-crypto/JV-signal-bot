@@ -358,6 +358,34 @@ async function safeEditReply(interaction, payload) {
     if (!interaction.deferred && !interaction.replied) {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     }
+
+
+// ---- Filesystem-based idempotency (works across multiple processes) ----
+const IX_DIR = './.ix';
+await fs.ensureDir(IX_DIR);
+async function tryClaimInteraction(id) {
+  const p = `${IX_DIR}/${id}`;
+  try {
+    await fs.writeFile(p, String(Date.now()), { flag: 'wx' }); // exclusive create
+    return true;
+  } catch (e) {
+    if (e && (e.code === 'EEXIST' || e.code === 'EISDIR')) return false;
+    return false;
+  }
+}
+// cleanup old marks on boot (older than 24h)
+(async () => {
+  try {
+    const files = await fs.readdir(IX_DIR);
+    const now = Date.now();
+    for (const f of files) {
+      try {
+        const stat = await fs.stat(`${IX_DIR}/${f}`);
+        if (now - stat.mtimeMs > 24*60*60*1000) await fs.remove(`${IX_DIR}/${f}`);
+      } catch {}
+    }
+  } catch {}
+})();
   } catch {}
   try {
     return await interaction.editReply(payload);
@@ -417,6 +445,7 @@ client.on('messageDeleteBulk', async (collection) => {
 // Interactions
 // ------------------------------
 client.on('interactionCreate', async (interaction) => {
+  if (!(await tryClaimInteraction(interaction.id))) return;
   try {
     // /signal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
