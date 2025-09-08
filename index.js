@@ -165,20 +165,26 @@ async function hardPurgeChannel(channelId) {
   try {
     const channel = await client.channels.fetch(channelId);
     while (true) {
-      const batch = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+      const batch = await channel.messages.fetch({ limit: 100 }).catch((e) => {
+        console.error('purge: fetch failed', e);
+        return null;
+      });
       if (!batch || batch.size === 0) break;
-      const now = Date.now();
-      const younger = batch.filter(m => (now - m.createdTimestamp) < 14 * 24 * 60 * 60 * 1000);
-      if (younger.size) {
-        try { await channel.bulkDelete(younger, true); } catch {}
+
+      const young = batch.filter(m => (Date.now() - m.createdTimestamp) < 13 * 24 * 60 * 60 * 1000);
+      if (young.size > 1) {
+        try { await channel.bulkDelete(young, true); }
+        catch (e) { console.error('purge: bulkDelete failed', e); }
       }
-      const older = batch.filter(m => !younger.has(m.id));
-      for (const m of older.values()) {
-        try { await m.delete(); } catch {}
+      const oldies = batch.filter(m => !young.has(m.id));
+      for (const m of oldies.values()) {
+        try { await m.delete(); } catch (e) { console.error('purge: single delete failed', e); }
       }
       if (batch.size < 100) break;
     }
-  } catch (e) { console.error('hardPurgeChannel outer error:', e); }
+  } catch (e) {
+    console.error('hardPurgeChannel outer error:', e);
+  }
 }
 
 async function updateSummary() {
@@ -186,24 +192,9 @@ async function updateSummary() {
     await hardPurgeChannel(config.currentTradesChannelId);
     const channel = await client.channels.fetch(config.currentTradesChannelId);
     const signals = (await getSignals()).map(normalizeSignal);
-    const candidates = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
-    // Verify their message still exists in the signals channel
-    const ch = await client.channels.fetch(config.signalsChannelId);
-    const checked = [];
-    for (const s of candidates) {
-      let ok = false;
-      if (s.messageId) {
-        try { await ch.messages.fetch(s.messageId); ok = true; } catch {}
-      }
-      if (ok) checked.push(s);
-    }
-    const active = checked;
-    const textOut = (active.length === 0)
-      ? `**JV Current Active Trades** 📊
-
-• There are currently no ongoing trades valid for entry – stay posted for future trades!`
-      : renderSummaryText(active);
-    await channel.send({ content: textOut, allowedMentions: { parse: [] } }).catch(e => console.error('summary send failed:', e));
+    const active = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
+    const text = renderSummaryText(active);
+    await channel.send({ content: text, allowedMentions: { parse: [] } }).catch(e => console.error('summary send failed:', e));
   } catch (e) {
     console.error('updateSummary error:', e);
   }
@@ -362,6 +353,25 @@ async function ensureDeferred(interaction) {
   } catch {}
 }
 
+async function safeEditReply(interaction, payload) {
+  try {
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    }
+  } catch {}
+  try {
+    return await interaction.editReply(payload);
+  } catch (e) {
+    try {
+      if (!interaction.replied) {
+        return await interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
+      }
+    } catch {}
+    throw e;
+  }
+}
+
+
 const PENDING_PATH = './.pending.json';
 async function pendLoad() { try { return await fs.readJson(PENDING_PATH); } catch { return {}; } }
 async function pendSave(obj) { try { await fs.writeJson(PENDING_PATH, obj, { spaces: 0 }); } catch {} }
@@ -407,8 +417,6 @@ client.on('messageDeleteBulk', async (collection) => {
 // Interactions
 // ------------------------------
 client.on('interactionCreate', async (interaction) => {
-  if (processedInteractions.has(interaction.id)) return;
-  markProcessed(interaction);
   try {
     // /signal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
@@ -467,7 +475,7 @@ client.on('interactionCreate', async (interaction) => {
           TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
         }
       });
-      return interaction.editReply({ content: '✅ Trade signal posted.' });
+      return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
 
     // custom asset modal
@@ -478,10 +486,10 @@ client.on('interactionCreate', async (interaction) => {
       const stash = pendingSignals[pid];
       delete pendingSignals[pid];
       await pendSave(pendingSignals);
-      if (!stash) return interaction.editReply({ content: '❌ Session expired. Try /signal again.' });
+      if (!stash) return safeEditReply(interaction, { content: '❌ Session expired. Try /signal again.' });
       const asset = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
       await createSignal({ asset, ...stash });
-      return interaction.editReply({ content: `✅ Trade signal posted for ${asset}.` });
+      return safeEditReply(interaction, { content: `✅ Trade signal posted for ${asset}.` });
     }
 
     // ===== UPDATE FLOWS =====
@@ -491,7 +499,7 @@ client.on('interactionCreate', async (interaction) => {
       await ensureDeferred(interaction);
       const id = interaction.customId.replace('modal_tpprices_', '');
       const signal = await getSignal(id);
-      if (!signal) return interaction.editReply({ content: 'Signal not found.' });
+      if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
       const patch = {};
       for (const k of ['tp1','tp2','tp3','tp4','tp5']) {
@@ -505,7 +513,7 @@ client.on('interactionCreate', async (interaction) => {
 
       await editSignalMessage(updated);
       await updateSummary();
-      return interaction.editReply({ content: '✅ TP prices updated.' });
+      return safeEditReply(interaction, { content: '✅ TP prices updated.' });
     }
 
     // Update TP % Plan
@@ -513,7 +521,7 @@ client.on('interactionCreate', async (interaction) => {
       await ensureDeferred(interaction);
       const id = interaction.customId.replace('modal_plan_', '');
       const sig = normalizeSignal(await getSignal(id));
-      if (!sig) return interaction.editReply({ content: 'Signal not found.' });
+      if (!sig) return safeEditReply(interaction, { content: 'Signal not found.' });
 
       const patchPlan = { ...sig.plan };
       for (const t of ['tp1','tp2','tp3','tp4','tp5']) {
@@ -525,7 +533,7 @@ client.on('interactionCreate', async (interaction) => {
 
       await editSignalMessage(normalizeSignal(await getSignal(id)));
       await updateSummary();
-      return interaction.editReply({ content: '✅ TP % plan updated.' });
+      return safeEditReply(interaction, { content: '✅ TP % plan updated.' });
     }
 
     // Update Trade Info
@@ -533,7 +541,7 @@ client.on('interactionCreate', async (interaction) => {
       await ensureDeferred(interaction);
       const id = interaction.customId.replace('modal_trade_', '');
       const signal = await getSignal(id);
-      if (!signal) return interaction.editReply({ content: 'Signal not found.' });
+      if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
       const patch = {};
       const entry     = interaction.fields.getTextInputValue('upd_entry')?.trim();
@@ -554,7 +562,7 @@ client.on('interactionCreate', async (interaction) => {
 
       await editSignalMessage(updated);
       await updateSummary();
-      return interaction.editReply({ content: '✅ Trade info updated.' });
+      return safeEditReply(interaction, { content: '✅ Trade info updated.' });
     }
 
     // Update Role Mention(s)
@@ -562,14 +570,14 @@ client.on('interactionCreate', async (interaction) => {
       await ensureDeferred(interaction);
       const id = interaction.customId.replace('modal_roles_', '');
       const signal = await getSignal(id);
-      if (!signal) return interaction.editReply({ content: 'Signal not found.' });
+      if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
       const rolesRaw = interaction.fields.getTextInputValue('roles_input') ?? '';
       await updateSignal(id, { extraRole: rolesRaw });
 
       await editSignalMessage(normalizeSignal(await getSignal(id)));
       await updateSummary();
-      return interaction.editReply({ content: '✅ Role mentions updated.' });
+      return safeEditReply(interaction, { content: '✅ Role mentions updated.' });
     }
 
     // TP Hit modal submit (optional %; one-time)
@@ -577,18 +585,18 @@ client.on('interactionCreate', async (interaction) => {
       await ensureDeferred(interaction);
       const [_prefix, _tp, tpKey, id] = interaction.customId.split('_'); // modal_tp_tp1_<id>
       let signal = normalizeSignal(await getSignal(id));
-      if (!signal) return interaction.editReply({ content: 'Signal not found.' });
+      if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
       const tpUpper = tpKey.toUpperCase();
       if (signal.tpHits?.[tpUpper]) {
-        return interaction.editReply({ content: `${tpUpper} already recorded.` });
+        return safeEditReply(interaction, { content: `${tpUpper} already recorded.` });
       }
 
       const pctRaw = interaction.fields.getTextInputValue('tp_pct')?.trim();
       const hasPct = pctRaw !== undefined && pctRaw !== null && pctRaw !== '';
       const pct = hasPct ? Number(pctRaw) : null;
       if (hasPct && (isNaN(pct) || pct < 0 || pct > 100)) {
-        return interaction.editReply({ content: '❌ Close % must be between 0 and 100 (or leave blank to skip).' });
+        return safeEditReply(interaction, { content: '❌ Close % must be between 0 and 100 (or leave blank to skip).' });
       }
       const tpPrice = signal[tpKey];
       if (hasPct && pct > 0 && isNum(tpPrice)) {
@@ -602,7 +610,7 @@ client.on('interactionCreate', async (interaction) => {
       await updateSignal(id, { fills: signal.fills, latestTpHit: signal.latestTpHit, tpHits: signal.tpHits });
       await editSignalMessage(signal);
       await updateSummary();
-      return interaction.editReply({ content: `✅ ${tpUpper} recorded${hasPct && pct > 0 ? ` (${pct}%).` : '.'}` });
+      return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${hasPct && pct > 0 ? ` (${pct}%).` : '.'}` });
     }
 
     // Fully close modal (optional final R override)
@@ -610,12 +618,12 @@ client.on('interactionCreate', async (interaction) => {
       await ensureDeferred(interaction);
       const id = interaction.customId.replace('modal_full_', '');
       let signal = normalizeSignal(await getSignal(id));
-      if (!signal) return interaction.editReply({ content: 'Signal not found.' });
+      if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
       const finalRStr = interaction.fields.getTextInputValue('final_r')?.trim();
       const hasFinalR = finalRStr !== undefined && finalRStr !== '';
       if (hasFinalR && !isNum(finalRStr)) {
-        return interaction.editReply({ content: '❌ Final R must be a number if provided.' });
+        return safeEditReply(interaction, { content: '❌ Final R must be a number if provided.' });
       }
 
       if (hasFinalR) {
@@ -624,7 +632,7 @@ client.on('interactionCreate', async (interaction) => {
       } else {
         // normal path (price + %)
         const price = Number(interaction.fields.getTextInputValue('close_price')?.trim());
-        if (!isNum(price)) return interaction.editReply({ content: '❌ Close Price must be a number.' });
+        if (!isNum(price)) return safeEditReply(interaction, { content: '❌ Close Price must be a number.' });
 
         const currentPct = (signal.fills || []).reduce((acc, f) => acc + Number(f.pct || 0), 0);
         let pctStr = interaction.fields.getTextInputValue('close_pct')?.trim();
@@ -642,7 +650,7 @@ client.on('interactionCreate', async (interaction) => {
       await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, latestTpHit: latest, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
       await editSignalMessage(signal);
       await updateSummary();
-      return interaction.editReply({ content: '✅ Fully closed.' });
+      return safeEditReply(interaction, { content: '✅ Fully closed.' });
     }
 
     // Final R modal (Stopped BE / Stopped Out) — optional override
@@ -652,12 +660,12 @@ client.on('interactionCreate', async (interaction) => {
       const kind = parts[2];
       const id = parts.slice(3).join('_');
       let signal = normalizeSignal(await getSignal(id));
-      if (!signal) return interaction.editReply({ content: 'Signal not found.' });
+      if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
       const finalRStr = interaction.fields.getTextInputValue('final_r')?.trim();
       const hasFinalR = finalRStr !== undefined && finalRStr !== '';
       if (hasFinalR && !isNum(finalRStr)) {
-        return interaction.editReply({ content: '❌ Final R must be a number (e.g., 0, -1, -0.5).' });
+        return safeEditReply(interaction, { content: '❌ Final R must be a number (e.g., 0, -1, -0.5).' });
       }
 
       if (hasFinalR) {
@@ -685,7 +693,7 @@ client.on('interactionCreate', async (interaction) => {
       await editSignalMessage(signal);
       await updateSummary();
       await deleteControlThread(id);
-      return interaction.editReply({ content: kind === 'BE' ? '✅ Stopped at breakeven.' : '✅ Stopped out.' });
+      return safeEditReply(interaction, { content: kind === 'BE' ? '✅ Stopped at breakeven.' : '✅ Stopped out.' });
     }
 
     // ===== Buttons =====
@@ -693,10 +701,7 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use these controls.', flags: MessageFlags.Ephemeral });
       }
-      const parts = interaction.customId.split('_');
-      let action = parts[0];
-      let id = parts.slice(1).join('_');
-      if (action === 'upd') { action = `upd_${parts[1]}`; id = parts.slice(2).join('_'); }
+      const [action, id] = interaction.customId.split('_');
       if (!id) return interaction.reply({ content: 'Bad button ID.', flags: MessageFlags.Ephemeral });
 
       if (action === 'upd_tpprices') return interaction.showModal(makeUpdateTPPricesModal(id));
@@ -716,17 +721,17 @@ client.on('interactionCreate', async (interaction) => {
           await deleteSignal(id).catch(() => {});
           await updateSummary().catch(() => {});
         }
-        return interaction.editReply({ content: '🗑️ Signal deleted.' });
+        return safeEditReply(interaction, { content: '🗑️ Signal deleted.' });
       }
 
       if (['tp1','tp2','tp3','tp4','tp5'].includes(action)) {
         await ensureDeferred(interaction);
         const sig = normalizeSignal(await getSignal(id));
-        if (!sig) return interaction.editReply({ content: 'Signal not found.' });
+        if (!sig) return safeEditReply(interaction, { content: 'Signal not found.' });
 
         const tpUpper = action.toUpperCase();
         if (sig.tpHits?.[tpUpper]) {
-          return interaction.editReply({ content: `${tpUpper} already recorded.` });
+          return safeEditReply(interaction, { content: `${tpUpper} already recorded.` });
         }
 
         const planPct = sig.plan?.[tpUpper];
@@ -742,7 +747,7 @@ client.on('interactionCreate', async (interaction) => {
           await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits });
           await editSignalMessage(sig);
           await updateSummary();
-          return interaction.editReply({ content: `✅ ${tpUpper} executed (${planPct}%).` });
+          return safeEditReply(interaction, { content: `✅ ${tpUpper} executed (${planPct}%).` });
         }
 
         const modal = makeTPModal(id, action);
@@ -756,7 +761,7 @@ client.on('interactionCreate', async (interaction) => {
     console.error('interaction error:', err);
     try {
       if (interaction.deferred || interaction.replied) {
-        await interaction.editReply({ content: '❌ Internal error.' });
+        await safeEditReply(interaction, { content: '❌ Internal error.' });
       } else {
         await interaction.reply({ content: '❌ Internal error.', flags: MessageFlags.Ephemeral });
       }
