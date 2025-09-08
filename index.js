@@ -165,26 +165,20 @@ async function hardPurgeChannel(channelId) {
   try {
     const channel = await client.channels.fetch(channelId);
     while (true) {
-      const batch = await channel.messages.fetch({ limit: 100 }).catch((e) => {
-        console.error('purge: fetch failed', e);
-        return null;
-      });
+      const batch = await channel.messages.fetch({ limit: 100 }).catch(() => null);
       if (!batch || batch.size === 0) break;
-
-      const young = batch.filter(m => (Date.now() - m.createdTimestamp) < 13 * 24 * 60 * 60 * 1000);
-      if (young.size > 1) {
-        try { await channel.bulkDelete(young, true); }
-        catch (e) { console.error('purge: bulkDelete failed', e); }
+      const now = Date.now();
+      const younger = batch.filter(m => (now - m.createdTimestamp) < 14 * 24 * 60 * 60 * 1000);
+      if (younger.size) {
+        try { await channel.bulkDelete(younger, true); } catch {}
       }
-      const oldies = batch.filter(m => !young.has(m.id));
-      for (const m of oldies.values()) {
-        try { await m.delete(); } catch (e) { console.error('purge: single delete failed', e); }
+      const older = batch.filter(m => !younger.has(m.id));
+      for (const m of older.values()) {
+        try { await m.delete(); } catch {}
       }
       if (batch.size < 100) break;
     }
-  } catch (e) {
-    console.error('hardPurgeChannel outer error:', e);
-  }
+  } catch (e) { console.error('hardPurgeChannel outer error:', e); }
 }
 
 async function updateSummary() {
@@ -192,9 +186,24 @@ async function updateSummary() {
     await hardPurgeChannel(config.currentTradesChannelId);
     const channel = await client.channels.fetch(config.currentTradesChannelId);
     const signals = (await getSignals()).map(normalizeSignal);
-    const active = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
-    const text = renderSummaryText(active);
-    await channel.send({ content: text, allowedMentions: { parse: [] } }).catch(e => console.error('summary send failed:', e));
+    const candidates = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
+    // Verify their message still exists in the signals channel
+    const ch = await client.channels.fetch(config.signalsChannelId);
+    const checked = [];
+    for (const s of candidates) {
+      let ok = false;
+      if (s.messageId) {
+        try { await ch.messages.fetch(s.messageId); ok = true; } catch {}
+      }
+      if (ok) checked.push(s);
+    }
+    const active = checked;
+    const textOut = (active.length === 0)
+      ? `**JV Current Active Trades** 📊
+
+• There are currently no ongoing trades valid for entry – stay posted for future trades!`
+      : renderSummaryText(active);
+    await channel.send({ content: textOut, allowedMentions: { parse: [] } }).catch(e => console.error('summary send failed:', e));
   } catch (e) {
     console.error('updateSummary error:', e);
   }
@@ -398,6 +407,8 @@ client.on('messageDeleteBulk', async (collection) => {
 // Interactions
 // ------------------------------
 client.on('interactionCreate', async (interaction) => {
+  if (processedInteractions.has(interaction.id)) return;
+  markProcessed(interaction);
   try {
     // /signal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
@@ -682,7 +693,10 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use these controls.', flags: MessageFlags.Ephemeral });
       }
-      const [action, id] = interaction.customId.split('_');
+      const parts = interaction.customId.split('_');
+      let action = parts[0];
+      let id = parts.slice(1).join('_');
+      if (action === 'upd') { action = `upd_${parts[1]}`; id = parts.slice(2).join('_'); }
       if (!id) return interaction.reply({ content: 'Bad button ID.', flags: MessageFlags.Ephemeral });
 
       if (action === 'upd_tpprices') return interaction.showModal(makeUpdateTPPricesModal(id));
