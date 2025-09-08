@@ -121,6 +121,32 @@ function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
 }
 
 // ------------------------------
+// Ack helpers (prevent "not sent or deferred")
+// ------------------------------
+async function ensureDeferred(interaction) {
+  try {
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    }
+  } catch {}
+}
+async function safeEditReply(interaction, payload) {
+  try {
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    }
+  } catch {}
+  try {
+    return await interaction.editReply(payload);
+  } catch (e) {
+    try {
+      if (!interaction.replied) return await interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
+    } catch {}
+    throw e;
+  }
+}
+
+// ------------------------------
 // Posting / Editing messages
 // ------------------------------
 async function postSignalMessage(signal) {
@@ -170,8 +196,8 @@ async function hardPurgeChannel(channelId) {
       });
       if (!batch || batch.size === 0) break;
 
-      const young = batch.filter(m => (Date.now() - m.createdTimestamp) < 13 * 24 * 60 * 60 * 1000);
-      if (young.size > 1) {
+      const young = batch.filter(m => (Date.now() - m.createdTimestamp) < 14 * 24 * 60 * 60 * 1000);
+      if (young.size) {
         try { await channel.bulkDelete(young, true); }
         catch (e) { console.error('purge: bulkDelete failed', e); }
       }
@@ -191,9 +217,27 @@ async function updateSummary() {
     await hardPurgeChannel(config.currentTradesChannelId);
     const channel = await client.channels.fetch(config.currentTradesChannelId);
     const signals = (await getSignals()).map(normalizeSignal);
-    const active = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
-    const text = renderSummaryText(active);
-    await channel.send({ content: text, allowedMentions: { parse: [] } }).catch(e => console.error('summary send failed:', e));
+    const candidates = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
+
+    // Keep only those whose original signal message still exists in the Signals channel
+    const sigChan = await client.channels.fetch(config.signalsChannelId);
+    const active = [];
+    for (const s of candidates) {
+      let ok = false;
+      if (s.messageId) {
+        try {
+          await sigChan.messages.fetch(s.messageId); // throws if deleted/missing
+          ok = true;
+        } catch {}
+      }
+      if (ok) active.push(s);
+    }
+
+    const textOut = active.length === 0
+      ? `**JV Current Active Trades** 📊\n\n• There are currently no ongoing trades valid for entry – stay posted for future trades!`
+      : renderSummaryText(active);
+
+    await channel.send({ content: textOut, allowedMentions: { parse: [] } }).catch(e => console.error('summary send failed:', e));
   } catch (e) {
     console.error('updateSummary error:', e);
   }
@@ -315,7 +359,13 @@ function makeFullCloseModal(id) {
   const modal = new ModalBuilder().setCustomId(`modal_full_${id}`).setTitle('Fully Close Position');
   const price = new TextInputBuilder().setCustomId('close_price').setLabel('Close Price').setStyle(TextInputStyle.Short).setRequired(true);
   const pct = new TextInputBuilder().setCustomId('close_pct').setLabel('Close % (default = remaining)').setStyle(TextInputStyle.Short).setRequired(false);
-  const finalR = new TextInputBuilder().setCustomId('final_r').setLabel('Final R (optional; overrides calc)').setStyle(TextInputStyle.Short).setRequired(false);
+  const finalR = new TextInputBuilder()
+  .setCustomId('final_r')
+  .setLabel('Final R (optional)')
+  .setPlaceholder('e.g., 0, -0.5, -1 — overrides calc')
+  .setStyle(TextInputStyle.Short)
+  .setRequired(false);
+
   modal.addComponents(new ActionRowBuilder().addComponents(price));
   modal.addComponents(new ActionRowBuilder().addComponents(pct));
   modal.addComponents(new ActionRowBuilder().addComponents(finalR));
@@ -324,7 +374,13 @@ function makeFullCloseModal(id) {
 
 function makeFinalRModal(id, kind) {
   const modal = new ModalBuilder().setCustomId(`modal_finalr_${kind}_${id}`).setTitle(kind === 'BE' ? 'Stopped Breakeven' : 'Stopped Out');
-  const r = new TextInputBuilder().setCustomId('final_r').setLabel('Final R (e.g., 0, -0.5, -1; optional override)').setStyle(TextInputStyle.Short).setRequired(false);
+  const r = new TextInputBuilder()
+  .setCustomId('final_r')
+  .setLabel('Final R (optional)')
+  .setPlaceholder('e.g., 0, -0.5, -1 — overrides calc')
+  .setStyle(TextInputStyle.Short)
+  .setRequired(false);
+
   modal.addComponents(new ActionRowBuilder().addComponents(r));
   return modal;
 }
@@ -332,7 +388,11 @@ function makeFinalRModal(id, kind) {
 // ------------------------------
 // Bot lifecycle
 // ------------------------------
-client.once('ready', () => console.log(`✅ Logged in as ${client.user.tag}`));
+client.once('ready', async () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+  // One-time cleanup: remove any signals whose original message was manually deleted
+  await pruneGhostSignals().catch(() => {});
+});
 
 // Manual delete watcher (Signals channel)
 client.on('messageDelete', async (message) => {
@@ -375,8 +435,10 @@ client.on('interactionCreate', async (interaction) => {
     // /signal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
       if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use this command.', ephemeral: true });
+        return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
       }
+      await ensureDeferred(interaction);
+
       const assetSel   = interaction.options.getString('asset');
       const direction  = interaction.options.getString('direction');
       const entry      = interaction.options.getString('entry');
@@ -410,10 +472,10 @@ client.on('interactionCreate', async (interaction) => {
             TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
           }
         });
+        // DO NOT defer before showModal
         return interaction.showModal(modal);
       }
 
-      await interaction.deferReply({ ephemeral: true });
       await createSignal({
         asset: assetSel,
         direction,
@@ -432,7 +494,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // custom asset modal
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_asset_')) {
-      await interaction.deferReply({ ephemeral: true });
+      await ensureDeferred(interaction);
       const pid = interaction.customId.replace('modal_asset_', '');
       const stash = pendingSignals.get(pid);
       pendingSignals.delete(pid);
@@ -446,7 +508,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Update TP Prices (TP1–TP5)
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_tpprices_')) {
-      await interaction.deferReply({ ephemeral: true });
+      await ensureDeferred(interaction);
       const id = interaction.customId.replace('modal_tpprices_', '');
       const signal = await getSignal(id);
       if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
@@ -468,7 +530,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Update TP % Plan
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_plan_')) {
-      await interaction.deferReply({ ephemeral: true });
+      await ensureDeferred(interaction);
       const id = interaction.customId.replace('modal_plan_', '');
       const sig = normalizeSignal(await getSignal(id));
       if (!sig) return safeEditReply(interaction, { content: 'Signal not found.' });
@@ -488,7 +550,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Update Trade Info
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_trade_')) {
-      await interaction.deferReply({ ephemeral: true });
+      await ensureDeferred(interaction);
       const id = interaction.customId.replace('modal_trade_', '');
       const signal = await getSignal(id);
       if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
@@ -517,7 +579,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Update Role Mention(s)
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_roles_')) {
-      await interaction.deferReply({ ephemeral: true });
+      await ensureDeferred(interaction);
       const id = interaction.customId.replace('modal_roles_', '');
       const signal = await getSignal(id);
       if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
@@ -532,7 +594,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // TP Hit modal submit (optional %; one-time)
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_tp_')) {
-      await interaction.deferReply({ ephemeral: true });
+      await ensureDeferred(interaction);
       const [_prefix, _tp, tpKey, id] = interaction.customId.split('_'); // modal_tp_tp1_<id>
       let signal = normalizeSignal(await getSignal(id));
       if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
@@ -565,7 +627,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Fully close modal (optional final R override)
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_full_')) {
-      await interaction.deferReply({ ephemeral: true });
+      await ensureDeferred(interaction);
       const id = interaction.customId.replace('modal_full_', '');
       let signal = normalizeSignal(await getSignal(id));
       if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
@@ -605,7 +667,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Final R modal (Stopped BE / Stopped Out) — optional override
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_finalr_')) {
-      await interaction.deferReply({ ephemeral: true });
+      await ensureDeferred(interaction);
       const parts = interaction.customId.split('_'); // modal_finalr_BE_<id>
       const kind = parts[2];
       const id = parts.slice(3).join('_');
@@ -649,11 +711,12 @@ client.on('interactionCreate', async (interaction) => {
     // ===== Buttons =====
     if (interaction.isButton()) {
       if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use these controls.', ephemeral: true });
+        return interaction.reply({ content: 'Only the owner can use these controls.', flags: MessageFlags.Ephemeral });
       }
       const [action, id] = interaction.customId.split('_');
-      if (!id) return interaction.reply({ content: 'Bad button ID.', ephemeral: true });
+      if (!id) return interaction.reply({ content: 'Bad button ID.', flags: MessageFlags.Ephemeral });
 
+      // Show modals: DO NOT defer before showModal
       if (action === 'upd_tpprices') return interaction.showModal(makeUpdateTPPricesModal(id));
       if (action === 'upd_plan')     return interaction.showModal(makeUpdatePlanModal(id));
       if (action === 'upd_trade')    return interaction.showModal(makeUpdateTradeInfoModal(id));
@@ -663,7 +726,7 @@ client.on('interactionCreate', async (interaction) => {
       if (action === 'stopped')      return interaction.showModal(makeFinalRModal(id, 'OUT'));
 
       if (action === 'del') {
-        await interaction.deferReply({ ephemeral: true });
+        await ensureDeferred(interaction);
         const sig = await getSignal(id).catch(() => null);
         if (sig) {
           await deleteSignalMessage(sig).catch(() => {});
@@ -676,11 +739,11 @@ client.on('interactionCreate', async (interaction) => {
 
       if (['tp1','tp2','tp3','tp4','tp5'].includes(action)) {
         const sig = normalizeSignal(await getSignal(id));
-        if (!sig) return interaction.reply({ content: 'Signal not found.', ephemeral: true });
+        if (!sig) return interaction.reply({ content: 'Signal not found.', flags: MessageFlags.Ephemeral });
 
         const tpUpper = action.toUpperCase();
         if (sig.tpHits?.[tpUpper]) {
-          return interaction.reply({ content: `${tpUpper} already recorded.`, ephemeral: true });
+          return interaction.reply({ content: `${tpUpper} already recorded.`, flags: MessageFlags.Ephemeral });
         }
 
         const planPct = sig.plan?.[tpUpper];
@@ -696,23 +759,25 @@ client.on('interactionCreate', async (interaction) => {
           await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits });
           await editSignalMessage(sig);
           await updateSummary();
-          return interaction.reply({ content: `✅ ${tpUpper} executed (${planPct}%).`, ephemeral: true });
+          await ensureDeferred(interaction);
+          return safeEditReply(interaction, { content: `✅ ${tpUpper} executed (${planPct}%).` });
         }
 
+        // Fall back to modal if no plan %
         const modal = makeTPModal(id, action);
         if (isNum(planPct)) modal.components[0].components[0].setValue(String(planPct));
         return interaction.showModal(modal);
       }
 
-      return interaction.reply({ content: 'Unknown action.', ephemeral: true });
+      return interaction.reply({ content: 'Unknown action.', flags: MessageFlags.Ephemeral });
     }
   } catch (err) {
     console.error('interaction error:', err);
     try {
       if (interaction.deferred || interaction.replied) {
-        await safeEditReply(interaction, { content: '❌ Internal error.' });
+        await interaction.editReply({ content: '❌ Internal error.' });
       } else {
-        await interaction.reply({ content: '❌ Internal error.', ephemeral: true });
+        await interaction.reply({ content: '❌ Internal error.', flags: MessageFlags.Ephemeral });
       }
     } catch {}
   }
@@ -756,6 +821,29 @@ async function createSignal(payload) {
   await updateSummary();
 
   return signal;
+}
+
+// ------------------------------
+// One-time ghost prune (storage hygiene)
+// ------------------------------
+async function pruneGhostSignals() {
+  try {
+    const all = (await getSignals()).map(normalizeSignal);
+    const sigChan = await client.channels.fetch(config.signalsChannelId);
+    for (const s of all) {
+      if (!s.messageId) continue;
+      let exists = true;
+      try { await sigChan.messages.fetch(s.messageId); }
+      catch { exists = false; }
+      if (!exists) {
+        await deleteSignal(s.id).catch(() => {});
+        await deleteControlThread(s.id).catch(() => {});
+        console.log(`🧹 pruned ghost signal ${s.id}`);
+      }
+    }
+  } catch (e) {
+    console.error('pruneGhostSignals error:', e);
+  }
 }
 
 client.login(config.token);
