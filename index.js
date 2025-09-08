@@ -2,7 +2,8 @@
 // - Plain text messages (uses renders from embeds.js)
 // - TP plans + auto-exec
 // - Control panel (TP1–TP5 + 4 update modals + Close/BE/Out + Delete)
-// - HARD PURGE or edit-in-place summary (exactly 1 message, debounced)
+// - Summary in currentTradesChannelId (exactly 1 message, debounced)
+// - Signals post in the channel where /signal is run (per-signal channelId)
 // - Ignores “ghost” signals whose original message was manually deleted
 // - Dedupe guard for interactions (no double posts)
 // - Safe acks (prevents “not sent or deferred” / “unknown interaction”)
@@ -148,10 +149,10 @@ async function safeEditReply(interaction, payload) {
 }
 
 // ------------------------------
-// Posting / Editing messages
+// Posting / Editing messages (use per-signal channelId)
 // ------------------------------
 async function postSignalMessage(signal) {
-  const channel = await client.channels.fetch(config.signalsChannelId);
+  const channel = await client.channels.fetch(signal.channelId);
   const rrChips = computeRRChips(signal);
   const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
@@ -164,7 +165,7 @@ async function postSignalMessage(signal) {
 }
 
 async function editSignalMessage(signal) {
-  const channel = await client.channels.fetch(config.signalsChannelId);
+  const channel = await client.channels.fetch(signal.channelId);
   const msg = await channel.messages.fetch(signal.messageId).catch(() => null);
   if (!msg) return false;
   const rrChips = computeRRChips(signal);
@@ -179,7 +180,7 @@ async function editSignalMessage(signal) {
 }
 
 async function deleteSignalMessage(signal) {
-  const channel = await client.channels.fetch(config.signalsChannelId);
+  const channel = await client.channels.fetch(signal.channelId);
   const msg = await channel.messages.fetch(signal.messageId).catch(() => null);
   if (msg) await msg.delete().catch(() => {});
 }
@@ -218,20 +219,21 @@ async function updateSummary() {
     if (_summaryBusy) return;
     _summaryBusy = true;
     try {
-      const [summaryChannel, signalsChannel] = await Promise.all([
-        client.channels.fetch(config.currentTradesChannelId),
-        client.channels.fetch(config.signalsChannelId),
-      ]);
+      const summaryChannel = await client.channels.fetch(config.currentTradesChannelId);
 
-      // Build active list (must exist AND original message still exists)
+      // Build active list (must exist AND original message still exists in its own channel)
       const signals = (await getSignals()).map(normalizeSignal);
       const candidates = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
 
       const active = [];
       for (const s of candidates) {
         let ok = false;
-        if (s.messageId) {
-          try { await signalsChannel.messages.fetch(s.messageId); ok = true; } catch {}
+        if (s.messageId && s.channelId) {
+          try {
+            const ch = await client.channels.fetch(s.channelId);
+            await ch.messages.fetch(s.messageId);
+            ok = true;
+          } catch {}
         }
         if (ok) active.push(s);
       }
@@ -299,7 +301,7 @@ function controlRows(signalId) {
 }
 
 async function createControlThread(signal) {
-  const channel = await client.channels.fetch(config.signalsChannelId);
+  const channel = await client.channels.fetch(signal.channelId); // per-signal channel
   const thread = await channel.threads.create({
     name: `controls-${signal.asset}-${signal.id.slice(0, 4)}`,
     type: ChannelType.PrivateThread,
@@ -402,10 +404,10 @@ client.once('ready', async () => {
   await pruneGhostSignals().catch(() => {});
 });
 
-// Manual delete watcher (Signals channel)
+// Manual delete watcher (any channel)
 client.on('messageDelete', async (message) => {
   try {
-    if (!message || message.channelId !== config.signalsChannelId) return;
+    if (!message) return; // we’ll match by messageId below
     const sigs = await getSignals();
     const found = sigs.find(s => s.messageId === message.id);
     if (!found) return;
@@ -493,9 +495,10 @@ client.on('interactionCreate', async (interaction) => {
             TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
             TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
             TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
-          }
+          },
+          channelId: interaction.channelId, // remember where to post
         });
-        return interaction.showModal(m); // do NOT defer before showModal
+        return interaction.showModal(m); // do NOT defer again before showModal
       }
 
       await createSignal({
@@ -509,7 +512,7 @@ client.on('interactionCreate', async (interaction) => {
           TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
           TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
         }
-      });
+      }, interaction.channelId);
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
 
@@ -523,7 +526,7 @@ client.on('interactionCreate', async (interaction) => {
         pendingSignals.delete(idPart);
         if (!stash) return safeEditReply(interaction, { content: '❌ Session expired. Try /signal again.' });
         const asset = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
-        await createSignal({ asset, ...stash });
+        await createSignal({ asset, ...stash }, stash.channelId || interaction.channelId);
         return safeEditReply(interaction, { content: `✅ Trade signal posted for ${asset}.` });
       }
 
@@ -539,7 +542,7 @@ client.on('interactionCreate', async (interaction) => {
           const v = interaction.fields.getTextInputValue(`upd_${k}`)?.trim();
           if (v !== undefined && v !== '') patch[k] = v;
         }
-        await updateSignal(id, patch);
+        await updateSignal(id, { ...patch });
         const updated = normalizeSignal(await getSignal(id));
         if (isSlMovedToBE(updated)) { updated.validReentry = false; await updateSignal(id, { validReentry: false }); }
         await editSignalMessage(updated);
@@ -697,11 +700,7 @@ client.on('interactionCreate', async (interaction) => {
           signal.finalR = Number(finalRStr);
         } else {
           let price = null;
-          if (signal.direction === DIR.LONG) {
-            price = Number(kind === 'BE' ? signal.entry : (signal.slOriginal ?? signal.sl));
-          } else {
-            price = Number(kind === 'BE' ? signal.entry : (signal.slOriginal ?? signal.sl));
-          }
+          price = Number(kind === 'BE' ? signal.entry : (signal.slOriginal ?? signal.sl));
           const remaining = 100 - (signal.fills || []).reduce((a, f) => a + Number(f.pct || 0), 0);
           if (remaining > 0 && isNum(price)) {
             signal.fills.push({ pct: remaining, price, source: kind === 'BE' ? 'STOP_BE' : 'STOP_OUT' });
@@ -798,7 +797,7 @@ client.on('interactionCreate', async (interaction) => {
 // ------------------------------
 const pendingSignals = new Map();
 
-async function createSignal(payload) {
+async function createSignal(payload, channelId) {
   const signal = normalizeSignal({
     id: nano(),
     asset: String(payload.asset || '').toUpperCase(),
@@ -816,7 +815,8 @@ async function createSignal(payload) {
     tpHits: { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false },
     finalR: null,
     messageId: null,
-    jumpUrl: null
+    jumpUrl: null,
+    channelId, // <= post and track in this channel
   });
 
   await saveSignal(signal);
@@ -824,7 +824,7 @@ async function createSignal(payload) {
   const msgId = await postSignalMessage(signal);
   signal.messageId = msgId;
 
-  const channel = await client.channels.fetch(config.signalsChannelId);
+  const channel = await client.channels.fetch(signal.channelId);
   const msg = await channel.messages.fetch(msgId);
   signal.jumpUrl = msg.url;
 
@@ -841,12 +841,15 @@ async function createSignal(payload) {
 async function pruneGhostSignals() {
   try {
     const all = (await getSignals()).map(normalizeSignal);
-    const sigChan = await client.channels.fetch(config.signalsChannelId);
     for (const s of all) {
-      if (!s.messageId) continue;
+      if (!s.messageId || !s.channelId) continue;
       let exists = true;
-      try { await sigChan.messages.fetch(s.messageId); }
-      catch { exists = false; }
+      try {
+        const ch = await client.channels.fetch(s.channelId);
+        await ch.messages.fetch(s.messageId);
+      } catch {
+        exists = false;
+      }
       if (!exists) {
         await deleteSignal(s.id).catch(() => {});
         await deleteControlThread(s.id).catch(() => {});
