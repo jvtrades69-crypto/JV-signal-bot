@@ -19,8 +19,10 @@ import {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  MessageFlags,
 } from 'discord.js';
 import { customAlphabet } from 'nanoid';
+import fs from 'fs-extra';
 import config from './config.js';
 import {
   saveSignal, getSignal, getSignals, updateSignal, deleteSignal,
@@ -341,6 +343,22 @@ function makeFinalRModal(id, kind) {
 }
 
 // ------------------------------
+// Helpers to avoid 10062 + persist custom-asset flow
+// ------------------------------
+async function ensureDeferred(interaction) {
+  try {
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    }
+  } catch {}
+}
+
+const PENDING_PATH = './.pending.json';
+async function pendLoad() { try { return await fs.readJson(PENDING_PATH); } catch { return {}; } }
+async function pendSave(obj) { try { await fs.writeJson(PENDING_PATH, obj, { spaces: 0 }); } catch {} }
+let pendingSignals = await pendLoad();
+
+// ------------------------------
 // Bot lifecycle
 // ------------------------------
 client.once('ready', () => console.log(`✅ Logged in as ${client.user.tag}`));
@@ -376,8 +394,6 @@ client.on('messageDeleteBulk', async (collection) => {
   }
 });
 
-const pendingSignals = new Map();
-
 // ------------------------------
 // Interactions
 // ------------------------------
@@ -386,7 +402,7 @@ client.on('interactionCreate', async (interaction) => {
     // /signal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
       if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use this command.', ephemeral: true });
+        return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
       }
       const assetSel   = interaction.options.getString('asset');
       const direction  = interaction.options.getString('direction');
@@ -411,7 +427,7 @@ client.on('interactionCreate', async (interaction) => {
         const modal = new ModalBuilder().setCustomId(`modal_asset_${pid}`).setTitle('Enter custom asset');
         const input = new TextInputBuilder().setCustomId('asset_value').setLabel('Asset (e.g., PEPE, XRP)').setStyle(TextInputStyle.Short).setRequired(true);
         modal.addComponents(new ActionRowBuilder().addComponents(input));
-        pendingSignals.set(pid, {
+        pendingSignals[pid] = {
           direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole,
           plan: {
             TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
@@ -419,12 +435,14 @@ client.on('interactionCreate', async (interaction) => {
             TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
             TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
             TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
-          }
-        });
+          },
+          ts: Date.now()
+        };
+        await pendSave(pendingSignals);
         return interaction.showModal(modal);
       }
 
-      await interaction.deferReply({ ephemeral: true });
+      await ensureDeferred(interaction);
       await createSignal({
         asset: assetSel,
         direction,
@@ -443,10 +461,12 @@ client.on('interactionCreate', async (interaction) => {
 
     // custom asset modal
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_asset_')) {
-      await interaction.deferReply({ ephemeral: true });
+      await ensureDeferred(interaction);
       const pid = interaction.customId.replace('modal_asset_', '');
-      const stash = pendingSignals.get(pid);
-      pendingSignals.delete(pid);
+      pendingSignals = await pendLoad();
+      const stash = pendingSignals[pid];
+      delete pendingSignals[pid];
+      await pendSave(pendingSignals);
       if (!stash) return interaction.editReply({ content: '❌ Session expired. Try /signal again.' });
       const asset = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
       await createSignal({ asset, ...stash });
@@ -457,7 +477,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Update TP Prices (TP1–TP5)
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_tpprices_')) {
-      await interaction.deferReply({ ephemeral: true });
+      await ensureDeferred(interaction);
       const id = interaction.customId.replace('modal_tpprices_', '');
       const signal = await getSignal(id);
       if (!signal) return interaction.editReply({ content: 'Signal not found.' });
@@ -479,7 +499,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Update TP % Plan
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_plan_')) {
-      await interaction.deferReply({ ephemeral: true });
+      await ensureDeferred(interaction);
       const id = interaction.customId.replace('modal_plan_', '');
       const sig = normalizeSignal(await getSignal(id));
       if (!sig) return interaction.editReply({ content: 'Signal not found.' });
@@ -499,7 +519,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Update Trade Info
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_trade_')) {
-      await interaction.deferReply({ ephemeral: true });
+      await ensureDeferred(interaction);
       const id = interaction.customId.replace('modal_trade_', '');
       const signal = await getSignal(id);
       if (!signal) return interaction.editReply({ content: 'Signal not found.' });
@@ -528,7 +548,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Update Role Mention(s)
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_roles_')) {
-      await interaction.deferReply({ ephemeral: true });
+      await ensureDeferred(interaction);
       const id = interaction.customId.replace('modal_roles_', '');
       const signal = await getSignal(id);
       if (!signal) return interaction.editReply({ content: 'Signal not found.' });
@@ -543,7 +563,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // TP Hit modal submit (optional %; one-time)
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_tp_')) {
-      await interaction.deferReply({ ephemeral: true });
+      await ensureDeferred(interaction);
       const [_prefix, _tp, tpKey, id] = interaction.customId.split('_'); // modal_tp_tp1_<id>
       let signal = normalizeSignal(await getSignal(id));
       if (!signal) return interaction.editReply({ content: 'Signal not found.' });
@@ -576,7 +596,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Fully close modal (optional final R override)
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_full_')) {
-      await interaction.deferReply({ ephemeral: true });
+      await ensureDeferred(interaction);
       const id = interaction.customId.replace('modal_full_', '');
       let signal = normalizeSignal(await getSignal(id));
       if (!signal) return interaction.editReply({ content: 'Signal not found.' });
@@ -616,7 +636,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // Final R modal (Stopped BE / Stopped Out) — optional override
     if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_finalr_')) {
-      await interaction.deferReply({ ephemeral: true });
+      await ensureDeferred(interaction);
       const parts = interaction.customId.split('_'); // modal_finalr_BE_<id>
       const kind = parts[2];
       const id = parts.slice(3).join('_');
@@ -660,10 +680,10 @@ client.on('interactionCreate', async (interaction) => {
     // ===== Buttons =====
     if (interaction.isButton()) {
       if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use these controls.', ephemeral: true });
+        return interaction.reply({ content: 'Only the owner can use these controls.', flags: MessageFlags.Ephemeral });
       }
       const [action, id] = interaction.customId.split('_');
-      if (!id) return interaction.reply({ content: 'Bad button ID.', ephemeral: true });
+      if (!id) return interaction.reply({ content: 'Bad button ID.', flags: MessageFlags.Ephemeral });
 
       if (action === 'upd_tpprices') return interaction.showModal(makeUpdateTPPricesModal(id));
       if (action === 'upd_plan')     return interaction.showModal(makeUpdatePlanModal(id));
@@ -674,7 +694,7 @@ client.on('interactionCreate', async (interaction) => {
       if (action === 'stopped')      return interaction.showModal(makeFinalRModal(id, 'OUT'));
 
       if (action === 'del') {
-        await interaction.deferReply({ ephemeral: true });
+        await ensureDeferred(interaction);
         const sig = await getSignal(id).catch(() => null);
         if (sig) {
           await deleteSignalMessage(sig).catch(() => {});
@@ -686,12 +706,13 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (['tp1','tp2','tp3','tp4','tp5'].includes(action)) {
+        await ensureDeferred(interaction);
         const sig = normalizeSignal(await getSignal(id));
-        if (!sig) return interaction.reply({ content: 'Signal not found.', ephemeral: true });
+        if (!sig) return interaction.editReply({ content: 'Signal not found.' });
 
         const tpUpper = action.toUpperCase();
         if (sig.tpHits?.[tpUpper]) {
-          return interaction.reply({ content: `${tpUpper} already recorded.`, ephemeral: true });
+          return interaction.editReply({ content: `${tpUpper} already recorded.` });
         }
 
         const planPct = sig.plan?.[tpUpper];
@@ -707,7 +728,7 @@ client.on('interactionCreate', async (interaction) => {
           await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits });
           await editSignalMessage(sig);
           await updateSummary();
-          return interaction.reply({ content: `✅ ${tpUpper} executed (${planPct}%).`, ephemeral: true });
+          return interaction.editReply({ content: `✅ ${tpUpper} executed (${planPct}%).` });
         }
 
         const modal = makeTPModal(id, action);
@@ -715,7 +736,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.showModal(modal);
       }
 
-      return interaction.reply({ content: 'Unknown action.', ephemeral: true });
+      return interaction.reply({ content: 'Unknown action.', flags: MessageFlags.Ephemeral });
     }
   } catch (err) {
     console.error('interaction error:', err);
@@ -723,7 +744,7 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.deferred || interaction.replied) {
         await interaction.editReply({ content: '❌ Internal error.' });
       } else {
-        await interaction.reply({ content: '❌ Internal error.', ephemeral: true });
+        await interaction.reply({ content: '❌ Internal error.', flags: MessageFlags.Ephemeral });
       }
     } catch {}
   }
