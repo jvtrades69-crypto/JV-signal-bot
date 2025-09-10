@@ -1,13 +1,11 @@
-// index.js — JV Signal Bot (stable)
-// - Plain text messages (uses renders from embeds.js)
-// - TP plans + auto-exec
-// - Control panel (TP1–TP5 + 4 update modals + Close/BE/Out + Delete)
-// - Summary in currentTradesChannelId (exactly 1 message, debounced)
-// - Signals post in the channel where /signal is run (per-signal channelId)
-// - Ignores “ghost” signals whose original message was manually deleted
-// - Dedupe guard for interactions (no double posts)
-// - Safe acks (prevents “not sent or deferred” / “unknown interaction”)
-// - Global error guards
+// index.js — JV Signal Bot (Sep 2025)
+// - Posts /signal in the channel it's run in (per-signal channelId)
+// - Control panel (TP1–TP5 + Update modals + Close/BE/Out + Delete + 🔔 Notify Roles)
+// - Summary: always 1 message in currentTradesChannelId
+// - Ghost prune on startup; ignore signals whose source message was deleted
+// - Dedupe guard for interactions; safe acks to avoid unknown/deferred errors
+// - /recap command: weekly/monthly/custom KPIs, optional full listing (plain text)
+// - Timestamps on signals: createdAt, updatedAt, closedAt
 
 import {
   Client,
@@ -39,7 +37,7 @@ process.on('unhandledRejection', (err) => console.error('unhandledRejection:', e
 process.on('uncaughtException',  (err) => console.error('uncaughtException:', err));
 
 // ------------------------------
-// Utility & core signal helpers
+// Utility & core helpers
 // ------------------------------
 const isNum = (v) => v !== undefined && v !== null && v !== '' && !isNaN(Number(v));
 const toNumOrNull = (v) => (isNum(v) ? Number(v) : null);
@@ -52,6 +50,58 @@ const STATUS = {
   STOPPED_OUT: 'STOPPED_OUT',
 };
 const TP_KEYS = ['tp1', 'tp2', 'tp3', 'tp4', 'tp5'];
+
+// Asia/Singapore date helpers (no external deps)
+const SG_TZ = 'Asia/Singapore';
+const fmtDate = (ms) => new Intl.DateTimeFormat('en-CA', { timeZone: SG_TZ, dateStyle: 'medium' }).format(new Date(ms)); // e.g., Sep 7, 2025
+const fmtISODate = (ms) => {
+  const d = new Date(new Intl.DateTimeFormat('en-CA', { timeZone: SG_TZ, year:'numeric', month:'2-digit', day:'2-digit' })
+    .format(new Date(ms)).replace(/(\d{4})-(\d{2})-(\d{2})/, '$1/$2/$3'));
+  // Return YYYY-MM-DD
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth()+1).padStart(2,'0');
+  const day = String(d.getUTCDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+};
+const startOfDaySG = (y, m, d) => Date.parse(new Date(`${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}T00:00:00+08:00`));
+const endOfDaySG = (y, m, d) => Date.parse(new Date(`${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}T23:59:59.999+08:00`));
+
+// Period ranges (previous full week Mon–Sun, previous calendar month)
+function getWeekRangeSG(now = Date.now()) {
+  const nowDate = new Date(new Date(now).toLocaleString('en-US', { timeZone: SG_TZ }));
+  // Find last Monday before today (exclude current week); then Sunday after it
+  const day = nowDate.getDay(); // 0 Sun, 1 Mon, ...
+  const daysSinceMonday = (day + 6) % 7; // Mon=0
+  // Current week's Monday:
+  const curMon = new Date(nowDate); curMon.setDate(nowDate.getDate() - daysSinceMonday);
+  // Previous week's Monday:
+  const prevMon = new Date(curMon); prevMon.setDate(curMon.getDate() - 7);
+  const prevSun = new Date(prevMon); prevSun.setDate(prevMon.getDate() + 6);
+  const y1 = prevMon.getFullYear(), m1 = prevMon.getMonth()+1, d1 = prevMon.getDate();
+  const y2 = prevSun.getFullYear(), m2 = prevSun.getMonth()+1, d2 = prevSun.getDate();
+  return { from: startOfDaySG(y1,m1,d1), to: endOfDaySG(y2,m2,d2) };
+}
+function getMonthRangeSG(now = Date.now()) {
+  const nowDate = new Date(new Date(now).toLocaleString('en-US', { timeZone: SG_TZ }));
+  const y = nowDate.getFullYear(), m = nowDate.getMonth()+1;
+  // Previous month:
+  const pm = m === 1 ? 12 : m-1;
+  const py = m === 1 ? y-1 : y;
+  const from = startOfDaySG(py, pm, 1);
+  const lastDay = new Date(py, pm, 0).getDate();
+  const to = endOfDaySG(py, pm, lastDay);
+  return { from, to };
+}
+function parseCustomRange(fromStr, toStr) {
+  // YYYY-MM-DD inclusive
+  const m1 = /^(\d{4})-(\d{2})-(\d{2})$/.exec(fromStr||'');
+  const m2 = /^(\d{4})-(\d{2})-(\d{2})$/.exec(toStr||'');
+  if (!m1 || !m2) return null;
+  const from = startOfDaySG(+m1[1], +m1[2], +m1[3]);
+  const to = endOfDaySG(+m2[1], +m2[2], +m2[3]);
+  if (Number.isNaN(from) || Number.isNaN(to) || from > to) return null;
+  return { from, to };
+}
 
 function rAtPrice(direction, entry, slOriginal, price) {
   if (!isNum(entry) || !isNum(slOriginal) || !isNum(price)) return null;
@@ -97,6 +147,11 @@ function normalizeSignal(raw) {
   s.tpHits = s.tpHits && typeof s.tpHits === 'object' ? s.tpHits : { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false };
   // optional final-R override for closures
   if (s.finalR !== undefined && s.finalR !== null && !isNum(s.finalR)) delete s.finalR;
+
+  // timestamps
+  if (!s.createdAt) s.createdAt = Date.now();
+  if (!s.updatedAt) s.updatedAt = s.createdAt;
+  // closedAt stays undefined until closed/stopped
   return s;
 }
 
@@ -113,18 +168,23 @@ function extractRoleIds(defaultRoleId, extraRoleRaw) {
   if (found) ids.push(...found);
   return Array.from(new Set(ids));
 }
-function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
+// UPDATED: supports forcePing on edits (for Notify button)
+function buildMentions(defaultRoleId, extraRoleRaw, opts = {}) {
+  const { forEdit = false, forcePing = false } = opts;
   const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
   const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
-  // On initial send we allowRoles to ping; on edits we suppress pings entirely
-  if (forEdit) return { content, allowedMentions: { parse: [] } };
   if (!ids.length) return { content: '', allowedMentions: { parse: [] } };
-  return { content, allowedMentions: { parse: [], roles: ids } };
+
+  if (!forEdit) {
+    return { content, allowedMentions: { parse: [], roles: ids } };
+  }
+  if (forcePing) {
+    return { content, allowedMentions: { parse: [], roles: ids } };
+  }
+  return { content, allowedMentions: { parse: [] } };
 }
 
-// ------------------------------
 // Ack helpers (prevent “not sent or deferred”)
-// ------------------------------
 async function ensureDeferred(interaction) {
   try {
     if (!interaction.deferred && !interaction.replied) {
@@ -149,13 +209,17 @@ async function safeEditReply(interaction, payload) {
 }
 
 // ------------------------------
-// Posting / Editing messages (use per-signal channelId)
+// Posting / Editing messages (per-signal channelId)
 // ------------------------------
 async function postSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
   const rrChips = computeRRChips(signal);
   const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
-  const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
+  const { content: mentionLine, allowedMentions } = buildMentions(
+    config.mentionRoleId,
+    signal.extraRole,
+    { forEdit: false, forcePing: false }
+  );
 
   const sent = await channel.send({
     content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
@@ -164,13 +228,17 @@ async function postSignalMessage(signal) {
   return sent.id;
 }
 
-async function editSignalMessage(signal) {
+async function editSignalMessage(signal, { forcePing = false } = {}) {
   const channel = await client.channels.fetch(signal.channelId);
   const msg = await channel.messages.fetch(signal.messageId).catch(() => null);
   if (!msg) return false;
   const rrChips = computeRRChips(signal);
   const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
-  const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
+  const { content: mentionLine, allowedMentions } = buildMentions(
+    config.mentionRoleId,
+    signal.extraRole,
+    { forEdit: true, forcePing }
+  );
 
   await msg.edit({
     content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
@@ -186,7 +254,7 @@ async function deleteSignalMessage(signal) {
 }
 
 // ------------------------------
-// Summary (edit-in-place or hard purge; debounced)
+// Summary (edit-in-place; debounced; one message only)
 // ------------------------------
 let _summaryTimer = null;
 let _summaryBusy = false;
@@ -270,7 +338,7 @@ async function updateSummary() {
 }
 
 // ------------------------------
-// Control UI (TPs + updates + closes)
+// Control UI (TPs + updates + closes + notify)
 // ------------------------------
 function btn(id, key) { return `btn:${key}:${id}`; }
 function modal(id, key) { return `modal:${key}:${id}`; }
@@ -293,6 +361,7 @@ function controlRows(signalId) {
     new ButtonBuilder().setCustomId(btn(signalId,'fullclose')).setLabel('✅ Fully Close').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(btn(signalId,'stopbe')).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(btn(signalId,'stopped')).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(btn(signalId,'notify')).setLabel('🔔 Notify Roles').setStyle(ButtonStyle.Primary) // NEW
   );
   const row4 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'del')).setLabel('❌ Delete').setStyle(ButtonStyle.Secondary)
@@ -301,7 +370,7 @@ function controlRows(signalId) {
 }
 
 async function createControlThread(signal) {
-  const channel = await client.channels.fetch(signal.channelId); // per-signal channel
+  const channel = await client.channels.fetch(signal.channelId);
   const thread = await channel.threads.create({
     name: `controls-${signal.asset}-${signal.id.slice(0, 4)}`,
     type: ChannelType.PrivateThread,
@@ -451,9 +520,10 @@ function tryClaimInteraction(interaction) {
 // ------------------------------
 // Interaction router
 // ------------------------------
+const pendingSignals = new Map();
+
 client.on('interactionCreate', async (interaction) => {
   try {
-    // ensure we don't process the same interaction twice
     if (!tryClaimInteraction(interaction)) return;
 
     // /signal
@@ -486,7 +556,6 @@ client.on('interactionCreate', async (interaction) => {
         const m = new ModalBuilder().setCustomId(modal(pid,'asset')).setTitle('Enter custom asset');
         const input = new TextInputBuilder().setCustomId('asset_value').setLabel('Asset (e.g., PEPE, XRP)').setStyle(TextInputStyle.Short).setRequired(true);
         m.addComponents(new ActionRowBuilder().addComponents(input));
-        // stash payload in memory by pid
         pendingSignals.set(pid, {
           direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole,
           plan: {
@@ -496,9 +565,9 @@ client.on('interactionCreate', async (interaction) => {
             TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
             TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
           },
-          channelId: interaction.channelId, // remember where to post
+          channelId: interaction.channelId,
         });
-        return interaction.showModal(m); // do NOT defer again before showModal
+        return interaction.showModal(m);
       }
 
       await createSignal({
@@ -516,9 +585,49 @@ client.on('interactionCreate', async (interaction) => {
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
 
+    // /recap
+    if (interaction.isChatInputCommand() && interaction.commandName === 'recap') {
+      if (interaction.user.id !== config.ownerId) {
+        return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
+      }
+      await ensureDeferred(interaction);
+
+      const period = (interaction.options.getString('period') || 'week').toLowerCase(); // week|month|custom
+      const fromStr = interaction.options.getString('from');
+      const toStr = interaction.options.getString('to');
+      const assetFilter = (interaction.options.getString('asset') || '').trim().toUpperCase();
+      const format = (interaction.options.getString('format') || 'summary').toLowerCase(); // summary|full
+
+      let range = null;
+      if (period === 'week') range = getWeekRangeSG();
+      else if (period === 'month') range = getMonthRangeSG();
+      else if (period === 'custom') range = parseCustomRange(fromStr, toStr);
+      if (!range) return safeEditReply(interaction, { content: '❌ Invalid period or date range.' });
+
+      const { from, to } = range;
+      const all = (await getSignals()).map(normalizeSignal);
+      const closed = all.filter(s =>
+        (s.status === STATUS.CLOSED || s.status === STATUS.STOPPED_BE || s.status === STATUS.STOPPED_OUT) &&
+        isNum(s.closedAt) && s.closedAt >= from && s.closedAt <= to &&
+        (!assetFilter || String(s.asset).toUpperCase() === assetFilter)
+      );
+
+      const kpis = computeRecapKPIs(closed);
+      const title = `**JV Recap — ${period === 'week' ? 'Week' : period === 'month' ? 'Month' : 'Custom'} (${fmtISODate(from)}–${fmtISODate(to)})**`;
+
+      let content = `${title}\n\n${renderKPIs(kpis)}`;
+      if (format === 'full' && closed.length) {
+        content += `\n\n— Every trade —\n${renderTradeLines(closed)}`;
+      }
+      const channel = await client.channels.fetch(interaction.channelId);
+      await channel.send({ content, allowedMentions: { parse: [] } });
+      return safeEditReply(interaction, { content: '📊 Recap posted.' });
+    }
+
     // ===== MODALS =====
     if (interaction.isModalSubmit()) {
       const idPart = interaction.customId.split(':').pop(); // after last :
+
       // Custom asset modal
       if (interaction.customId.startsWith('modal:asset:')) {
         await ensureDeferred(interaction);
@@ -542,6 +651,8 @@ client.on('interactionCreate', async (interaction) => {
           const v = interaction.fields.getTextInputValue(`upd_${k}`)?.trim();
           if (v !== undefined && v !== '') patch[k] = v;
         }
+
+        patch.updatedAt = Date.now();
         await updateSignal(id, { ...patch });
         const updated = normalizeSignal(await getSignal(id));
         if (isSlMovedToBE(updated)) { updated.validReentry = false; await updateSignal(id, { validReentry: false }); }
@@ -563,7 +674,7 @@ client.on('interactionCreate', async (interaction) => {
           if (raw === '' || raw === undefined) continue;
           if (isNum(raw)) patchPlan[t.toUpperCase()] = Math.max(0, Math.min(100, Number(raw)));
         }
-        await updateSignal(id, { plan: patchPlan });
+        await updateSignal(id, { plan: patchPlan, updatedAt: Date.now() });
         await editSignalMessage(normalizeSignal(await getSignal(id)));
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ TP % plan updated.' });
@@ -589,6 +700,7 @@ client.on('interactionCreate', async (interaction) => {
         if (dir === 'LONG' || dir === 'SHORT') patch.direction = dir;
         if (reason !== undefined) patch.reason = reason;
 
+        patch.updatedAt = Date.now();
         await updateSignal(id, patch);
         const updated = normalizeSignal(await getSignal(id));
         if (isSlMovedToBE(updated)) { updated.validReentry = false; await updateSignal(id, { validReentry: false }); }
@@ -605,7 +717,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
         const rolesRaw = interaction.fields.getTextInputValue('roles_input') ?? '';
-        await updateSignal(id, { extraRole: rolesRaw });
+        await updateSignal(id, { extraRole: rolesRaw, updatedAt: Date.now() });
         await editSignalMessage(normalizeSignal(await getSignal(id)));
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Role mentions updated.' });
@@ -638,7 +750,7 @@ client.on('interactionCreate', async (interaction) => {
         signal.latestTpHit = tpUpper;
         signal.tpHits[tpUpper] = true;
 
-        await updateSignal(id, { fills: signal.fills, latestTpHit: signal.latestTpHit, tpHits: signal.tpHits });
+        await updateSignal(id, { fills: signal.fills, latestTpHit: signal.latestTpHit, tpHits: signal.tpHits, updatedAt: Date.now() });
         await editSignalMessage(signal);
         await updateSummary();
         return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${hasPct && pct > 0 ? ` (${pct}%).` : '.'}` });
@@ -675,12 +787,17 @@ client.on('interactionCreate', async (interaction) => {
         signal.validReentry = false;
         signal.latestTpHit = latest;
 
-        await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, latestTpHit: latest, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
+        await updateSignal(id, {
+          fills: signal.fills, status: signal.status, validReentry: false,
+          latestTpHit: latest, ...(hasFinalR ? { finalR: signal.finalR } : {}),
+          updatedAt: Date.now(), closedAt: Date.now()
+        });
         await editSignalMessage(signal);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Fully closed.' });
       }
 
+      // FinalR modal (Stopped BE / Stopped Out)
       if (interaction.customId.startsWith('modal:finalr:')) {
         await ensureDeferred(interaction);
         const parts = interaction.customId.split(':'); // modal, finalr, BE/OUT, id
@@ -699,8 +816,7 @@ client.on('interactionCreate', async (interaction) => {
         if (hasFinalR) {
           signal.finalR = Number(finalRStr);
         } else {
-          let price = null;
-          price = Number(kind === 'BE' ? signal.entry : (signal.slOriginal ?? signal.sl));
+          let price = Number(kind === 'BE' ? signal.entry : (signal.slOriginal ?? signal.sl));
           const remaining = 100 - (signal.fills || []).reduce((a, f) => a + Number(f.pct || 0), 0);
           if (remaining > 0 && isNum(price)) {
             signal.fills.push({ pct: remaining, price, source: kind === 'BE' ? 'STOP_BE' : 'STOP_OUT' });
@@ -710,7 +826,11 @@ client.on('interactionCreate', async (interaction) => {
         signal.status = (kind === 'BE') ? STATUS.STOPPED_BE : STATUS.STOPPED_OUT;
         signal.validReentry = false;
 
-        await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
+        await updateSignal(id, {
+          fills: signal.fills, status: signal.status, validReentry: false,
+          ...(hasFinalR ? { finalR: signal.finalR } : {}),
+          updatedAt: Date.now(), closedAt: Date.now()
+        });
         await editSignalMessage(signal);
         await updateSummary();
         await deleteControlThread(id);
@@ -735,6 +855,16 @@ client.on('interactionCreate', async (interaction) => {
       if (key === 'fullclose')    return interaction.showModal(makeFullCloseModal(id));
       if (key === 'stopbe')       return interaction.showModal(makeFinalRModal(id, 'BE'));
       if (key === 'stopped')      return interaction.showModal(makeFinalRModal(id, 'OUT'));
+
+      if (key === 'notify') {
+        await ensureDeferred(interaction);
+        const signal = await getSignal(id).catch(() => null);
+        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
+
+        // re-render same content but force ping on edit
+        await editSignalMessage(normalizeSignal(signal), { forcePing: true });
+        return safeEditReply(interaction, { content: '🔔 Roles notified.' });
+      }
 
       if (key === 'del') {
         await ensureDeferred(interaction);
@@ -766,7 +896,7 @@ client.on('interactionCreate', async (interaction) => {
           sig.latestTpHit = tpUpper;
           sig.tpHits[tpUpper] = true;
 
-          await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits });
+          await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits, updatedAt: Date.now() });
           await editSignalMessage(sig);
           await updateSummary();
           await ensureDeferred(interaction);
@@ -795,8 +925,6 @@ client.on('interactionCreate', async (interaction) => {
 // ------------------------------
 // Create & Save Signal
 // ------------------------------
-const pendingSignals = new Map();
-
 async function createSignal(payload, channelId) {
   const signal = normalizeSignal({
     id: nano(),
@@ -816,7 +944,10 @@ async function createSignal(payload, channelId) {
     finalR: null,
     messageId: null,
     jumpUrl: null,
-    channelId, // <= post and track in this channel
+    channelId,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    closedAt: undefined,
   });
 
   await saveSignal(signal);
@@ -833,6 +964,88 @@ async function createSignal(payload, channelId) {
   await updateSummary();
 
   return signal;
+}
+
+// ------------------------------
+// Recap math/rendering
+// ------------------------------
+function calcFinalR(signal) {
+  const s = normalizeSignal(signal);
+  if (isNum(s.finalR)) return Number(s.finalR);
+  if (!isNum(s.entry) || !isNum(s.sl)) return 0;
+
+  const baseRisk = s.direction === DIR.LONG
+    ? (Number(s.entry) - Number(s.slOriginal ?? s.sl))
+    : (Number(s.slOriginal ?? s.sl) - Number(s.entry));
+  if (baseRisk <= 0) return 0;
+
+  let total = 0;
+  for (const f of (s.fills || [])) {
+    const pct = Number(f.pct || 0) / 100;
+    const price = Number(f.price);
+    if (!pct || !isNum(price)) continue;
+    const r = rAtPrice(s.direction, s.entry, (s.slOriginal ?? s.sl), price);
+    if (r === null) continue;
+    total += pct * r;
+  }
+  // Clamp tiny noise to 0
+  if (Math.abs(total) < 1e-6) total = 0;
+  return Number(total.toFixed(4));
+}
+
+function computeRecapKPIs(trades) {
+  const items = trades.map(s => ({ s, r: calcFinalR(s) }));
+  const n = items.length;
+  const wins = items.filter(i => i.r > 0).length;
+  const losses = items.filter(i => i.r < 0).length;
+  const be = items.filter(i => Math.abs(i.r) < 1e-9).length;
+  const totalR = items.reduce((a, i) => a + i.r, 0);
+  const avgR = n ? totalR / n : 0;
+  const best = n ? Math.max(...items.map(i => i.r)) : 0;
+  const worst = n ? Math.min(...items.map(i => i.r)) : 0;
+
+  // Per-asset breakdown
+  const byAsset = {};
+  for (const i of items) {
+    const a = (i.s.asset || 'UNKNOWN').toUpperCase();
+    if (!byAsset[a]) byAsset[a] = { n:0, wins:0, total:0 };
+    byAsset[a].n += 1;
+    if (i.r > 0) byAsset[a].wins += 1;
+    byAsset[a].total += i.r;
+  }
+
+  return { n, wins, losses, be, winRate: n ? (wins / n) * 100 : 0, totalR, avgR, best, worst, items, byAsset };
+}
+
+function renderKPIs(k) {
+  const lines = [];
+  lines.push(`Closed trades: ${k.n}  |  Wins: ${k.wins}  Losses: ${k.losses}  BE: ${k.be}  |  Win rate: ${k.winRate.toFixed(1)}%`);
+  lines.push(`Total R: ${k.totalR >= 0 ? '+' : ''}${k.totalR.toFixed(2)}R   |  Avg R/trade: ${k.avgR >= 0 ? '+' : ''}${k.avgR.toFixed(2)}R`);
+  if (k.n) {
+    lines.push(`Best: ${k.best >= 0 ? '+' : ''}${k.best.toFixed(2)}R  |  Worst: ${k.worst >= 0 ? '+' : ''}${k.worst.toFixed(2)}R`);
+  }
+  const assets = Object.entries(k.byAsset);
+  if (assets.length) {
+    lines.push(`\nPer-asset:`);
+    for (const [asset, v] of assets) {
+      const wr = v.n ? (v.wins / v.n) * 100 : 0;
+      lines.push(`• ${asset} — Trades: ${v.n}  |  Win rate: ${wr.toFixed(0)}%  |  Total: ${v.total >= 0 ? '+' : ''}${v.total.toFixed(2)}R`);
+    }
+  }
+  return lines.join('\n');
+}
+
+function renderTradeLines(trades) {
+  const items = trades.map(s => ({ s, r: calcFinalR(s) }));
+  const emoji = (r) => r > 0 ? '✅' : (r < 0 ? '❌' : '➖');
+  const lines = [];
+  for (const { s, r } of items) {
+    const date = isNum(s.closedAt) ? fmtISODate(s.closedAt) : (s.updatedAt ? fmtISODate(s.updatedAt) : '');
+    const dir = (s.direction || '').toUpperCase();
+    const link = s.jumpUrl ? s.jumpUrl : '';
+    lines.push(`${emoji(r)} ${s.asset} ${dir}  |  ${r >= 0 ? '+' : ''}${r.toFixed(2)}R  |  ${date}  |  ${link}`);
+  }
+  return lines.join('\n');
 }
 
 // ------------------------------
