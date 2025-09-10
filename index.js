@@ -1,13 +1,9 @@
-// index.js — JV Signal Bot (stable)
-// - Plain text messages (uses renders from embeds.js)
-// - TP plans + auto-exec
-// - Control panel (TP1–TP5 + 4 update modals + Close/BE/Out + Delete)
-// - Summary in currentTradesChannelId (exactly 1 message, debounced)
+// index.js — JV Signal Bot (stable, with Notify button)
 // - Signals post in the channel where /signal is run (per-signal channelId)
+// - Control panel incl. TP1–TP5, update modals, Close/BE/Out, Delete, and 🔔 Notify Roles
+// - Summary in currentTradesChannelId (exactly 1 message, debounced)
 // - Ignores “ghost” signals whose original message was manually deleted
-// - Dedupe guard for interactions (no double posts)
-// - Safe acks (prevents “not sent or deferred” / “unknown interaction”)
-// - Global error guards
+// - Dedupe guard for interactions + safe acks
 
 import {
   Client,
@@ -113,13 +109,25 @@ function extractRoleIds(defaultRoleId, extraRoleRaw) {
   if (found) ids.push(...found);
   return Array.from(new Set(ids));
 }
-function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
+
+// UPDATED: support forcePing on edit (used by 🔔 Notify button)
+function buildMentions(defaultRoleId, extraRoleRaw, opts = {}) {
+  const { forEdit = false, forcePing = false } = opts;
   const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
   const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
-  // On initial send we allowRoles to ping; on edits we suppress pings entirely
-  if (forEdit) return { content, allowedMentions: { parse: [] } };
   if (!ids.length) return { content: '', allowedMentions: { parse: [] } };
-  return { content, allowedMentions: { parse: [], roles: ids } };
+
+  // Initial send: allow ping
+  if (!forEdit) {
+    return { content, allowedMentions: { parse: [], roles: ids } };
+  }
+
+  // Edits: normally suppress ping, but allow forcing a re-ping (Notify button)
+  if (forcePing) {
+    return { content, allowedMentions: { parse: [], roles: ids } };
+  } else {
+    return { content, allowedMentions: { parse: [] } };
+  }
 }
 
 // ------------------------------
@@ -155,7 +163,11 @@ async function postSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
   const rrChips = computeRRChips(signal);
   const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
-  const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
+  const { content: mentionLine, allowedMentions } = buildMentions(
+    config.mentionRoleId,
+    signal.extraRole,
+    { forEdit: false, forcePing: false }
+  );
 
   const sent = await channel.send({
     content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
@@ -170,7 +182,11 @@ async function editSignalMessage(signal) {
   if (!msg) return false;
   const rrChips = computeRRChips(signal);
   const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
-  const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
+  const { content: mentionLine, allowedMentions } = buildMentions(
+    config.mentionRoleId,
+    signal.extraRole,
+    { forEdit: true, forcePing: false }
+  );
 
   await msg.edit({
     content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
@@ -270,7 +286,7 @@ async function updateSummary() {
 }
 
 // ------------------------------
-// Control UI (TPs + updates + closes)
+// Control UI (TPs + updates + closes + notify)
 // ------------------------------
 function btn(id, key) { return `btn:${key}:${id}`; }
 function modal(id, key) { return `modal:${key}:${id}`; }
@@ -293,6 +309,7 @@ function controlRows(signalId) {
     new ButtonBuilder().setCustomId(btn(signalId,'fullclose')).setLabel('✅ Fully Close').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(btn(signalId,'stopbe')).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(btn(signalId,'stopped')).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(btn(signalId,'notify')).setLabel('🔔 Notify Roles').setStyle(ButtonStyle.Primary) // NEW
   );
   const row4 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'del')).setLabel('❌ Delete').setStyle(ButtonStyle.Secondary)
@@ -451,6 +468,8 @@ function tryClaimInteraction(interaction) {
 // ------------------------------
 // Interaction router
 // ------------------------------
+const pendingSignals = new Map();
+
 client.on('interactionCreate', async (interaction) => {
   try {
     // ensure we don't process the same interaction twice
@@ -748,6 +767,34 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '🗑️ Signal deleted.' });
       }
 
+      // NEW: 🔔 Notify Roles — edit the SAME trade message to force a ping (yellow highlight)
+      if (key === 'notify') {
+        await ensureDeferred(interaction);
+        const signal = await getSignal(id).catch(() => null);
+        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
+
+        const rrChips = computeRRChips(signal);
+        const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
+        const { content: mentionLine, allowedMentions } = buildMentions(
+          config.mentionRoleId,
+          signal.extraRole,
+          { forEdit: true, forcePing: true } // re-ping on edit
+        );
+
+        try {
+          const channel = await client.channels.fetch(signal.channelId);
+          const msg = await channel.messages.fetch(signal.messageId);
+          await msg.edit({
+            content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+            allowedMentions,
+          });
+          await safeEditReply(interaction, { content: '🔔 Roles notified.' });
+        } catch {
+          await safeEditReply(interaction, { content: '❌ Could not notify roles (message missing?).' });
+        }
+        return;
+      }
+
       if (['tp1','tp2','tp3','tp4','tp5'].includes(key)) {
         const sig = normalizeSignal(await getSignal(id));
         if (!sig) return interaction.reply({ content: 'Signal not found.', flags: MessageFlags.Ephemeral });
@@ -795,8 +842,6 @@ client.on('interactionCreate', async (interaction) => {
 // ------------------------------
 // Create & Save Signal
 // ------------------------------
-const pendingSignals = new Map();
-
 async function createSignal(payload, channelId) {
   const signal = normalizeSignal({
     id: nano(),
