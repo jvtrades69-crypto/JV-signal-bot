@@ -102,4 +102,8 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
     console.error('Failed to register commands:', err);
     process.exit(1);
   }
+<<<<<<< HEAD
 })();
+=======
+})();
+>>>>>>> 3c87fe3eda9c5df9a42ee048d64673e58c109994
