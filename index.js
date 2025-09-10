@@ -1,5 +1,13 @@
-// index.js — JV Signal Bot (recap-ready)
-// (Everything you already have + recap + timestamps + per-channel recap posts)
+// index.js — JV Signal Bot (stable)
+// - Plain text messages (uses renders from embeds.js)
+// - TP plans + auto-exec
+// - Control panel (TP1–TP5 + 4 update modals + Close/BE/Out + Delete)
+// - Summary in currentTradesChannelId (exactly 1 message, debounced)
+// - Signals post in the channel where /signal is run (per-signal channelId)
+// - Ignores “ghost” signals whose original message was manually deleted
+// - Dedupe guard for interactions (no double posts)
+// - Safe acks (prevents “not sent or deferred” / “unknown interaction”)
+// - Global error guards
 
 import {
   Client,
@@ -19,19 +27,19 @@ import {
   saveSignal, getSignal, getSignals, updateSignal, deleteSignal,
   getThreadId, setThreadId
 } from './store.js';
-import { renderSignalText, renderSummaryText, renderRecapText } from './embeds.js';
+import { renderSignalText, renderSummaryText } from './embeds.js';
 
 const nano = customAlphabet('1234567890abcdef', 10);
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
 });
 
-// ---- global error catcher ----
+// ---- global error catcher so bot doesn’t crash ----
 process.on('unhandledRejection', (err) => console.error('unhandledRejection:', err));
 process.on('uncaughtException',  (err) => console.error('uncaughtException:', err));
 
 // ------------------------------
-// Utils
+// Utility & core signal helpers
 // ------------------------------
 const isNum = (v) => v !== undefined && v !== null && v !== '' && !isNaN(Number(v));
 const toNumOrNull = (v) => (isNum(v) ? Number(v) : null);
@@ -49,9 +57,11 @@ function rAtPrice(direction, entry, slOriginal, price) {
   if (!isNum(entry) || !isNum(slOriginal) || !isNum(price)) return null;
   const E = Number(entry), S = Number(slOriginal), P = Number(price);
   if (direction === DIR.LONG) {
-    const risk = E - S; if (risk <= 0) return null; return (P - E) / risk;
+    const risk = E - S; if (risk <= 0) return null;
+    return (P - E) / risk;
   } else {
-    const risk = S - E; if (risk <= 0) return null; return (E - P) / risk;
+    const risk = S - E; if (risk <= 0) return null;
+    return (E - P) / risk;
   }
 }
 
@@ -65,19 +75,6 @@ function computeRRChips(signal) {
     chips.push({ key: key.toUpperCase(), r: Number(r.toFixed(2)) });
   }
   return chips;
-}
-
-function computeRealizedR(signal) {
-  if (isNum(signal.finalR)) return Number(signal.finalR);
-  const fills = Array.isArray(signal.fills) ? signal.fills : [];
-  if (!fills.length) return 0;
-  let sum = 0;
-  for (const f of fills) {
-    const pct = Number(f.pct || 0);
-    const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, f.price);
-    if (!isNaN(pct) && isNum(r)) sum += (pct / 100) * Number(r);
-  }
-  return Number(sum.toFixed(2));
 }
 
 function normalizeSignal(raw) {
@@ -96,27 +93,18 @@ function normalizeSignal(raw) {
     const v = s.plan[K];
     s.plan[K] = isNum(v) ? Number(v) : null;
   }
+  // track one-time TP hits
   s.tpHits = s.tpHits && typeof s.tpHits === 'object' ? s.tpHits : { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false };
-
-  // timestamps
-  s.createdAt = s.createdAt || new Date().toISOString();
-  s.updatedAt = s.updatedAt || s.createdAt;
-  if (s.status !== STATUS.RUN_VALID) s.closedAt = s.closedAt || s.updatedAt;
-
-  // cache resultR if missing but closed
-  if (s.status !== STATUS.RUN_VALID && !isNum(s.resultR)) {
-    s.resultR = computeRealizedR(s);
-  }
-
-  // finalR type guard
+  // optional final-R override for closures
   if (s.finalR !== undefined && s.finalR !== null && !isNum(s.finalR)) delete s.finalR;
-
   return s;
 }
+
 function isSlMovedToBE(signal) {
   const s = normalizeSignal(signal);
   return s.status === STATUS.RUN_VALID && isNum(s.entry) && isNum(s.sl) && Number(s.entry) === Number(s.sl) && !!s.latestTpHit;
 }
+
 function extractRoleIds(defaultRoleId, extraRoleRaw) {
   const ids = [];
   if (defaultRoleId) ids.push(defaultRoleId);
@@ -128,12 +116,15 @@ function extractRoleIds(defaultRoleId, extraRoleRaw) {
 function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
   const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
   const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
+  // On initial send we allowRoles to ping; on edits we suppress pings entirely
   if (forEdit) return { content, allowedMentions: { parse: [] } };
   if (!ids.length) return { content: '', allowedMentions: { parse: [] } };
   return { content, allowedMentions: { parse: [], roles: ids } };
 }
 
-// Ack helpers
+// ------------------------------
+// Ack helpers (prevent “not sent or deferred”)
+// ------------------------------
 async function ensureDeferred(interaction) {
   try {
     if (!interaction.deferred && !interaction.replied) {
@@ -158,7 +149,7 @@ async function safeEditReply(interaction, payload) {
 }
 
 // ------------------------------
-// Posting / Editing messages (per-signal channelId)
+// Posting / Editing messages (use per-signal channelId)
 // ------------------------------
 async function postSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
@@ -172,6 +163,7 @@ async function postSignalMessage(signal) {
   });
   return sent.id;
 }
+
 async function editSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
   const msg = await channel.messages.fetch(signal.messageId).catch(() => null);
@@ -186,6 +178,7 @@ async function editSignalMessage(signal) {
   }).catch(() => {});
   return true;
 }
+
 async function deleteSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
   const msg = await channel.messages.fetch(signal.messageId).catch(() => null);
@@ -193,7 +186,7 @@ async function deleteSignalMessage(signal) {
 }
 
 // ------------------------------
-// Summary (kept as you had it, trimmed)
+// Summary (edit-in-place or hard purge; debounced)
 // ------------------------------
 let _summaryTimer = null;
 let _summaryBusy = false;
@@ -206,21 +199,29 @@ async function hardPurgeChannel(channelId) {
       if (!batch || batch.size === 0) break;
 
       const young = batch.filter(m => (Date.now() - m.createdTimestamp) < 14 * 24 * 60 * 60 * 1000);
-      if (young.size) { try { await channel.bulkDelete(young, true); } catch {} }
+      if (young.size) {
+        try { await channel.bulkDelete(young, true); } catch (e) { console.error('purge bulkDelete:', e); }
+      }
       const oldies = batch.filter(m => !young.has(m.id));
-      for (const m of oldies.values()) { try { await m.delete(); } catch {} }
+      for (const m of oldies.values()) {
+        try { await m.delete(); } catch (e) { console.error('purge single delete:', e); }
+      }
       if (batch.size < 100) break;
     }
-  } catch (e) { console.error('hardPurgeChannel outer error:', e); }
+  } catch (e) {
+    console.error('hardPurgeChannel outer error:', e);
+  }
 }
 
 async function updateSummary() {
   if (_summaryTimer) clearTimeout(_summaryTimer);
   _summaryTimer = setTimeout(async () => {
-    if (_summaryBusy) return; _summaryBusy = true;
+    if (_summaryBusy) return;
+    _summaryBusy = true;
     try {
       const summaryChannel = await client.channels.fetch(config.currentTradesChannelId);
 
+      // Build active list (must exist AND original message still exists in its own channel)
       const signals = (await getSignals()).map(normalizeSignal);
       const candidates = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
 
@@ -228,7 +229,11 @@ async function updateSummary() {
       for (const s of candidates) {
         let ok = false;
         if (s.messageId && s.channelId) {
-          try { const ch = await client.channels.fetch(s.channelId); await ch.messages.fetch(s.messageId); ok = true; } catch {}
+          try {
+            const ch = await client.channels.fetch(s.channelId);
+            await ch.messages.fetch(s.messageId);
+            ok = true;
+          } catch {}
         }
         if (ok) active.push(s);
       }
@@ -237,26 +242,35 @@ async function updateSummary() {
         ? `**JV Current Active Trades** 📊\n\n• There are currently no ongoing trades valid for entry – stay posted for future trades!`
         : renderSummaryText(active);
 
+      // Try to edit an existing bot message first
       const recent = await summaryChannel.messages.fetch({ limit: 10 }).catch(() => null);
       let existing = null;
-      if (recent && recent.size) existing = Array.from(recent.values()).find(m => m.author?.id === client.user.id && !m.system);
+      if (recent && recent.size) {
+        existing = Array.from(recent.values()).find(m => m.author?.id === client.user.id && !m.system);
+      }
 
       if (existing) {
         await existing.edit({ content, allowedMentions: { parse: [] } }).catch(() => {});
+        // delete other bot-authored messages as safety
         for (const m of recent.values()) {
-          if (m.id !== existing.id && m.author?.id === client.user.id) { try { await m.delete(); } catch {} }
+          if (m.id !== existing.id && m.author?.id === client.user.id) {
+            try { await m.delete(); } catch {}
+          }
         }
       } else {
         await hardPurgeChannel(config.currentTradesChannelId);
-        await summaryChannel.send({ content, allowedMentions: { parse: [] } }).catch(() => {});
+        await summaryChannel.send({ content, allowedMentions: { parse: [] } }).catch(e => console.error('summary send failed:', e));
       }
-    } catch (e) { console.error('updateSummary error:', e); }
-    finally { _summaryBusy = false; }
+    } catch (e) {
+      console.error('updateSummary error:', e);
+    } finally {
+      _summaryBusy = false;
+    }
   }, 600);
 }
 
 // ------------------------------
-// Control UI (unchanged from your working set)
+// Control UI (TPs + updates + closes)
 // ------------------------------
 function btn(id, key) { return `btn:${key}:${id}`; }
 function modal(id, key) { return `modal:${key}:${id}`; }
@@ -287,7 +301,7 @@ function controlRows(signalId) {
 }
 
 async function createControlThread(signal) {
-  const channel = await client.channels.fetch(signal.channelId);
+  const channel = await client.channels.fetch(signal.channelId); // per-signal channel
   const thread = await channel.threads.create({
     name: `controls-${signal.asset}-${signal.id.slice(0, 4)}`,
     type: ChannelType.PrivateThread,
@@ -298,33 +312,44 @@ async function createControlThread(signal) {
   await thread.send({ content: 'Owner Control Panel', components: controlRows(signal.id) });
   return thread.id;
 }
+
 async function deleteControlThread(signalId) {
   const tid = await getThreadId(signalId);
   if (!tid) return;
   const thread = await client.channels.fetch(tid).catch(() => null);
-  if (thread && thread.isThread()) { await thread.delete().catch(() => {}); }
+  if (thread && thread.isThread()) {
+    await thread.delete().catch(() => {});
+  }
 }
 
 // ------------------------------
-// Modals (unchanged UI)
+// Modals
 // ------------------------------
 function makeTPModal(id, tpKey) {
   const m = new ModalBuilder().setCustomId(modal(id, `tp:${tpKey}`)).setTitle(`${tpKey.toUpperCase()} Hit`);
-  const pct = new TextInputBuilder().setCustomId('tp_pct').setLabel('Close % (0 - 100; leave blank to skip)').setStyle(TextInputStyle.Short).setRequired(false);
+  const pct = new TextInputBuilder()
+    .setCustomId('tp_pct')
+    .setLabel('Close % (0 - 100; leave blank to skip)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false);
   m.addComponents(new ActionRowBuilder().addComponents(pct));
   return m;
 }
 function makeUpdateTPPricesModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'tpprices')).setTitle('Update TP Prices (TP1–TP5)');
   for (const [cid, label] of [['upd_tp1','TP1'],['upd_tp2','TP2'],['upd_tp3','TP3'],['upd_tp4','TP4'],['upd_tp5','TP5']]) {
-    m.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId(cid).setLabel(label).setStyle(TextInputStyle.Short).setRequired(false)));
+    m.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId(cid).setLabel(label).setStyle(TextInputStyle.Short).setRequired(false)
+    ));
   }
   return m;
 }
 function makeUpdatePlanModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'plan')).setTitle('Update TP % Plan (0–100)');
   for (const t of ['tp1','tp2','tp3','tp4','tp5']) {
-    m.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId(`plan_${t}`).setLabel(`${t.toUpperCase()} planned %`).setStyle(TextInputStyle.Short).setRequired(false)));
+    m.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId(`plan_${t}`).setLabel(`${t.toUpperCase()} planned %`).setStyle(TextInputStyle.Short).setRequired(false)
+    ));
   }
   return m;
 }
@@ -338,13 +363,19 @@ function makeUpdateTradeInfoModal(id) {
     ['upd_reason', 'Reason (optional)', TextInputStyle.Paragraph],
   ];
   for (const [cid, label, style] of fields) {
-    m.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId(cid).setLabel(label).setStyle(style).setRequired(false)));
+    m.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId(cid).setLabel(label).setStyle(style).setRequired(false)
+    ));
   }
   return m;
 }
 function makeUpdateRolesModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'roles')).setTitle('Update Role Mention(s)');
-  const input = new TextInputBuilder().setCustomId('roles_input').setLabel('Enter one or more roles (IDs or @mentions)').setStyle(TextInputStyle.Paragraph).setRequired(false);
+  const input = new TextInputBuilder()
+    .setCustomId('roles_input')
+    .setLabel('Enter one or more roles (IDs or @mentions)')
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false);
   m.addComponents(new ActionRowBuilder().addComponents(input));
   return m;
 }
@@ -376,7 +407,7 @@ client.once('ready', async () => {
 // Manual delete watcher (any channel)
 client.on('messageDelete', async (message) => {
   try {
-    if (!message) return;
+    if (!message) return; // we’ll match by messageId below
     const sigs = await getSignals();
     const found = sigs.find(s => s.messageId === message.id);
     if (!found) return;
@@ -388,6 +419,7 @@ client.on('messageDelete', async (message) => {
     console.error('messageDelete handler error:', e);
   }
 });
+
 client.on('messageDeleteBulk', async (collection) => {
   try {
     const ids = new Set(Array.from(collection.keys()));
@@ -403,7 +435,9 @@ client.on('messageDeleteBulk', async (collection) => {
   }
 });
 
-// Interaction de-dupe
+// ------------------------------
+// Interactions (dedupe guard)
+// ------------------------------
 const claimed = new Set();
 const CLAIM_TTL_MS = 60_000;
 function tryClaimInteraction(interaction) {
@@ -415,13 +449,14 @@ function tryClaimInteraction(interaction) {
 }
 
 // ------------------------------
-// Interaction router (/signal, /recap, modals, buttons)
+// Interaction router
 // ------------------------------
 client.on('interactionCreate', async (interaction) => {
   try {
+    // ensure we don't process the same interaction twice
     if (!tryClaimInteraction(interaction)) return;
 
-    // /signal (unchanged, but stamps timestamps)
+    // /signal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
@@ -448,9 +483,10 @@ client.on('interactionCreate', async (interaction) => {
 
       if (assetSel === 'OTHER') {
         const pid = nano();
-        const m = new ModalBuilder().setCustomId(`modal:asset:${pid}`).setTitle('Enter custom asset');
+        const m = new ModalBuilder().setCustomId(modal(pid,'asset')).setTitle('Enter custom asset');
         const input = new TextInputBuilder().setCustomId('asset_value').setLabel('Asset (e.g., PEPE, XRP)').setStyle(TextInputStyle.Short).setRequired(true);
         m.addComponents(new ActionRowBuilder().addComponents(input));
+        // stash payload in memory by pid
         pendingSignals.set(pid, {
           direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole,
           plan: {
@@ -460,13 +496,15 @@ client.on('interactionCreate', async (interaction) => {
             TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
             TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
           },
-          channelId: interaction.channelId,
+          channelId: interaction.channelId, // remember where to post
         });
-        return interaction.showModal(m);
+        return interaction.showModal(m); // do NOT defer again before showModal
       }
 
       await createSignal({
-        asset: assetSel, direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole,
+        asset: assetSel,
+        direction, entry, sl, tp1, tp2, tp3, tp4, tp5,
+        reason, extraRole,
         plan: {
           TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
           TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
@@ -478,90 +516,25 @@ client.on('interactionCreate', async (interaction) => {
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
 
-    // /recap — NEW
-    if (interaction.isChatInputCommand() && interaction.commandName === 'recap') {
-      if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can run recaps.', flags: MessageFlags.Ephemeral });
-      }
-      await ensureDeferred(interaction);
-
-      const period = interaction.options.getString('period');  // THIS_WEEK, LAST_WEEK, etc.
-      const fromStr = interaction.options.getString('from');
-      const toStr   = interaction.options.getString('to');
-      const assetFilter = interaction.options.getString('asset')?.toUpperCase();
-      const mode = (interaction.options.getString('format') || 'SUMMARY').toUpperCase();
-      const targetChannel = interaction.options.getChannel('channel') || await client.channels.fetch(interaction.channelId);
-
-      // resolve dates (server time)
-      const now = new Date();
-      function ymd(date) { return date.toISOString().slice(0,10); }
-      function startOfWeek(d) { const x = new Date(d); const day = (x.getUTCDay()+6)%7; x.setUTCDate(x.getUTCDate()-day); x.setUTCHours(0,0,0,0); return x; }
-      function endOfWeek(s) { const x = new Date(s); x.setUTCDate(x.getUTCDate()+6); x.setUTCHours(23,59,59,999); return x; }
-      function startOfMonth(d) { const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)); return x; }
-      function endOfMonth(d) { const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth()+1, 0, 23,59,59,999)); return x; }
-
-      let from = null, to = null, label = '';
-      if (period === 'CUSTOM') {
-        from = fromStr ? new Date(`${fromStr}T00:00:00.000Z`) : new Date(now);
-        to   = toStr   ? new Date(`${toStr}T23:59:59.999Z`)   : new Date(now);
-        label = 'Custom';
-      } else if (period === 'THIS_WEEK') {
-        from = startOfWeek(now); to = endOfWeek(from); label = 'Weekly';
-      } else if (period === 'LAST_WEEK') {
-        const s = startOfWeek(now); s.setUTCDate(s.getUTCDate()-7); from = s; to = endOfWeek(from); label = 'Weekly';
-      } else if (period === 'THIS_MONTH') {
-        from = startOfMonth(now); to = endOfMonth(now); label = 'Monthly';
-      } else if (period === 'LAST_MONTH') {
-        const prev = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth()-1, 1));
-        from = startOfMonth(prev); to = endOfMonth(prev); label = 'Monthly';
-      } else {
-        from = startOfWeek(now); to = endOfWeek(from); label = 'Weekly';
-      }
-
-      const fromISO = ymd(from), toISO = ymd(to);
-
-      // collect closed trades within [from,to]
-      const all = (await getSignals()).map(normalizeSignal);
-      const closed = all.filter(s => s.status !== STATUS.RUN_VALID);
-
-      function inRange(s) {
-        const closedAt = s.closedAt || s.updatedAt || s.createdAt;
-        if (!closedAt) return false;
-        const t = new Date(closedAt).getTime();
-        return t >= from.getTime() && t <= to.getTime();
-      }
-
-      const picked = closed
-        .filter(inRange)
-        .filter(s => !assetFilter || (s.asset || '').toUpperCase() === assetFilter)
-        .map(s => {
-          // ensure resultR set for recap
-          if (!isNum(s.resultR)) s.resultR = computeRealizedR(s);
-          return s;
-        });
-
-      const text = renderRecapText(picked, { fromISO, toISO, label, assetFilter, mode });
-      await targetChannel.send({ content: text, allowedMentions: { parse: [] } });
-      return safeEditReply(interaction, { content: `✅ Recap posted to ${targetChannel}` });
-    }
-
-    // ===== MODALS & BUTTONS (unchanged behavior; plus timestamp updates & resultR cache on close) =====
+    // ===== MODALS =====
     if (interaction.isModalSubmit()) {
-      const idPart = interaction.customId.split(':').pop();
-
+      const idPart = interaction.customId.split(':').pop(); // after last :
+      // Custom asset modal
       if (interaction.customId.startsWith('modal:asset:')) {
         await ensureDeferred(interaction);
-        const stash = pendingSignals.get(idPart); pendingSignals.delete(idPart);
+        const stash = pendingSignals.get(idPart);
+        pendingSignals.delete(idPart);
         if (!stash) return safeEditReply(interaction, { content: '❌ Session expired. Try /signal again.' });
         const asset = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
         await createSignal({ asset, ...stash }, stash.channelId || interaction.channelId);
         return safeEditReply(interaction, { content: `✅ Trade signal posted for ${asset}.` });
       }
 
+      // Update TP Prices
       if (interaction.customId.startsWith('modal:tpprices:')) {
         await ensureDeferred(interaction);
         const id = idPart;
-        const signal = normalizeSignal(await getSignal(id));
+        const signal = await getSignal(id);
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
         const patch = {};
@@ -569,17 +542,15 @@ client.on('interactionCreate', async (interaction) => {
           const v = interaction.fields.getTextInputValue(`upd_${k}`)?.trim();
           if (v !== undefined && v !== '') patch[k] = v;
         }
-        patch.updatedAt = new Date().toISOString();
-
-        await updateSignal(id, patch);
+        await updateSignal(id, { ...patch });
         const updated = normalizeSignal(await getSignal(id));
         if (isSlMovedToBE(updated)) { updated.validReentry = false; await updateSignal(id, { validReentry: false }); }
-
         await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ TP prices updated.' });
       }
 
+      // Update Plan
       if (interaction.customId.startsWith('modal:plan:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -592,13 +563,13 @@ client.on('interactionCreate', async (interaction) => {
           if (raw === '' || raw === undefined) continue;
           if (isNum(raw)) patchPlan[t.toUpperCase()] = Math.max(0, Math.min(100, Number(raw)));
         }
-        await updateSignal(id, { plan: patchPlan, updatedAt: new Date().toISOString() });
-
+        await updateSignal(id, { plan: patchPlan });
         await editSignalMessage(normalizeSignal(await getSignal(id)));
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ TP % plan updated.' });
       }
 
+      // Update Trade
       if (interaction.customId.startsWith('modal:trade:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -606,28 +577,27 @@ client.on('interactionCreate', async (interaction) => {
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
         const patch = {};
-        const entry  = interaction.fields.getTextInputValue('upd_entry')?.trim();
-        const sl     = interaction.fields.getTextInputValue('upd_sl')?.trim();
-        const asset  = interaction.fields.getTextInputValue('upd_asset')?.trim();
-        const dir    = interaction.fields.getTextInputValue('upd_dir')?.trim()?.toUpperCase();
-        const reason = interaction.fields.getTextInputValue('upd_reason')?.trim();
+        const entry     = interaction.fields.getTextInputValue('upd_entry')?.trim();
+        const sl        = interaction.fields.getTextInputValue('upd_sl')?.trim();
+        const asset     = interaction.fields.getTextInputValue('upd_asset')?.trim();
+        const dir       = interaction.fields.getTextInputValue('upd_dir')?.trim()?.toUpperCase();
+        const reason    = interaction.fields.getTextInputValue('upd_reason')?.trim();
 
         if (entry) patch.entry = entry;
         if (sl)    patch.sl = sl;
         if (asset) patch.asset = asset.toUpperCase();
         if (dir === 'LONG' || dir === 'SHORT') patch.direction = dir;
         if (reason !== undefined) patch.reason = reason;
-        patch.updatedAt = new Date().toISOString();
 
         await updateSignal(id, patch);
         const updated = normalizeSignal(await getSignal(id));
         if (isSlMovedToBE(updated)) { updated.validReentry = false; await updateSignal(id, { validReentry: false }); }
-
         await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Trade info updated.' });
       }
 
+      // Update Roles
       if (interaction.customId.startsWith('modal:roles:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -635,17 +605,18 @@ client.on('interactionCreate', async (interaction) => {
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
         const rolesRaw = interaction.fields.getTextInputValue('roles_input') ?? '';
-        await updateSignal(id, { extraRole: rolesRaw, updatedAt: new Date().toISOString() });
-
+        await updateSignal(id, { extraRole: rolesRaw });
         await editSignalMessage(normalizeSignal(await getSignal(id)));
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Role mentions updated.' });
       }
 
+      // TP modal submit
       if (interaction.customId.startsWith('modal:tp:')) {
         await ensureDeferred(interaction);
-        const parts = interaction.customId.split(':'); // modal,tp,tpX,id
-        const tpKey = parts[2]; const id = parts[3];
+        const parts = interaction.customId.split(':'); // modal, tp, tpX, id
+        const tpKey = parts[2]; // tp1..tp5
+        const id = parts[3];
 
         let signal = normalizeSignal(await getSignal(id));
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
@@ -667,12 +638,13 @@ client.on('interactionCreate', async (interaction) => {
         signal.latestTpHit = tpUpper;
         signal.tpHits[tpUpper] = true;
 
-        await updateSignal(id, { fills: signal.fills, latestTpHit: signal.latestTpHit, tpHits: signal.tpHits, updatedAt: new Date().toISOString() });
+        await updateSignal(id, { fills: signal.fills, latestTpHit: signal.latestTpHit, tpHits: signal.tpHits });
         await editSignalMessage(signal);
         await updateSummary();
         return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${hasPct && pct > 0 ? ` (${pct}%).` : '.'}` });
       }
 
+      // Fully close + FinalR
       if (interaction.customId.startsWith('modal:full:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -681,7 +653,9 @@ client.on('interactionCreate', async (interaction) => {
 
         const finalRStr = interaction.fields.getTextInputValue('final_r')?.trim();
         const hasFinalR = finalRStr !== undefined && finalRStr !== '';
-        if (hasFinalR && !isNum(finalRStr)) return safeEditReply(interaction, { content: '❌ Final R must be a number if provided.' });
+        if (hasFinalR && !isNum(finalRStr)) {
+          return safeEditReply(interaction, { content: '❌ Final R must be a number if provided.' });
+        }
 
         if (hasFinalR) {
           signal.finalR = Number(finalRStr);
@@ -700,14 +674,8 @@ client.on('interactionCreate', async (interaction) => {
         signal.status = STATUS.CLOSED;
         signal.validReentry = false;
         signal.latestTpHit = latest;
-        signal.closedAt = new Date().toISOString();
-        signal.resultR = computeRealizedR(signal);
 
-        await updateSignal(id, {
-          fills: signal.fills, status: signal.status, validReentry: false, latestTpHit: latest,
-          closedAt: signal.closedAt, resultR: signal.resultR, ...(isNum(signal.finalR) ? { finalR: signal.finalR } : {}),
-          updatedAt: new Date().toISOString(),
-        });
+        await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, latestTpHit: latest, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
         await editSignalMessage(signal);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Fully closed.' });
@@ -715,19 +683,24 @@ client.on('interactionCreate', async (interaction) => {
 
       if (interaction.customId.startsWith('modal:finalr:')) {
         await ensureDeferred(interaction);
-        const parts = interaction.customId.split(':'); const kind = parts[2]; const id = parts[3];
+        const parts = interaction.customId.split(':'); // modal, finalr, BE/OUT, id
+        const kind = parts[2];
+        const id = parts[3];
 
         let signal = normalizeSignal(await getSignal(id));
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
         const finalRStr = interaction.fields.getTextInputValue('final_r')?.trim();
         const hasFinalR = finalRStr !== undefined && finalRStr !== '';
-        if (hasFinalR && !isNum(finalRStr)) return safeEditReply(interaction, { content: '❌ Final R must be a number (e.g., 0, -1, -0.5).' });
+        if (hasFinalR && !isNum(finalRStr)) {
+          return safeEditReply(interaction, { content: '❌ Final R must be a number (e.g., 0, -1, -0.5).' });
+        }
 
         if (hasFinalR) {
           signal.finalR = Number(finalRStr);
         } else {
-          let price = Number(kind === 'BE' ? signal.entry : (signal.slOriginal ?? signal.sl));
+          let price = null;
+          price = Number(kind === 'BE' ? signal.entry : (signal.slOriginal ?? signal.sl));
           const remaining = 100 - (signal.fills || []).reduce((a, f) => a + Number(f.pct || 0), 0);
           if (remaining > 0 && isNum(price)) {
             signal.fills.push({ pct: remaining, price, source: kind === 'BE' ? 'STOP_BE' : 'STOP_OUT' });
@@ -736,14 +709,8 @@ client.on('interactionCreate', async (interaction) => {
 
         signal.status = (kind === 'BE') ? STATUS.STOPPED_BE : STATUS.STOPPED_OUT;
         signal.validReentry = false;
-        signal.closedAt = new Date().toISOString();
-        signal.resultR = computeRealizedR(signal);
 
-        await updateSignal(id, {
-          fills: signal.fills, status: signal.status, validReentry: false,
-          closedAt: signal.closedAt, resultR: signal.resultR, ...(isNum(signal.finalR) ? { finalR: signal.finalR } : {}),
-          updatedAt: new Date().toISOString(),
-        });
+        await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
         await editSignalMessage(signal);
         await updateSummary();
         await deleteControlThread(id);
@@ -751,12 +718,16 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
+    // ===== BUTTONS =====
     if (interaction.isButton()) {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use these controls.', flags: MessageFlags.Ephemeral });
       }
-      const parts = interaction.customId.split(':'); const id = parts.pop(); const key = parts.slice(1).join(':');
+      const parts = interaction.customId.split(':'); // btn, key..., id
+      const id = parts.pop();
+      const key = parts.slice(1).join(':'); // remove 'btn'
 
+      // Show modals: DO NOT defer before showModal
       if (key === 'upd:tpprices') return interaction.showModal(makeUpdateTPPricesModal(id));
       if (key === 'upd:plan')     return interaction.showModal(makeUpdatePlanModal(id));
       if (key === 'upd:trade')    return interaction.showModal(makeUpdateTradeInfoModal(id));
@@ -795,7 +766,7 @@ client.on('interactionCreate', async (interaction) => {
           sig.latestTpHit = tpUpper;
           sig.tpHits[tpUpper] = true;
 
-          await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits, updatedAt: new Date().toISOString() });
+          await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits });
           await editSignalMessage(sig);
           await updateSummary();
           await ensureDeferred(interaction);
@@ -827,7 +798,6 @@ client.on('interactionCreate', async (interaction) => {
 const pendingSignals = new Map();
 
 async function createSignal(payload, channelId) {
-  const nowISO = new Date().toISOString();
   const signal = normalizeSignal({
     id: nano(),
     asset: String(payload.asset || '').toUpperCase(),
@@ -846,9 +816,7 @@ async function createSignal(payload, channelId) {
     finalR: null,
     messageId: null,
     jumpUrl: null,
-    channelId,
-    createdAt: nowISO,
-    updatedAt: nowISO,
+    channelId, // <= post and track in this channel
   });
 
   await saveSignal(signal);
@@ -860,29 +828,37 @@ async function createSignal(payload, channelId) {
   const msg = await channel.messages.fetch(msgId);
   signal.jumpUrl = msg.url;
 
-  await updateSignal(signal.id, { messageId: signal.messageId, jumpUrl: signal.jumpUrl, updatedAt: new Date().toISOString() });
+  await updateSignal(signal.id, { messageId: signal.messageId, jumpUrl: signal.jumpUrl });
   await createControlThread(signal);
   await updateSummary();
 
   return signal;
 }
 
-// Ghost prune
+// ------------------------------
+// One-time ghost prune (storage hygiene)
+// ------------------------------
 async function pruneGhostSignals() {
   try {
     const all = (await getSignals()).map(normalizeSignal);
     for (const s of all) {
       if (!s.messageId || !s.channelId) continue;
       let exists = true;
-      try { const ch = await client.channels.fetch(s.channelId); await ch.messages.fetch(s.messageId); }
-      catch { exists = false; }
+      try {
+        const ch = await client.channels.fetch(s.channelId);
+        await ch.messages.fetch(s.messageId);
+      } catch {
+        exists = false;
+      }
       if (!exists) {
         await deleteSignal(s.id).catch(() => {});
         await deleteControlThread(s.id).catch(() => {});
         console.log(`🧹 pruned ghost signal ${s.id}`);
       }
     }
-  } catch (e) { console.error('pruneGhostSignals error:', e); }
+  } catch (e) {
+    console.error('pruneGhostSignals error:', e);
+  }
 }
 
 client.login(config.token);
