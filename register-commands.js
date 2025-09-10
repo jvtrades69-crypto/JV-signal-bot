@@ -1,6 +1,6 @@
-// register-commands.js — Registers /ping and /signal (BTC/ETH/SOL/OTHER)
+// register-commands.js — Registers /ping, /signal, /recap
 
-import { REST, Routes, SlashCommandBuilder } from 'discord.js';
+import { REST, Routes, SlashCommandBuilder, ChannelType } from 'discord.js';
 import config from './config.js';
 
 const { token, clientId, guildId } = config;
@@ -35,10 +35,45 @@ const signalCmd = new SlashCommandBuilder()
   .addStringOption(opt => opt.setName('tp3_pct').setDescription('Planned % at TP3 (0–100)').setRequired(false))
   .addStringOption(opt => opt.setName('tp4_pct').setDescription('Planned % at TP4 (0–100)').setRequired(false))
   .addStringOption(opt => opt.setName('tp5_pct').setDescription('Planned % at TP5 (0–100)').setRequired(false))
+  // optional reason & role mentions
   .addStringOption(opt => opt.setName('reason').setDescription('Reason (optional)').setRequired(false))
-  .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)').setRequired(false));
+  .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role mention(s)').setRequired(false));
 
-const commands = [pingCmd, signalCmd].map(c => c.toJSON());
+const recapCmd = new SlashCommandBuilder()
+  .setName('recap')
+  .setDescription('Trade recap for a period')
+  .addStringOption(opt =>
+    opt.setName('period')
+      .setDescription('Preset period')
+      .setRequired(true)
+      .addChoices(
+        { name: 'This week', value: 'THIS_WEEK' },
+        { name: 'Last week', value: 'LAST_WEEK' },
+        { name: 'This month', value: 'THIS_MONTH' },
+        { name: 'Last month', value: 'LAST_MONTH' },
+        { name: 'Custom', value: 'CUSTOM' },
+      )
+  )
+  .addStringOption(opt => opt.setName('from').setDescription('Start date (YYYY-MM-DD) for custom').setRequired(false))
+  .addStringOption(opt => opt.setName('to').setDescription('End date (YYYY-MM-DD) for custom').setRequired(false))
+  .addStringOption(opt => opt.setName('asset').setDescription('Filter by asset, e.g., BTC').setRequired(false))
+  .addStringOption(opt =>
+    opt.setName('format')
+      .setDescription('Output detail level')
+      .setRequired(false)
+      .addChoices(
+        { name: 'Summary (KPIs only)', value: 'SUMMARY' },
+        { name: 'Full (every trade lines)', value: 'FULL' },
+      )
+  )
+  .addChannelOption(opt =>
+    opt.setName('channel')
+      .setDescription('Post the recap to this channel (otherwise use current channel)')
+      .addChannelTypes(ChannelType.GuildText, ChannelType.PublicThread, ChannelType.PrivateThread)
+      .setRequired(false)
+  );
+
+const commands = [pingCmd, signalCmd, recapCmd].map(c => c.toJSON());
 
 async function main() {
   if (!token || !clientId || !guildId) {
