@@ -1,8 +1,15 @@
-// embeds.js — Text renderers (no embeds). Messages look like a person wrote them.
+// embeds.js — Text renderers (clean formatted style)
 
 function fmt(v) {
   if (v === null || v === undefined || v === '') return '—';
-  return `${v}`;
+  return addCommas(v);
+}
+
+function addCommas(num) {
+  if (num === null || num === undefined || num === '') return num;
+  const n = Number(num);
+  if (isNaN(n)) return num;
+  return n.toLocaleString('en-US');
 }
 
 function signAbsR(r) {
@@ -68,7 +75,7 @@ function computeRealized(signal) {
 export function buildTitle(signal) {
   const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
   const circle = signal.direction === 'SHORT' ? '🔴' : '🟢'; // direction only
-  const base = `${signal.asset} | ${dirWord} ${circle}`;
+  const base = `$${signal.asset} | ${dirWord} ${circle}`;
 
   // Closures may override with finalR
   if (signal.status !== 'RUN_VALID' && signal.finalR != null) {
@@ -102,8 +109,8 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
 
   // Trade details
   lines.push(`📊 **Trade Details**`);
-  lines.push(`Entry: ${fmt(signal.entry)}`);
-  lines.push(`SL: ${fmt(signal.sl)}`);
+  lines.push(`- Entry: ${fmt(signal.entry)}`);
+  lines.push(`- SL: ${fmt(signal.sl)}`);
 
   const tps = ['tp1','tp2','tp3','tp4','tp5'];
   const execOrPlan = computeTpPercents(signal);
@@ -112,14 +119,15 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     if (v === null || v === undefined || v === '') continue;
     const label = k.toUpperCase();
     const pct = execOrPlan[label];
-    lines.push(pct > 0 ? `${label}: ${fmt(v)} ( ${pct}% out )` : `${label}: ${fmt(v)}`);
-  }
-
-  const rrLine = rrLineFromChips(rrChips);
-  if (rrLine) {
-    lines.push('');
-    lines.push(`📐 **Risk–Reward**`);
-    lines.push(rrLine);
+    const chip = rrChips.find(c => c.key === label);
+    const rrTxt = chip ? `${chip.r.toFixed(2)}R` : null;
+    if (pct > 0 && rrTxt) {
+      lines.push(`- ${label}: ${fmt(v)} (${pct}% out | ${rrTxt})`);
+    } else if (pct > 0) {
+      lines.push(`- ${label}: ${fmt(v)} (${pct}% out)`);
+    } else {
+      lines.push(`- ${label}: ${fmt(v)}`);
+    }
   }
 
   if (signal.reason && String(signal.reason).trim().length) {
@@ -135,13 +143,13 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     if (slMovedToBEActive) {
       const tp = signal.latestTpHit ? `${signal.latestTpHit}` : '';
       lines.push(`Active 🟩 | SL moved to breakeven${tp ? ` after ${tp}` : ''}`);
-      lines.push(`Valid for re-entry: No`);
+      lines.push(`Valid for re-entry: ❌`);
     } else if (signal.latestTpHit) {
       lines.push(`Active 🟩 | ${signal.latestTpHit} hit`);
-      lines.push(`Valid for re-entry: Yes`);
+      lines.push(`Valid for re-entry: ✅`);
     } else {
       lines.push(`Active 🟩`);
-      lines.push(`Valid for re-entry: Yes`);
+      lines.push(`Valid for re-entry: ✅`);
     }
   } else {
     if (signal.status === 'CLOSED') {
@@ -155,10 +163,10 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     } else {
       lines.push(`Inactive 🟥`);
     }
-    lines.push(`Valid for re-entry: No`);
+    lines.push(`Valid for re-entry: ❌`);
   }
 
-  // Realized
+  // Realized (unchanged)
   const hasFills = Array.isArray(signal.fills) && signal.fills.length > 0;
   if (signal.status !== 'RUN_VALID' || hasFills) {
     lines.push('');
@@ -210,10 +218,14 @@ export function renderSummaryText(activeSignals) {
   activeSignals.forEach((s, i) => {
     const dirWord = s.direction === 'SHORT' ? 'Short' : 'Long';
     const circle = s.direction === 'SHORT' ? '🔴' : '🟢';
-    const jump = s.jumpUrl ? ` — ${s.jumpUrl}` : '';
-    lines.push(`${i+1}. ${s.asset} ${dirWord} ${circle}${jump}`);
-    lines.push(`   Entry: ${fmt(s.entry)}`);
-    lines.push(`   SL: ${fmt(s.sl)}`);
+    lines.push(`${i+1}️⃣ $${s.asset} | ${dirWord} ${circle}`);
+    lines.push(`- Entry: ${fmt(s.entry)}`);
+    lines.push(`- SL: ${fmt(s.sl)}`);
+    lines.push(`- Status: Active 🟩`);
+    if (s.jumpUrl) {
+      lines.push('');
+      lines.push(`[View Full Signal](${s.jumpUrl})`);
+    }
     lines.push('');
   });
   return lines.join('\n').trimEnd();
