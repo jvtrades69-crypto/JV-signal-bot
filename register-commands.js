@@ -1,4 +1,4 @@
-// register-commands.js — Registers /ping and /signal (BTC/ETH/SOL/OTHER)
+// register-commands.js — Registers /ping, /signal, and /recap
 
 import { REST, Routes, SlashCommandBuilder } from 'discord.js';
 import config from './config.js';
@@ -29,7 +29,6 @@ const signalCmd = new SlashCommandBuilder()
   .addStringOption(opt => opt.setName('tp3').setDescription('TP3 (optional)').setRequired(false))
   .addStringOption(opt => opt.setName('tp4').setDescription('TP4 (optional)').setRequired(false))
   .addStringOption(opt => opt.setName('tp5').setDescription('TP5 (optional)').setRequired(false))
-  // planned percentages (optional)
   .addStringOption(opt => opt.setName('tp1_pct').setDescription('Planned % at TP1 (0–100)').setRequired(false))
   .addStringOption(opt => opt.setName('tp2_pct').setDescription('Planned % at TP2 (0–100)').setRequired(false))
   .addStringOption(opt => opt.setName('tp3_pct').setDescription('Planned % at TP3 (0–100)').setRequired(false))
@@ -38,7 +37,19 @@ const signalCmd = new SlashCommandBuilder()
   .addStringOption(opt => opt.setName('reason').setDescription('Reason (optional)').setRequired(false))
   .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)').setRequired(false));
 
-const commands = [pingCmd, signalCmd].map(c => c.toJSON());
+const recapCmd = new SlashCommandBuilder()
+  .setName('recap')
+  .setDescription('Generate a trade recap (weekly or monthly).')
+  .addSubcommand(sub =>
+    sub.setName('weekly')
+      .setDescription('Generate the weekly recap.')
+  )
+  .addSubcommand(sub =>
+    sub.setName('monthly')
+      .setDescription('Generate the monthly recap.')
+  );
+
+const commands = [pingCmd, signalCmd, recapCmd].map(c => c.toJSON());
 
 async function main() {
   if (!token || !clientId || !guildId) {
