@@ -88,19 +88,14 @@ export function buildTitle(signal) {
   }
   if (signal.status === 'CLOSED') return `**${base} ( Win +${realized.toFixed(2)}R )**`;
 
-  // Running — only show "so far" if we have any realized
   if ((signal.fills || []).length > 0) return `**${base} ( Win +${realized.toFixed(2)}R so far )**`;
   return `**${base}**`;
 }
 
 export function renderSignalText(signal, rrChips, slMovedToBEActive) {
   const lines = [];
-
-  // Title
   lines.push(buildTitle(signal));
   lines.push('');
-
-  // Trade details
   lines.push(`📊 **Trade Details**`);
   lines.push(`Entry: ${fmt(signal.entry)}`);
   lines.push(`SL: ${fmt(signal.sl)}`);
@@ -128,7 +123,6 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     lines.push(String(signal.reason).trim());
   }
 
-  // Status
   lines.push('');
   lines.push(`🚦 **Status**`);
   if (signal.status === 'RUN_VALID') {
@@ -158,7 +152,6 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     lines.push(`Valid for re-entry: No`);
   }
 
-  // Realized
   const hasFills = Array.isArray(signal.fills) && signal.fills.length > 0;
   if (signal.status !== 'RUN_VALID' || hasFills) {
     lines.push('');
@@ -178,7 +171,6 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
         lines.push(`${text} ( stopped out )`);
       }
     } else {
-      // computed path
       const info = computeRealized(signal);
       const pretty = signAbsR(info.realized).text;
       const list = info.parts.length ? info.parts.join(', ') : null;
@@ -217,4 +209,98 @@ export function renderSummaryText(activeSignals) {
     lines.push('');
   });
   return lines.join('\n').trimEnd();
+}
+
+// ----------------------
+// Recap Renderers
+// ----------------------
+
+export function renderTradeRecap(trade, notes = '') {
+  const dirCircle = trade.direction === 'SHORT' ? '🔴' : '🟢';
+  const dirWord = trade.direction === 'SHORT' ? 'Short' : 'Long';
+  const resultText = signAbsR(trade.finalR ?? 0).text;
+  const statusEmoji = (trade.finalR ?? 0) >= 0 ? '✅' : '❌';
+
+  const lines = [];
+  lines.push(`**$${trade.asset} | Trade Recap ${resultText} ${statusEmoji} (${dirWord}) ${dirCircle}**`);
+  lines.push('');
+  lines.push(`📍 **Entry Reason**`);
+  lines.push(`- ${trade.reason || '—'}`);
+  lines.push('');
+  lines.push(`📊 **Confluences**`);
+  lines.push(`- ${trade.confluences?.join('\n- ') || '—'}`);
+  lines.push('');
+  lines.push(`🎯 **Take Profit**`);
+  if (trade.tpHits?.length) {
+    trade.tpHits.forEach(tp => {
+      lines.push(`- ${tp.label} ✅ | ${tp.r}R: \`${tp.price}\` (${tp.note})`);
+    });
+  } else {
+    lines.push(`- None hit`);
+  }
+  lines.push('');
+  lines.push(`⚖️ **Final Result**`);
+  lines.push(`- ${resultText}`);
+  if (notes) {
+    lines.push('');
+    lines.push(`📝 **Notes**`);
+    lines.push(notes);
+  }
+  lines.push('');
+  lines.push(`🔗 View Original Trade ${trade.jumpUrl || ''}`);
+  return lines.join('\n');
+}
+
+export function renderWeeklyRecap(week, trades, totals) {
+  const lines = [];
+  lines.push(`📊 **JV Trades Weekly Recap (${week})**`);
+  lines.push('');
+  trades.forEach((t, i) => {
+    const dirWord = t.direction === 'SHORT' ? 'Short' : 'Long';
+    const circle = t.direction === 'SHORT' ? '🔴' : '🟢';
+    const resultText = signAbsR(t.finalR ?? 0).text;
+    const statusEmoji = (t.finalR ?? 0) >= 0 ? '✅' : '❌';
+    lines.push(`${i+1}️⃣ $${t.asset} ${dirWord} ${circle} | R Secured: ${resultText} ${statusEmoji}`);
+    if (t.tpHits?.length) {
+      t.tpHits.forEach(tp => {
+        lines.push(`🎯 ${tp.label} ✅ | ${tp.r}R: \`${tp.price}\``);
+      });
+    }
+    lines.push(`⚖️ Max R Reached: ${t.maxR ?? resultText}`);
+    lines.push(`🔗 View Original Trade ${t.jumpUrl || ''}`);
+    lines.push('');
+  });
+  lines.push('---');
+  lines.push('');
+  lines.push(`⚖️ **Weekly Totals**`);
+  lines.push(`- Trades Taken: ${totals.trades}`);
+  lines.push(`- Wins: ${totals.wins} | Losses: ${totals.losses}`);
+  lines.push(`- Net R Secured: ${signAbsR(totals.netR).text}`);
+  lines.push(`- Net Max R: ${signAbsR(totals.maxR).text}`);
+  lines.push(`- Win Rate: ${totals.winRate}%`);
+  return lines.join('\n');
+}
+
+export function renderMonthlyRecap(month, totals, highlights, notes = '') {
+  const lines = [];
+  lines.push(`📅 **JV Trades Monthly Recap – ${month}**`);
+  lines.push('');
+  lines.push(`📊 **Trade Summary**`);
+  lines.push(`- Total Trades: ${totals.trades}`);
+  lines.push(`- Wins: ${totals.wins} | Losses: ${totals.losses}`);
+  lines.push(`- Win Rate: ${totals.winRate}%`);
+  lines.push(`- Net R Secured: ${signAbsR(totals.netR).text}`);
+  lines.push(`- Average Win: ${signAbsR(totals.avgWin).text}`);
+  lines.push(`- Average Loss: ${signAbsR(totals.avgLoss).text}`);
+  lines.push('');
+  lines.push(`🏆 **Highlights**`);
+  lines.push(`- Best Trade: ${highlights.best || '—'}`);
+  lines.push(`- Worst Trade: ${highlights.worst || '—'}`);
+  lines.push(`- Best Week: ${highlights.bestWeek || '—'}`);
+  if (notes) {
+    lines.push('');
+    lines.push(`⚖️ **Monthly Notes**`);
+    lines.push(notes);
+  }
+  return lines.join('\n');
 }
