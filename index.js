@@ -28,7 +28,6 @@ import {
   getThreadId, setThreadId
 } from './store.js';
 import { renderSignalText, renderSummaryText } from './embeds.js';
-import { renderWeeklyRecap, renderMonthlyRecap } from './embeds.js';
 
 const nano = customAlphabet('1234567890abcdef', 10);
 const client = new Client({
@@ -860,37 +859,6 @@ async function pruneGhostSignals() {
   } catch (e) {
     console.error('pruneGhostSignals error:', e);
   }
-
-  // /recap (new logic - owner only)
-  if (commandName === 'recap') {
-    if (interaction.user.id !== config.ownerId) {
-      return interaction.reply({ content: '❌ Not authorized.', flags: MessageFlags.Ephemeral });
-    }
-    const sub = interaction.options.getSubcommand();
-    await interaction.deferReply();
-
-    try {
-      const signals = await getSignals();
-      if (!signals || signals.length === 0) {
-        return interaction.editReply('⚠️ No signals found to generate a recap.');
-      }
-
-      let text;
-      if (sub === 'weekly') {
-        text = renderWeeklyRecap(signals);
-      } else if (sub === 'monthly') {
-        text = renderMonthlyRecap(signals);
-      } else {
-        text = '❌ Unknown recap type.';
-      }
-
-      await interaction.editReply(text);
-    } catch (err) {
-      console.error('❌ Error generating recap:', err);
-      await interaction.editReply('⚠️ Failed to generate recap.');
-    }
-  }
-
 }
 
 client.login(config.token);
