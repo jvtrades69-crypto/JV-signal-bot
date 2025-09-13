@@ -1,4 +1,4 @@
-// register-commands.js — Registers /ping, /signal, /recap
+// register-commands.js — Registers /ping and /signal (BTC/ETH/SOL/OTHER)
 
 import { REST, Routes, SlashCommandBuilder } from 'discord.js';
 import config from './config.js';
@@ -38,49 +38,7 @@ const signalCmd = new SlashCommandBuilder()
   .addStringOption(opt => opt.setName('reason').setDescription('Reason (optional)').setRequired(false))
   .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)').setRequired(false));
 
-// --- Recap Command ---
-const recapCmd = new SlashCommandBuilder()
-  .setName('recap')
-  .setDescription('Generate trade recaps (single trade, weekly, or monthly).')
-  .addSubcommand(sub =>
-    sub.setName('trade')
-      .setDescription('Generate a recap for a single completed trade.')
-      .addStringOption(opt =>
-        opt.setName('trade_id')
-          .setDescription('Trade ID to recap (from completed trades).')
-          .setRequired(true)
-      )
-      .addStringOption(opt =>
-        opt.setName('notes')
-          .setDescription('Optional notes to add.')
-          .setRequired(false)
-      )
-  )
-  .addSubcommand(sub =>
-    sub.setName('weekly')
-      .setDescription('Generate a weekly recap.')
-      .addStringOption(opt =>
-        opt.setName('week')
-          .setDescription('Week range label, e.g. "Sep 8 – Sep 14".')
-          .setRequired(true)
-      )
-  )
-  .addSubcommand(sub =>
-    sub.setName('monthly')
-      .setDescription('Generate a monthly recap.')
-      .addStringOption(opt =>
-        opt.setName('month')
-          .setDescription('Month label, e.g. "September 2025".')
-          .setRequired(true)
-      )
-      .addStringOption(opt =>
-        opt.setName('notes')
-          .setDescription('Optional monthly notes.')
-          .setRequired(false)
-      )
-  );
-
-const commands = [pingCmd, signalCmd, recapCmd].map(c => c.toJSON());
+const commands = [pingCmd, signalCmd].map(c => c.toJSON());
 
 async function main() {
   if (!token || !clientId || !guildId) {

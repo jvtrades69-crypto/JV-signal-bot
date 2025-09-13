@@ -1,8 +1,15 @@
-// embeds.js — Text renderers (no embeds). Messages look like a person wrote them.
+// embeds.js — Text renderers (clean formatted style with backticks and summary tweaks)
 
 function fmt(v) {
   if (v === null || v === undefined || v === '') return '—';
-  return `${v}`;
+  return `\`${addCommas(v)}\``;
+}
+
+function addCommas(num) {
+  if (num === null || num === undefined || num === '') return num;
+  const n = Number(num);
+  if (isNaN(n)) return num;
+  return n.toLocaleString('en-US');
 }
 
 function signAbsR(r) {
@@ -12,12 +19,6 @@ function signAbsR(r) {
   return { text: `${sign}${abs}R`, abs, sign };
 }
 
-function rrLineFromChips(rrChips) {
-  if (!rrChips || !rrChips.length) return null;
-  return rrChips.map(c => `${c.key} ${Number(c.r).toFixed(2)}R`).join(' | ');
-}
-
-// prefer executed %; else planned %
 function computeTpPercents(signal) {
   const planned = signal.plan || {};
   const acc = { TP1: 0, TP2: 0, TP3: 0, TP4: 0, TP5: 0 };
@@ -35,7 +36,6 @@ function computeTpPercents(signal) {
   return acc;
 }
 
-// local realized calc (when no override)
 function rAtPrice(direction, entry, slOriginal, price) {
   if (entry == null || slOriginal == null || price == null) return null;
   const E = Number(entry), S = Number(slOriginal), P = Number(price);
@@ -46,6 +46,7 @@ function rAtPrice(direction, entry, slOriginal, price) {
     const risk = S - E; if (risk <= 0) return null; return (E - P) / risk;
   }
 }
+
 function computeRealized(signal) {
   const fills = signal.fills || [];
   if (!fills.length) return { realized: 0, parts: [] };
@@ -67,38 +68,21 @@ function computeRealized(signal) {
 
 export function buildTitle(signal) {
   const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
-  const circle = signal.direction === 'SHORT' ? '🔴' : '🟢'; // direction only
-  const base = `${signal.asset} | ${dirWord} ${circle}`;
-
-  // Closures may override with finalR
-  if (signal.status !== 'RUN_VALID' && signal.finalR != null) {
-    const fr = Number(signal.finalR);
-    if (signal.status === 'STOPPED_BE' && fr === 0) return `**${base} ( Breakeven )**`;
-    if (fr > 0) return `**${base} ( Win +${fr.toFixed(2)}R )**`;
-    if (fr < 0) return `**${base} ( Loss ${Math.abs(fr).toFixed(2)}R )**`;
-    return `**${base} ( +0.00R )**`;
-  }
-
-  // Active or calculated closures
-  const { realized } = computeRealized(signal);
-  if (signal.status === 'STOPPED_OUT') return `**${base} ( Loss -${Math.abs(realized).toFixed(2)}R )**`;
-  if (signal.status === 'STOPPED_BE') {
-    const anyFill = (signal.fills || []).length > 0;
-    return `**${base} ( ${anyFill ? `Win +${realized.toFixed(2)}R` : 'Breakeven'} )**`;
-  }
-  if (signal.status === 'CLOSED') return `**${base} ( Win +${realized.toFixed(2)}R )**`;
-
-  if ((signal.fills || []).length > 0) return `**${base} ( Win +${realized.toFixed(2)}R so far )**`;
-  return `**${base}**`;
+  const circle = signal.direction === 'SHORT' ? '🔴' : '🟢';
+  return `**$${signal.asset} | ${dirWord} ${circle}**`;
 }
 
 export function renderSignalText(signal, rrChips, slMovedToBEActive) {
   const lines = [];
+
+  // Title
   lines.push(buildTitle(signal));
   lines.push('');
+
+  // Trade details
   lines.push(`📊 **Trade Details**`);
-  lines.push(`Entry: ${fmt(signal.entry)}`);
-  lines.push(`SL: ${fmt(signal.sl)}`);
+  lines.push(`- Entry: ${fmt(signal.entry)}`);
+  lines.push(`- SL: ${fmt(signal.sl)}`);
 
   const tps = ['tp1','tp2','tp3','tp4','tp5'];
   const execOrPlan = computeTpPercents(signal);
@@ -107,14 +91,15 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     if (v === null || v === undefined || v === '') continue;
     const label = k.toUpperCase();
     const pct = execOrPlan[label];
-    lines.push(pct > 0 ? `${label}: ${fmt(v)} ( ${pct}% out )` : `${label}: ${fmt(v)}`);
-  }
-
-  const rrLine = rrLineFromChips(rrChips);
-  if (rrLine) {
-    lines.push('');
-    lines.push(`📐 **Risk–Reward**`);
-    lines.push(rrLine);
+    const chip = rrChips.find(c => c.key === label);
+    const rrTxt = chip ? `${chip.r.toFixed(2)}R` : null;
+    if (pct > 0 && rrTxt) {
+      lines.push(`- ${label}: ${fmt(v)} (${pct}% out | ${rrTxt})`);
+    } else if (pct > 0) {
+      lines.push(`- ${label}: ${fmt(v)} (${pct}% out)`);
+    } else {
+      lines.push(`- ${label}: ${fmt(v)}`);
+    }
   }
 
   if (signal.reason && String(signal.reason).trim().length) {
@@ -123,71 +108,24 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     lines.push(String(signal.reason).trim());
   }
 
+  // Status
   lines.push('');
   lines.push(`🚦 **Status**`);
   if (signal.status === 'RUN_VALID') {
     if (slMovedToBEActive) {
       const tp = signal.latestTpHit ? `${signal.latestTpHit}` : '';
       lines.push(`Active 🟩 | SL moved to breakeven${tp ? ` after ${tp}` : ''}`);
-      lines.push(`Valid for re-entry: No`);
+      lines.push(`Valid for re-entry: ❌`);
     } else if (signal.latestTpHit) {
       lines.push(`Active 🟩 | ${signal.latestTpHit} hit`);
-      lines.push(`Valid for re-entry: Yes`);
+      lines.push(`Valid for re-entry: ✅`);
     } else {
       lines.push(`Active 🟩`);
-      lines.push(`Valid for re-entry: Yes`);
+      lines.push(`Valid for re-entry: ✅`);
     }
   } else {
-    if (signal.status === 'CLOSED') {
-      const tp = signal.latestTpHit ? ` after ${signal.latestTpHit}` : '';
-      lines.push(`Inactive 🟥 | Fully closed${tp}`);
-    } else if (signal.status === 'STOPPED_BE') {
-      const tp = signal.latestTpHit ? ` after ${signal.latestTpHit}` : '';
-      lines.push(`Inactive 🟥 | Stopped breakeven${tp}`);
-    } else if (signal.status === 'STOPPED_OUT') {
-      lines.push(`Inactive 🟥 | Stopped out`);
-    } else {
-      lines.push(`Inactive 🟥`);
-    }
-    lines.push(`Valid for re-entry: No`);
-  }
-
-  const hasFills = Array.isArray(signal.fills) && signal.fills.length > 0;
-  if (signal.status !== 'RUN_VALID' || hasFills) {
-    lines.push('');
-    lines.push(`💰 **Realized**`);
-    if (signal.status !== 'RUN_VALID' && signal.finalR != null) {
-      const { text } = signAbsR(Number(signal.finalR));
-      if (signal.status === 'CLOSED') {
-        const after = signal.latestTpHit ? ` after ${signal.latestTpHit}` : '';
-        lines.push(`${text} ( fully closed${after} )`);
-      } else if (signal.status === 'STOPPED_BE') {
-        if (Number(signal.finalR) === 0) lines.push(`0.00R ( stopped breakeven )`);
-        else {
-          const after = signal.latestTpHit ? ` after ${signal.latestTpHit}` : '';
-          lines.push(`${text} ( stopped breakeven${after} )`);
-        }
-      } else if (signal.status === 'STOPPED_OUT') {
-        lines.push(`${text} ( stopped out )`);
-      }
-    } else {
-      const info = computeRealized(signal);
-      const pretty = signAbsR(info.realized).text;
-      const list = info.parts.length ? info.parts.join(', ') : null;
-      if (signal.status === 'RUN_VALID') {
-        if (list) lines.push(`${pretty} so far ( ${list} )`);
-      } else if (signal.status === 'CLOSED') {
-        const after = signal.latestTpHit ? ` after ${signal.latestTpHit}` : '';
-        lines.push(`${pretty} ( fully closed${after} )`);
-      } else if (signal.status === 'STOPPED_BE') {
-        if (signal.latestTpHit) lines.push(`${pretty} ( stopped breakeven after ${signal.latestTpHit} )`);
-        else lines.push(`0.00R ( stopped breakeven )`);
-      } else if (signal.status === 'STOPPED_OUT') {
-        lines.push(`${pretty} ( stopped out )`);
-      } else if (list) {
-        lines.push(`${pretty} so far ( ${list} )`);
-      }
-    }
+    lines.push(`Inactive 🟥`);
+    lines.push(`Valid for re-entry: ❌`);
   }
 
   return lines.join('\n');
@@ -202,105 +140,14 @@ export function renderSummaryText(activeSignals) {
   activeSignals.forEach((s, i) => {
     const dirWord = s.direction === 'SHORT' ? 'Short' : 'Long';
     const circle = s.direction === 'SHORT' ? '🔴' : '🟢';
-    const jump = s.jumpUrl ? ` — ${s.jumpUrl}` : '';
-    lines.push(`${i+1}. ${s.asset} ${dirWord} ${circle}${jump}`);
-    lines.push(`   Entry: ${fmt(s.entry)}`);
-    lines.push(`   SL: ${fmt(s.sl)}`);
+    lines.push(`${i+1}️⃣ $${s.asset} | ${dirWord} ${circle}`);
+    lines.push(`- Entry: ${fmt(s.entry)}`);
+    lines.push(`- SL: ${fmt(s.sl)}`);
+    if (s.jumpUrl) {
+      lines.push('');
+      lines.push(`📎 [View Full Signal](<${s.jumpUrl}>)`);
+    }
     lines.push('');
   });
   return lines.join('\n').trimEnd();
-}
-
-// ----------------------
-// Recap Renderers
-// ----------------------
-
-export function renderTradeRecap(trade, notes = '') {
-  const dirCircle = trade.direction === 'SHORT' ? '🔴' : '🟢';
-  const dirWord = trade.direction === 'SHORT' ? 'Short' : 'Long';
-  const resultText = signAbsR(trade.finalR ?? 0).text;
-  const statusEmoji = (trade.finalR ?? 0) >= 0 ? '✅' : '❌';
-
-  const lines = [];
-  lines.push(`**$${trade.asset} | Trade Recap ${resultText} ${statusEmoji} (${dirWord}) ${dirCircle}**`);
-  lines.push('');
-  lines.push(`📍 **Entry Reason**`);
-  lines.push(`- ${trade.reason || '—'}`);
-  lines.push('');
-  lines.push(`📊 **Confluences**`);
-  lines.push(`- ${trade.confluences?.join('\n- ') || '—'}`);
-  lines.push('');
-  lines.push(`🎯 **Take Profit**`);
-  if (trade.tpHits?.length) {
-    trade.tpHits.forEach(tp => {
-      lines.push(`- ${tp.label} ✅ | ${tp.r}R: \`${tp.price}\` (${tp.note})`);
-    });
-  } else {
-    lines.push(`- None hit`);
-  }
-  lines.push('');
-  lines.push(`⚖️ **Final Result**`);
-  lines.push(`- ${resultText}`);
-  if (notes) {
-    lines.push('');
-    lines.push(`📝 **Notes**`);
-    lines.push(notes);
-  }
-  lines.push('');
-  lines.push(`🔗 View Original Trade ${trade.jumpUrl || ''}`);
-  return lines.join('\n');
-}
-
-export function renderWeeklyRecap(week, trades, totals) {
-  const lines = [];
-  lines.push(`📊 **JV Trades Weekly Recap (${week})**`);
-  lines.push('');
-  trades.forEach((t, i) => {
-    const dirWord = t.direction === 'SHORT' ? 'Short' : 'Long';
-    const circle = t.direction === 'SHORT' ? '🔴' : '🟢';
-    const resultText = signAbsR(t.finalR ?? 0).text;
-    const statusEmoji = (t.finalR ?? 0) >= 0 ? '✅' : '❌';
-    lines.push(`${i+1}️⃣ $${t.asset} ${dirWord} ${circle} | R Secured: ${resultText} ${statusEmoji}`);
-    if (t.tpHits?.length) {
-      t.tpHits.forEach(tp => {
-        lines.push(`🎯 ${tp.label} ✅ | ${tp.r}R: \`${tp.price}\``);
-      });
-    }
-    lines.push(`⚖️ Max R Reached: ${t.maxR ?? resultText}`);
-    lines.push(`🔗 View Original Trade ${t.jumpUrl || ''}`);
-    lines.push('');
-  });
-  lines.push('---');
-  lines.push('');
-  lines.push(`⚖️ **Weekly Totals**`);
-  lines.push(`- Trades Taken: ${totals.trades}`);
-  lines.push(`- Wins: ${totals.wins} | Losses: ${totals.losses}`);
-  lines.push(`- Net R Secured: ${signAbsR(totals.netR).text}`);
-  lines.push(`- Net Max R: ${signAbsR(totals.maxR).text}`);
-  lines.push(`- Win Rate: ${totals.winRate}%`);
-  return lines.join('\n');
-}
-
-export function renderMonthlyRecap(month, totals, highlights, notes = '') {
-  const lines = [];
-  lines.push(`📅 **JV Trades Monthly Recap – ${month}**`);
-  lines.push('');
-  lines.push(`📊 **Trade Summary**`);
-  lines.push(`- Total Trades: ${totals.trades}`);
-  lines.push(`- Wins: ${totals.wins} | Losses: ${totals.losses}`);
-  lines.push(`- Win Rate: ${totals.winRate}%`);
-  lines.push(`- Net R Secured: ${signAbsR(totals.netR).text}`);
-  lines.push(`- Average Win: ${signAbsR(totals.avgWin).text}`);
-  lines.push(`- Average Loss: ${signAbsR(totals.avgLoss).text}`);
-  lines.push('');
-  lines.push(`🏆 **Highlights**`);
-  lines.push(`- Best Trade: ${highlights.best || '—'}`);
-  lines.push(`- Worst Trade: ${highlights.worst || '—'}`);
-  lines.push(`- Best Week: ${highlights.bestWeek || '—'}`);
-  if (notes) {
-    lines.push('');
-    lines.push(`⚖️ **Monthly Notes**`);
-    lines.push(notes);
-  }
-  return lines.join('\n');
 }

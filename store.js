@@ -20,26 +20,30 @@ if (!DB_PATH) {
 const DB_DIR = DB_PATH.includes('/') ? DB_PATH.slice(0, DB_PATH.lastIndexOf('/')) : '.';
 
 async function ensureDb() {
+  // Ensure directory is present and writable; create file with schema if missing
   await ensureDir(DB_DIR);
 
   if (!(await pathExists(DB_PATH))) {
     await writeJson(
       DB_PATH,
       {
+        // Signals list (most recent first preferred by your code)
         signals: [],
-        recaps: [], // 👈 new: recap storage
+        // Single summary message id stored here
         summaryMessageId: null,
-        threads: {},
-        webhooks: {},
+        // Optional maps for future features
+        threads: {},   // signalId -> threadId
+        webhooks: {},  // (kept for backward compat; not used when posting as bot)
       },
       { spaces: 2 }
     );
   } else {
+    // Validate that we can read/write the file
     try {
       const d = await readJson(DB_PATH);
       if (typeof d !== 'object' || d === null) throw new Error('Invalid DB JSON');
+      // Soft-migrate missing keys
       if (!Array.isArray(d.signals)) d.signals = [];
-      if (!Array.isArray(d.recaps)) d.recaps = []; // 👈 ensure recaps exists
       if (!('summaryMessageId' in d)) d.summaryMessageId = null;
       if (!d.threads || typeof d.threads !== 'object') d.threads = {};
       if (!d.webhooks || typeof d.webhooks !== 'object') d.webhooks = {};
@@ -90,39 +94,6 @@ export async function deleteSignal(id) {
   const db = await loadDb();
   db.signals = db.signals.filter(s => s.id !== id);
   delete db.threads?.[id];
-  await saveDb(db);
-}
-
-// ---------- Recaps CRUD ----------
-export async function saveRecap(recap) {
-  const db = await loadDb();
-  db.recaps = [{ ...recap }, ...db.recaps.filter(r => r.id !== recap.id)];
-  await saveDb(db);
-}
-export async function getRecaps() {
-  const db = await loadDb();
-  return db.recaps;
-}
-export async function getRecap(id) {
-  const db = await loadDb();
-  return db.recaps.find(r => r.id === id) || null;
-}
-export async function updateRecap(id, patch) {
-  const db = await loadDb();
-  let found = false;
-  db.recaps = db.recaps.map(r => {
-    if (r.id === id) {
-      found = true;
-      return { ...r, ...patch };
-    }
-    return r;
-  });
-  if (!found) throw new Error(`Recap ${id} not found`);
-  await saveDb(db);
-}
-export async function deleteRecap(id) {
-  const db = await loadDb();
-  db.recaps = db.recaps.filter(r => r.id !== id);
   await saveDb(db);
 }
 
