@@ -1,125 +1,68 @@
 // register-commands.js
-// Registers /signal plus the recap commands (trade/week/month).
+import 'dotenv/config';
+import { REST, Routes } from '@discordjs/rest';
+import {
+  ApplicationCommandOptionType as Opt,
+} from 'discord.js';
 
-import { Routes, ApplicationCommandOptionType } from 'discord.js';
-import { REST } from '@discordjs/rest';
-import config from './config.js';
-
-// sanity checks
-if (!config.token || !config.clientId || !config.guildId) {
-  console.error('Missing token/clientId/guildId in config.js');
-  process.exit(1);
-}
+const TOKEN     = process.env.DISCORD_TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+const GUILD_ID  = process.env.GUILD_ID;
 
 const commands = [
-  // --- existing /signal (kept minimal here; adjust types to your current index.js) ---
+  // keep your existing /signal definition as-is, just re-register together with /recap
   {
     name: 'signal',
     description: 'Create a new trade signal',
     options: [
+      { name: 'asset',      description: 'Asset name or OTHER', type: Opt.String, required: true },
+      { name: 'direction',  description: 'Long / Short', type: Opt.String, required: true, choices: [
+        { name: 'Long',  value: 'Long'  },
+        { name: 'Short', value: 'Short' },
+      ]},
+      { name: 'entry',      description: 'Entry price',   type: Opt.String, required: true },
+      { name: 'sl',         description: 'Stop loss',      type: Opt.String, required: true },
+      { name: 'tp1',        description: 'TP1 price',      type: Opt.String, required: false },
+      { name: 'tp2',        description: 'TP2 price',      type: Opt.String, required: false },
+      { name: 'tp3',        description: 'TP3 price',      type: Opt.String, required: false },
+      { name: 'tp4',        description: 'TP4 price',      type: Opt.String, required: false },
+      { name: 'tp5',        description: 'TP5 price',      type: Opt.String, required: false },
+      { name: 'reason',     description: 'Reason (optional)', type: Opt.String, required: false },
+      { name: 'extra_role', description: 'Extra role mention(s)', type: Opt.String, required: false },
+      { name: 'tp1_pct',    description: 'Planned % at TP1', type: Opt.String, required: false },
+      { name: 'tp2_pct',    description: 'Planned % at TP2', type: Opt.String, required: false },
+      { name: 'tp3_pct',    description: 'Planned % at TP3', type: Opt.String, required: false },
+      { name: 'tp4_pct',    description: 'Planned % at TP4', type: Opt.String, required: false },
+      { name: 'tp5_pct',    description: 'Planned % at TP5', type: Opt.String, required: false },
+    ],
+  },
+
+  // NEW: /recap custom
+  {
+    name: 'recap',
+    description: 'Show trade recap(s)',
+    options: [
       {
-        name: 'asset',
-        description: 'BTC/ETH/SOL or select OTHER to type a custom asset',
-        type: ApplicationCommandOptionType.String,
-        required: true,
-        choices: [
-          { name: 'BTC', value: 'BTC' },
-          { name: 'ETH', value: 'ETH' },
-          { name: 'SOL', value: 'SOL' },
-          { name: 'OTHER', value: 'OTHER' },
+        type: Opt.Subcommand,
+        name: 'custom',
+        description: 'Recap closed trades in a custom date range (local time)',
+        options: [
+          { type: Opt.String, name: 'start', description: 'Start date YYYY-MM-DD', required: true },
+          { type: Opt.String, name: 'end',   description: 'End date YYYY-MM-DD (inclusive)', required: true },
         ],
-      },
-      {
-        name: 'direction',
-        description: 'LONG or SHORT',
-        type: ApplicationCommandOptionType.String,
-        required: true,
-        choices: [
-          { name: 'LONG', value: 'LONG' },
-          { name: 'SHORT', value: 'SHORT' },
-        ],
-      },
-      { name: 'entry', description: 'Entry price', type: ApplicationCommandOptionType.String, required: true },
-      { name: 'sl',    description: 'Stop loss',   type: ApplicationCommandOptionType.String, required: true },
-      { name: 'tp1',   description: 'TP1 price',   type: ApplicationCommandOptionType.String, required: false },
-      { name: 'tp2',   description: 'TP2 price',   type: ApplicationCommandOptionType.String, required: false },
-      { name: 'tp3',   description: 'TP3 price',   type: ApplicationCommandOptionType.String, required: false },
-      { name: 'tp4',   description: 'TP4 price',   type: ApplicationCommandOptionType.String, required: false },
-      { name: 'tp5',   description: 'TP5 price',   type: ApplicationCommandOptionType.String, required: false },
-      { name: 'reason', description: 'Reasoning (optional)', type: ApplicationCommandOptionType.String, required: false },
-
-      // optional planned close %
-      { name: 'tp1_pct', description: 'Planned % at TP1 (0-100)', type: ApplicationCommandOptionType.String, required: false },
-      { name: 'tp2_pct', description: 'Planned % at TP2 (0-100)', type: ApplicationCommandOptionType.String, required: false },
-      { name: 'tp3_pct', description: 'Planned % at TP3 (0-100)', type: ApplicationCommandOptionType.String, required: false },
-      { name: 'tp4_pct', description: 'Planned % at TP4 (0-100)', type: ApplicationCommandOptionType.String, required: false },
-      { name: 'tp5_pct', description: 'Planned % at TP5 (0-100)', type: ApplicationCommandOptionType.String, required: false },
-
-      // role mentions string (IDs or @mentions)
-      { name: 'extra_role', description: 'Extra role mention(s)', type: ApplicationCommandOptionType.String, required: false },
-    ],
-  },
-
-  // --- recap: single trade ---
-  {
-    name: 'recap-trade',
-    description: 'Show recap for a specific trade ID',
-    options: [
-      {
-        name: 'id',
-        description: 'Trade ID (the short or full ID you stored)',
-        type: ApplicationCommandOptionType.String,
-        required: true,
-      },
-    ],
-  },
-
-  // --- recap: weekly ---
-  {
-    name: 'recap-week',
-    description: 'Post a weekly recap',
-    options: [
-      {
-        name: 'start',
-        description: 'Start label (e.g., Sep 8)',
-        type: ApplicationCommandOptionType.String,
-        required: true,
-      },
-      {
-        name: 'end',
-        description: 'End label (e.g., Sep 14)',
-        type: ApplicationCommandOptionType.String,
-        required: true,
-      },
-    ],
-  },
-
-  // --- recap: monthly ---
-  {
-    name: 'recap-month',
-    description: 'Post a monthly recap',
-    options: [
-      {
-        name: 'month',
-        description: 'Month label (e.g., September 2025)',
-        type: ApplicationCommandOptionType.String,
-        required: true,
       },
     ],
   },
 ];
 
+const rest = new REST({ version: '10' }).setToken(TOKEN);
+
 async function main() {
-  const rest = new REST({ version: '10' }).setToken(config.token);
-  console.log('Registering application (guild) commands…');
   await rest.put(
-    Routes.applicationGuildCommands(config.clientId, config.guildId),
+    Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
     { body: commands }
   );
-  console.log('✅ Commands registered.');
+  console.log('✅ Slash commands registered.');
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+main().catch(console.error);
