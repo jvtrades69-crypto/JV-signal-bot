@@ -27,7 +27,7 @@ import {
   saveSignal, getSignal, getSignals, updateSignal, deleteSignal,
   getThreadId, setThreadId
 } from './store.js';
-import { renderSignalText, renderSummaryText } from './embeds.js';
+import { renderSignalText, renderSummaryText, renderWeeklyRecap } from './embeds.js';
 
 const nano = customAlphabet('1234567890abcdef', 10);
 const client = new Client({
@@ -146,6 +146,22 @@ async function safeEditReply(interaction, payload) {
     } catch {}
     throw e;
   }
+}
+
+// ------------------------------
+// Recap helpers (custom date)
+// ------------------------------
+function parseDateRangeYYYYMMDD(startStr, endStr) {
+  const start = new Date(`${startStr}T00:00:00`);
+  const end   = new Date(`${endStr}T23:59:59.999`);
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) return null;
+  if (end.getTime() < start.getTime()) return null;
+  return {
+    fromMs: start.getTime(),
+    toMs: end.getTime(),
+    startLabel: start.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }),
+    endLabel:   end.toLocaleDateString('en-GB',   { day:'2-digit', month:'short', year:'numeric' }),
+  };
 }
 
 // ------------------------------
@@ -518,6 +534,26 @@ client.on('interactionCreate', async (interaction) => {
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
 
+    // ===== CUSTOM DATE RECAP =====
+    if (interaction.isChatInputCommand() && interaction.commandName === 'recap') {
+      const sub = interaction.options.getSubcommand();
+      if (sub === 'custom') {
+        const startStr = interaction.options.getString('start');
+        const endStr   = interaction.options.getString('end');
+        const rng = parseDateRangeYYYYMMDD(startStr, endStr);
+        if (!rng) {
+          return interaction.reply({ content: '❌ Invalid dates. Use YYYY-MM-DD for both, with end ≥ start.', ephemeral: true });
+        }
+        const all = (await getSignals()).map(normalizeSignal);
+        // only trades that are not RUN_VALID and have closedAt within range
+        const inRange = all.filter(s => s.status !== STATUS.RUN_VALID && isNum(s.closedAt) && s.closedAt >= rng.fromMs && s.closedAt <= rng.toMs);
+        const content = inRange.length
+          ? renderWeeklyRecap(inRange, { startLabel: rng.startLabel, endLabel: rng.endLabel })
+          : `📊 **JV Trades Recap (${rng.startLabel} – ${rng.endLabel})**\n\nNo closed trades in this range.`;
+        return interaction.reply({ content });
+      }
+    }
+
     // ===== MODALS =====
     if (interaction.isModalSubmit()) {
       const idPart = interaction.customId.split(':').pop(); // after last :
@@ -676,8 +712,16 @@ client.on('interactionCreate', async (interaction) => {
         signal.status = STATUS.CLOSED;
         signal.validReentry = false;
         signal.latestTpHit = latest;
+        signal.closedAt = Date.now(); // <-- stamp close time
 
-        await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, latestTpHit: latest, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
+        await updateSignal(id, {
+          fills: signal.fills,
+          status: signal.status,
+          validReentry: false,
+          latestTpHit: latest,
+          closedAt: signal.closedAt,
+          ...(hasFinalR ? { finalR: signal.finalR } : {})
+        });
         await editSignalMessage(signal);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Fully closed.' });
@@ -711,8 +755,15 @@ client.on('interactionCreate', async (interaction) => {
 
         signal.status = (kind === 'BE') ? STATUS.STOPPED_BE : STATUS.STOPPED_OUT;
         signal.validReentry = false;
+        signal.closedAt = Date.now(); // <-- stamp close time
 
-        await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
+        await updateSignal(id, {
+          fills: signal.fills,
+          status: signal.status,
+          validReentry: false,
+          closedAt: signal.closedAt,
+          ...(hasFinalR ? { finalR: signal.finalR } : {})
+        });
         await editSignalMessage(signal);
         await updateSummary();
         await deleteControlThread(id);
@@ -819,6 +870,8 @@ async function createSignal(payload, channelId) {
     messageId: null,
     jumpUrl: null,
     channelId, // <= post and track in this channel
+    createdAt: Date.now(),   // <-- stamp create time
+    closedAt: null           // <-- will be set on close
   });
 
   await saveSignal(signal);
