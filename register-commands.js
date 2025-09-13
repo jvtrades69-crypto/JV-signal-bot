@@ -1,3 +1,26 @@
+// Recap commands
+{
+  name: 'recap-trade',
+  description: 'Show recap for a specific trade ID',
+  options: [
+    { name: 'id', description: 'Trade ID', type: 3, required: true }
+  ]
+},
+{
+  name: 'recap-weekly',
+  description: 'Show recap of all trades in a weekly range',
+  options: [
+    { name: 'start', description: 'Start label (e.g. Sep 8)', type: 3, required: true },
+    { name: 'end', description: 'End label (e.g. Sep 14)', type: 3, required: true }
+  ]
+},
+{
+  name: 'recap-monthly',
+  description: 'Show recap of all trades in a given month',
+  options: [
+    { name: 'month', description: 'Month label (e.g. September 2025)', type: 3, required: true }
+  ]
+}
 // register-commands.js — Registers /ping and /signal (BTC/ETH/SOL/OTHER)
 
 import { REST, Routes, SlashCommandBuilder } from 'discord.js';
