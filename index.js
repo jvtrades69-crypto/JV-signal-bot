@@ -8,7 +8,6 @@
 // - Dedupe guard for interactions (no double posts)
 // - Safe acks (prevents “not sent or deferred” / “unknown interaction”)
 // - Global error guards
-// - FIX: when asset=OTHER, DO NOT defer before showModal()
 
 import {
   Client,
@@ -462,8 +461,8 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
       }
+      await ensureDeferred(interaction);
 
-      // IMPORTANT: do NOT defer yet — we might show a modal (asset = OTHER)
       const assetSel   = interaction.options.getString('asset');
       const direction  = interaction.options.getString('direction');
       const entry      = interaction.options.getString('entry');
@@ -483,7 +482,6 @@ client.on('interactionCreate', async (interaction) => {
       const tp5_pct = interaction.options.getString('tp5_pct');
 
       if (assetSel === 'OTHER') {
-        // SHOW MODAL without deferring
         const pid = nano();
         const m = new ModalBuilder().setCustomId(modal(pid,'asset')).setTitle('Enter custom asset');
         const input = new TextInputBuilder().setCustomId('asset_value').setLabel('Asset (e.g., PEPE, XRP)').setStyle(TextInputStyle.Short).setRequired(true);
@@ -500,11 +498,9 @@ client.on('interactionCreate', async (interaction) => {
           },
           channelId: interaction.channelId, // remember where to post
         });
-        return interaction.showModal(m); // <-- no defer before this
+        return interaction.showModal(m); // do NOT defer again before showModal
       }
 
-      // Normal asset path — now we can safely defer
-      await ensureDeferred(interaction);
       await createSignal({
         asset: assetSel,
         direction, entry, sl, tp1, tp2, tp3, tp4, tp5,
