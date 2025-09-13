@@ -1,79 +1,125 @@
-// Recap commands
-{
-  name: 'recap-trade',
-  description: 'Show recap for a specific trade ID',
-  options: [
-    { name: 'id', description: 'Trade ID', type: 3, required: true }
-  ]
-},
-{
-  name: 'recap-weekly',
-  description: 'Show recap of all trades in a weekly range',
-  options: [
-    { name: 'start', description: 'Start label (e.g. Sep 8)', type: 3, required: true },
-    { name: 'end', description: 'End label (e.g. Sep 14)', type: 3, required: true }
-  ]
-},
-{
-  name: 'recap-monthly',
-  description: 'Show recap of all trades in a given month',
-  options: [
-    { name: 'month', description: 'Month label (e.g. September 2025)', type: 3, required: true }
-  ]
-}
-// register-commands.js — Registers /ping and /signal (BTC/ETH/SOL/OTHER)
+// register-commands.js
+// Registers /signal plus the recap commands (trade/week/month).
 
-import { REST, Routes, SlashCommandBuilder } from 'discord.js';
+import { Routes, ApplicationCommandOptionType } from 'discord.js';
+import { REST } from '@discordjs/rest';
 import config from './config.js';
 
-const { token, clientId, guildId } = config;
-
-const ASSETS = ['BTC', 'ETH', 'SOL', 'OTHER'];
-
-const pingCmd = new SlashCommandBuilder()
-  .setName('ping')
-  .setDescription('Simple health check (owner only answers).');
-
-const signalCmd = new SlashCommandBuilder()
-  .setName('signal')
-  .setDescription('Create a new trade signal.')
-  .addStringOption(opt =>
-    opt.setName('asset').setDescription('Asset').setRequired(true)
-      .addChoices(...ASSETS.map(a => ({ name: a, value: a })))
-  )
-  .addStringOption(opt =>
-    opt.setName('direction').setDescription('Trade direction').setRequired(true)
-      .addChoices({ name: 'Long', value: 'LONG' }, { name: 'Short', value: 'SHORT' })
-  )
-  .addStringOption(opt => opt.setName('entry').setDescription('Entry (free text number)').setRequired(true))
-  .addStringOption(opt => opt.setName('sl').setDescription('SL (free text number)').setRequired(true))
-  .addStringOption(opt => opt.setName('tp1').setDescription('TP1 (optional)').setRequired(false))
-  .addStringOption(opt => opt.setName('tp2').setDescription('TP2 (optional)').setRequired(false))
-  .addStringOption(opt => opt.setName('tp3').setDescription('TP3 (optional)').setRequired(false))
-  .addStringOption(opt => opt.setName('tp4').setDescription('TP4 (optional)').setRequired(false))
-  .addStringOption(opt => opt.setName('tp5').setDescription('TP5 (optional)').setRequired(false))
-  // planned percentages (optional)
-  .addStringOption(opt => opt.setName('tp1_pct').setDescription('Planned % at TP1 (0–100)').setRequired(false))
-  .addStringOption(opt => opt.setName('tp2_pct').setDescription('Planned % at TP2 (0–100)').setRequired(false))
-  .addStringOption(opt => opt.setName('tp3_pct').setDescription('Planned % at TP3 (0–100)').setRequired(false))
-  .addStringOption(opt => opt.setName('tp4_pct').setDescription('Planned % at TP4 (0–100)').setRequired(false))
-  .addStringOption(opt => opt.setName('tp5_pct').setDescription('Planned % at TP5 (0–100)').setRequired(false))
-  .addStringOption(opt => opt.setName('reason').setDescription('Reason (optional)').setRequired(false))
-  .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)').setRequired(false));
-
-const commands = [pingCmd, signalCmd].map(c => c.toJSON());
-
-async function main() {
-  if (!token || !clientId || !guildId) {
-    throw new Error('Missing token/clientId/guildId in config.js.');
-  }
-  const rest = new REST({ version: '10' }).setToken(token);
-  console.log('🔧 Registering application commands (guild)…');
-  await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
-  console.log('✅ Successfully registered guild commands.');
+// sanity checks
+if (!config.token || !config.clientId || !config.guildId) {
+  console.error('Missing token/clientId/guildId in config.js');
+  process.exit(1);
 }
 
-main().catch(err => {
-  console.error('❌ Failed to register commands:', err);
+const commands = [
+  // --- existing /signal (kept minimal here; adjust types to your current index.js) ---
+  {
+    name: 'signal',
+    description: 'Create a new trade signal',
+    options: [
+      {
+        name: 'asset',
+        description: 'BTC/ETH/SOL or select OTHER to type a custom asset',
+        type: ApplicationCommandOptionType.String,
+        required: true,
+        choices: [
+          { name: 'BTC', value: 'BTC' },
+          { name: 'ETH', value: 'ETH' },
+          { name: 'SOL', value: 'SOL' },
+          { name: 'OTHER', value: 'OTHER' },
+        ],
+      },
+      {
+        name: 'direction',
+        description: 'LONG or SHORT',
+        type: ApplicationCommandOptionType.String,
+        required: true,
+        choices: [
+          { name: 'LONG', value: 'LONG' },
+          { name: 'SHORT', value: 'SHORT' },
+        ],
+      },
+      { name: 'entry', description: 'Entry price', type: ApplicationCommandOptionType.String, required: true },
+      { name: 'sl',    description: 'Stop loss',   type: ApplicationCommandOptionType.String, required: true },
+      { name: 'tp1',   description: 'TP1 price',   type: ApplicationCommandOptionType.String, required: false },
+      { name: 'tp2',   description: 'TP2 price',   type: ApplicationCommandOptionType.String, required: false },
+      { name: 'tp3',   description: 'TP3 price',   type: ApplicationCommandOptionType.String, required: false },
+      { name: 'tp4',   description: 'TP4 price',   type: ApplicationCommandOptionType.String, required: false },
+      { name: 'tp5',   description: 'TP5 price',   type: ApplicationCommandOptionType.String, required: false },
+      { name: 'reason', description: 'Reasoning (optional)', type: ApplicationCommandOptionType.String, required: false },
+
+      // optional planned close %
+      { name: 'tp1_pct', description: 'Planned % at TP1 (0-100)', type: ApplicationCommandOptionType.String, required: false },
+      { name: 'tp2_pct', description: 'Planned % at TP2 (0-100)', type: ApplicationCommandOptionType.String, required: false },
+      { name: 'tp3_pct', description: 'Planned % at TP3 (0-100)', type: ApplicationCommandOptionType.String, required: false },
+      { name: 'tp4_pct', description: 'Planned % at TP4 (0-100)', type: ApplicationCommandOptionType.String, required: false },
+      { name: 'tp5_pct', description: 'Planned % at TP5 (0-100)', type: ApplicationCommandOptionType.String, required: false },
+
+      // role mentions string (IDs or @mentions)
+      { name: 'extra_role', description: 'Extra role mention(s)', type: ApplicationCommandOptionType.String, required: false },
+    ],
+  },
+
+  // --- recap: single trade ---
+  {
+    name: 'recap-trade',
+    description: 'Show recap for a specific trade ID',
+    options: [
+      {
+        name: 'id',
+        description: 'Trade ID (the short or full ID you stored)',
+        type: ApplicationCommandOptionType.String,
+        required: true,
+      },
+    ],
+  },
+
+  // --- recap: weekly ---
+  {
+    name: 'recap-week',
+    description: 'Post a weekly recap',
+    options: [
+      {
+        name: 'start',
+        description: 'Start label (e.g., Sep 8)',
+        type: ApplicationCommandOptionType.String,
+        required: true,
+      },
+      {
+        name: 'end',
+        description: 'End label (e.g., Sep 14)',
+        type: ApplicationCommandOptionType.String,
+        required: true,
+      },
+    ],
+  },
+
+  // --- recap: monthly ---
+  {
+    name: 'recap-month',
+    description: 'Post a monthly recap',
+    options: [
+      {
+        name: 'month',
+        description: 'Month label (e.g., September 2025)',
+        type: ApplicationCommandOptionType.String,
+        required: true,
+      },
+    ],
+  },
+];
+
+async function main() {
+  const rest = new REST({ version: '10' }).setToken(config.token);
+  console.log('Registering application (guild) commands…');
+  await rest.put(
+    Routes.applicationGuildCommands(config.clientId, config.guildId),
+    { body: commands }
+  );
+  console.log('✅ Commands registered.');
+}
+
+main().catch((e) => {
+  console.error(e);
   process.exit(1);
 });
