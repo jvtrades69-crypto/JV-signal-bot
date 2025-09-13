@@ -504,7 +504,6 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       // Normal asset path — now we can safely defer
-      await ensureDeferred(interaction);
       await createSignal({
         asset: assetSel,
         direction, entry, sl, tp1, tp2, tp3, tp4, tp5,
