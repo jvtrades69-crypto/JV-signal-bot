@@ -20,7 +20,6 @@ import {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  MessageFlags,
 } from 'discord.js';
 import { customAlphabet } from 'nanoid';
 import config from './config.js';
@@ -129,21 +128,21 @@ function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
 async function ensureDeferred(interaction) {
   try {
     if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await interaction.deferReply({ ephemeral: true });
     }
   } catch {}
 }
 async function safeEditReply(interaction, payload) {
   try {
     if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await interaction.deferReply({ ephemeral: true });
     }
   } catch {}
   try {
     return await interaction.editReply(payload);
   } catch (e) {
     try {
-      if (!interaction.replied) return await interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
+      if (!interaction.replied) return await interaction.reply({ ...payload, ephemeral: true });
     } catch {}
     throw e;
   }
@@ -460,7 +459,7 @@ client.on('interactionCreate', async (interaction) => {
     // /signal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
       if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
+        return interaction.reply({ content: 'Only the owner can use this command.', ephemeral: true });
       }
 
       // IMPORTANT: do NOT defer yet — we might show a modal (asset = OTHER)
@@ -724,7 +723,7 @@ client.on('interactionCreate', async (interaction) => {
     // ===== BUTTONS =====
     if (interaction.isButton()) {
       if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use these controls.', flags: MessageFlags.Ephemeral });
+        return interaction.reply({ content: 'Only the owner can use these controls.', ephemeral: true });
       }
       const parts = interaction.customId.split(':'); // btn, key..., id
       const id = parts.pop();
@@ -753,11 +752,11 @@ client.on('interactionCreate', async (interaction) => {
 
       if (['tp1','tp2','tp3','tp4','tp5'].includes(key)) {
         const sig = normalizeSignal(await getSignal(id));
-        if (!sig) return interaction.reply({ content: 'Signal not found.', flags: MessageFlags.Ephemeral });
+        if (!sig) return interaction.reply({ content: 'Signal not found.', ephemeral: true });
 
         const tpUpper = key.toUpperCase();
         if (sig.tpHits?.[tpUpper]) {
-          return interaction.reply({ content: `${tpUpper} already recorded.`, flags: MessageFlags.Ephemeral });
+          return interaction.reply({ content: `${tpUpper} already recorded.`, ephemeral: true });
         }
 
         const planPct = sig.plan?.[tpUpper];
@@ -781,7 +780,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.showModal(m);
       }
 
-      return interaction.reply({ content: 'Unknown action.', flags: MessageFlags.Ephemeral });
+      return interaction.reply({ content: 'Unknown action.', ephemeral: true });
     }
   } catch (err) {
     console.error('interaction error:', err);
@@ -789,7 +788,7 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.deferred || interaction.replied) {
         await interaction.editReply({ content: '❌ Internal error.' });
       } else {
-        await interaction.reply({ content: '❌ Internal error.', flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: '❌ Internal error.', ephemeral: true });
       }
     } catch {}
   }
