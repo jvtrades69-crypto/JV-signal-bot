@@ -2,7 +2,9 @@
 
 function fmt(v) {
   if (v === null || v === undefined || v === '') return '—';
-  return addCommas(v);
+  const n = Number(v);
+  if (Number.isNaN(n)) return v;
+  return addCommas(n);
 }
 
 function addCommas(num) {
@@ -166,7 +168,7 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     lines.push(`Valid for re-entry: ❌`);
   }
 
-  // Realized (unchanged)
+  // Realized
   const hasFills = Array.isArray(signal.fills) && signal.fills.length > 0;
   if (signal.status !== 'RUN_VALID' || hasFills) {
     lines.push('');
@@ -186,7 +188,6 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
         lines.push(`${text} ( stopped out )`);
       }
     } else {
-      // computed path
       const info = computeRealized(signal);
       const pretty = signAbsR(info.realized).text;
       const list = info.parts.length ? info.parts.join(', ') : null;
@@ -223,7 +224,6 @@ export function renderSummaryText(activeSignals) {
     lines.push(`- SL: ${fmt(s.sl)}`);
     lines.push(`- Status: Active 🟩`);
     if (s.jumpUrl) {
-      lines.push('');
       lines.push(`[View Full Signal](${s.jumpUrl})`);
     }
     lines.push('');
