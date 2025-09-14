@@ -124,12 +124,14 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     const chip = rrChips.find(c => c.key === label);
     const rrTxt = chip ? `${chip.r.toFixed(2)}R` : null;
     if (pct > 0 && rrTxt) {
-      lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
-    } else if (pct > 0) {
-      lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out)`);
-    } else {
-      lines.push(`- ${label}: \`${fmt(v)}\``);
-    }
+  lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
+} else if (pct > 0) {
+  lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out)`);
+} else if (rrTxt) {
+  lines.push(`- ${label}: \`${fmt(v)}\` (${rrTxt})`);
+} else {
+  lines.push(`- ${label}: \`${fmt(v)}\``);
+}
   }
 
   if (signal.reason && String(signal.reason).trim().length) {
