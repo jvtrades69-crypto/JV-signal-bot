@@ -1,117 +1,56 @@
-// /signal — create a trade signal (same fields your index.js expects)
-commands.push(
-  new SlashCommandBuilder()
-    .setName('signal')
-    .setDescription('Post a trade signal')
-    .addStringOption(o =>
-      o.setName('asset')
-        .setDescription('Asset (BTC, ETH, SOL, or OTHER)')
-        .setRequired(true)
-        .addChoices(
-          { name: 'BTC', value: 'BTC' },
-          { name: 'ETH', value: 'ETH' },
-          { name: 'SOL', value: 'SOL' },
-          { name: 'OTHER (type in modal)', value: 'OTHER' },
-        )
-    )
-    .addStringOption(o =>
-      o.setName('direction')
-        .setDescription('LONG or SHORT')
-        .setRequired(true)
-        .addChoices(
-          { name: 'LONG', value: 'LONG' },
-          { name: 'SHORT', value: 'SHORT' },
-        )
-    )
-    .addStringOption(o => o.setName('entry').setDescription('Entry price').setRequired(true))
-    .addStringOption(o => o.setName('sl').setDescription('Stop loss').setRequired(true))
-    .addStringOption(o => o.setName('tp1').setDescription('TP1 price'))
-    .addStringOption(o => o.setName('tp2').setDescription('TP2 price'))
-    .addStringOption(o => o.setName('tp3').setDescription('TP3 price'))
-    .addStringOption(o => o.setName('tp4').setDescription('TP4 price'))
-    .addStringOption(o => o.setName('tp5').setDescription('TP5 price'))
-    .addStringOption(o => o.setName('reason').setDescription('Reason (optional)'))
-    .addStringOption(o => o.setName('extra_role').setDescription('Extra role mention(s) (IDs or @roles)'))
-    // Planned % per TP (optional)
-    .addStringOption(o => o.setName('tp1_pct').setDescription('TP1 planned % (0-100)'))
-    .addStringOption(o => o.setName('tp2_pct').setDescription('TP2 planned % (0-100)'))
-    .addStringOption(o => o.setName('tp3_pct').setDescription('TP3 planned % (0-100)'))
-    .addStringOption(o => o.setName('tp4_pct').setDescription('TP4 planned % (0-100)'))
-    .addStringOption(o => o.setName('tp5_pct').setDescription('TP5 planned % (0-100)'))
-);
-// register-commands.js
+// register-commands.js — Registers /ping and /signal (BTC/ETH/SOL/OTHER)
+
 import { REST, Routes, SlashCommandBuilder } from 'discord.js';
 import config from './config.js';
 
-// Pull everything from config.js (which reads your env)
-const TOKEN    = config.token;
-const APP_ID   = config.appId;      // application (client) id
-const GUILD_ID = config.guildId;    // guild to register in
+const { token, clientId, guildId } = config;
 
-if (!TOKEN || !APP_ID || !GUILD_ID) {
-  console.error('Missing TOKEN / APP_ID / GUILD_ID. Check config.js/env.');
-  process.exit(1);
+const ASSETS = ['BTC', 'ETH', 'SOL', 'OTHER'];
+
+const pingCmd = new SlashCommandBuilder()
+  .setName('ping')
+  .setDescription('Simple health check (owner only answers).');
+
+const signalCmd = new SlashCommandBuilder()
+  .setName('signal')
+  .setDescription('Create a new trade signal.')
+  .addStringOption(opt =>
+    opt.setName('asset').setDescription('Asset').setRequired(true)
+      .addChoices(...ASSETS.map(a => ({ name: a, value: a })))
+  )
+  .addStringOption(opt =>
+    opt.setName('direction').setDescription('Trade direction').setRequired(true)
+      .addChoices({ name: 'Long', value: 'LONG' }, { name: 'Short', value: 'SHORT' })
+  )
+  .addStringOption(opt => opt.setName('entry').setDescription('Entry (free text number)').setRequired(true))
+  .addStringOption(opt => opt.setName('sl').setDescription('SL (free text number)').setRequired(true))
+  .addStringOption(opt => opt.setName('tp1').setDescription('TP1 (optional)').setRequired(false))
+  .addStringOption(opt => opt.setName('tp2').setDescription('TP2 (optional)').setRequired(false))
+  .addStringOption(opt => opt.setName('tp3').setDescription('TP3 (optional)').setRequired(false))
+  .addStringOption(opt => opt.setName('tp4').setDescription('TP4 (optional)').setRequired(false))
+  .addStringOption(opt => opt.setName('tp5').setDescription('TP5 (optional)').setRequired(false))
+  // planned percentages (optional)
+  .addStringOption(opt => opt.setName('tp1_pct').setDescription('Planned % at TP1 (0–100)').setRequired(false))
+  .addStringOption(opt => opt.setName('tp2_pct').setDescription('Planned % at TP2 (0–100)').setRequired(false))
+  .addStringOption(opt => opt.setName('tp3_pct').setDescription('Planned % at TP3 (0–100)').setRequired(false))
+  .addStringOption(opt => opt.setName('tp4_pct').setDescription('Planned % at TP4 (0–100)').setRequired(false))
+  .addStringOption(opt => opt.setName('tp5_pct').setDescription('Planned % at TP5 (0–100)').setRequired(false))
+  .addStringOption(opt => opt.setName('reason').setDescription('Reason (optional)').setRequired(false))
+  .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)').setRequired(false));
+
+const commands = [pingCmd, signalCmd].map(c => c.toJSON());
+
+async function main() {
+  if (!token || !clientId || !guildId) {
+    throw new Error('Missing token/clientId/guildId in config.js.');
+  }
+  const rest = new REST({ version: '10' }).setToken(token);
+  console.log('🔧 Registering application commands (guild)…');
+  await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
+  console.log('✅ Successfully registered guild commands.');
 }
 
-const commands = [];
-
-/** Recap: week (pick start by year/month/day; optional end YYYY-MM-DD) */
-commands.push(
-  new SlashCommandBuilder()
-    .setName('recap-week')
-    .setDescription('Post a weekly recap (7-day window starting at the chosen date).')
-    .addIntegerOption(o =>
-      o.setName('year').setDescription('Year (e.g., 2025)').setMinValue(2000).setMaxValue(2100)
-    )
-    .addIntegerOption(o =>
-      o.setName('month').setDescription('Month (1-12)').setMinValue(1).setMaxValue(12)
-    )
-    .addIntegerOption(o =>
-      o.setName('day').setDescription('Day of month (1-31)').setMinValue(1).setMaxValue(31)
-    )
-    .addStringOption(o =>
-      o.setName('end').setDescription('Optional end date YYYY-MM-DD (otherwise start+6 days)')
-    )
-    .setDMPermission(false)
-);
-
-/** Recap: month (pick month & year) */
-commands.push(
-  new SlashCommandBuilder()
-    .setName('recap-month')
-    .setDescription('Post a monthly recap.')
-    .addIntegerOption(o =>
-      o.setName('month').setDescription('Month (1-12)').setMinValue(1).setMaxValue(12)
-    )
-    .addIntegerOption(o =>
-      o.setName('year').setDescription('Year (e.g., 2025)').setMinValue(2000).setMaxValue(2100)
-    )
-    .setDMPermission(false)
-);
-
-/** Recap: trade (single trade by id) */
-commands.push(
-  new SlashCommandBuilder()
-    .setName('recap-trade')
-    .setDescription('Post a recap for a specific trade ID.')
-    .addStringOption(o =>
-      o.setName('id').setDescription('The trade id (from your signal storage)').setRequired(true)
-    )
-    .setDMPermission(false)
-);
-
-const rest = new REST({ version: '10' }).setToken(TOKEN);
-
-(async () => {
-  try {
-    console.log('Refreshing guild application (/) commands…');
-    await rest.put(
-      Routes.applicationGuildCommands(APP_ID, GUILD_ID),
-      { body: commands.map(c => c.toJSON()) }
-    );
-    console.log('Done ✅');
-  } catch (err) {
-    console.error('Failed to register commands:', err);
-    process.exit(1);
-  }
-})();
+main().catch(err => {
+  console.error('❌ Failed to register commands:', err);
+  process.exit(1);
+});
