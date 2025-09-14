@@ -111,8 +111,8 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
 
   // Trade details
   lines.push(`📊 **Trade Details**`);
-  lines.push(`- Entry: ${fmt(signal.entry)}`);
-  lines.push(`- SL: ${fmt(signal.sl)}`);
+  lines.push(`- Entry: \`${fmt(signal.entry)}\``);
+  lines.push(`- SL: \`${fmt(signal.sl)}\``);
 
   const tps = ['tp1','tp2','tp3','tp4','tp5'];
   const execOrPlan = computeTpPercents(signal);
@@ -124,11 +124,11 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     const chip = rrChips.find(c => c.key === label);
     const rrTxt = chip ? `${chip.r.toFixed(2)}R` : null;
     if (pct > 0 && rrTxt) {
-      lines.push(`- ${label}: ${fmt(v)} (${pct}% out | ${rrTxt})`);
+      lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
     } else if (pct > 0) {
-      lines.push(`- ${label}: ${fmt(v)} (${pct}% out)`);
+      lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out)`);
     } else {
-      lines.push(`- ${label}: ${fmt(v)}`);
+      lines.push(`- ${label}: \`${fmt(v)}\``);
     }
   }
 
@@ -220,8 +220,8 @@ export function renderSummaryText(activeSignals) {
     const dirWord = s.direction === 'SHORT' ? 'Short' : 'Long';
     const circle = s.direction === 'SHORT' ? '🔴' : '🟢';
     lines.push(`${i+1}️⃣ $${s.asset} | ${dirWord} ${circle}`);
-    lines.push(`- Entry: ${fmt(s.entry)}`);
-    lines.push(`- SL: ${fmt(s.sl)}`);
+    lines.push(`- Entry: \`${fmt(s.entry)}\``);
+    lines.push(`- SL: \`${fmt(s.sl)}\``);
     lines.push(`- Status: Active 🟩`);
     if (s.jumpUrl) {
       lines.push(`[View Full Signal](${s.jumpUrl})`);
