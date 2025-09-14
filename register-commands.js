@@ -1,3 +1,44 @@
+// /signal — create a trade signal (same fields your index.js expects)
+commands.push(
+  new SlashCommandBuilder()
+    .setName('signal')
+    .setDescription('Post a trade signal')
+    .addStringOption(o =>
+      o.setName('asset')
+        .setDescription('Asset (BTC, ETH, SOL, or OTHER)')
+        .setRequired(true)
+        .addChoices(
+          { name: 'BTC', value: 'BTC' },
+          { name: 'ETH', value: 'ETH' },
+          { name: 'SOL', value: 'SOL' },
+          { name: 'OTHER (type in modal)', value: 'OTHER' },
+        )
+    )
+    .addStringOption(o =>
+      o.setName('direction')
+        .setDescription('LONG or SHORT')
+        .setRequired(true)
+        .addChoices(
+          { name: 'LONG', value: 'LONG' },
+          { name: 'SHORT', value: 'SHORT' },
+        )
+    )
+    .addStringOption(o => o.setName('entry').setDescription('Entry price').setRequired(true))
+    .addStringOption(o => o.setName('sl').setDescription('Stop loss').setRequired(true))
+    .addStringOption(o => o.setName('tp1').setDescription('TP1 price'))
+    .addStringOption(o => o.setName('tp2').setDescription('TP2 price'))
+    .addStringOption(o => o.setName('tp3').setDescription('TP3 price'))
+    .addStringOption(o => o.setName('tp4').setDescription('TP4 price'))
+    .addStringOption(o => o.setName('tp5').setDescription('TP5 price'))
+    .addStringOption(o => o.setName('reason').setDescription('Reason (optional)'))
+    .addStringOption(o => o.setName('extra_role').setDescription('Extra role mention(s) (IDs or @roles)'))
+    // Planned % per TP (optional)
+    .addStringOption(o => o.setName('tp1_pct').setDescription('TP1 planned % (0-100)'))
+    .addStringOption(o => o.setName('tp2_pct').setDescription('TP2 planned % (0-100)'))
+    .addStringOption(o => o.setName('tp3_pct').setDescription('TP3 planned % (0-100)'))
+    .addStringOption(o => o.setName('tp4_pct').setDescription('TP4 planned % (0-100)'))
+    .addStringOption(o => o.setName('tp5_pct').setDescription('TP5 planned % (0-100)'))
+);
 // register-commands.js
 import { REST, Routes, SlashCommandBuilder } from 'discord.js';
 import config from './config.js';
