@@ -461,6 +461,7 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
       }
+      await ensureDeferred(interaction);
 
       const assetSel   = interaction.options.getString('asset');
       const direction  = interaction.options.getString('direction');
