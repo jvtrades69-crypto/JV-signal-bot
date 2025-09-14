@@ -1,68 +1,78 @@
 // register-commands.js
 import 'dotenv/config';
-import { REST, Routes } from '@discordjs/rest';
-import {
-  ApplicationCommandOptionType as Opt,
-} from 'discord.js';
+import { REST, Routes, SlashCommandBuilder } from 'discord.js';
+import config from './config.js';
 
-const TOKEN     = process.env.DISCORD_TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID;
-const GUILD_ID  = process.env.GUILD_ID;
+// prefer config.js but allow env
+const TOKEN    = config.token || process.env.DISCORD_TOKEN;
+const APP_ID   = config.appId || process.env.APP_ID;       // your application (client) id
+const GUILD_ID = config.guildId || process.env.GUILD_ID;   // the guild where you want to register
 
-const commands = [
-  // keep your existing /signal definition as-is, just re-register together with /recap
-  {
-    name: 'signal',
-    description: 'Create a new trade signal',
-    options: [
-      { name: 'asset',      description: 'Asset name or OTHER', type: Opt.String, required: true },
-      { name: 'direction',  description: 'Long / Short', type: Opt.String, required: true, choices: [
-        { name: 'Long',  value: 'Long'  },
-        { name: 'Short', value: 'Short' },
-      ]},
-      { name: 'entry',      description: 'Entry price',   type: Opt.String, required: true },
-      { name: 'sl',         description: 'Stop loss',      type: Opt.String, required: true },
-      { name: 'tp1',        description: 'TP1 price',      type: Opt.String, required: false },
-      { name: 'tp2',        description: 'TP2 price',      type: Opt.String, required: false },
-      { name: 'tp3',        description: 'TP3 price',      type: Opt.String, required: false },
-      { name: 'tp4',        description: 'TP4 price',      type: Opt.String, required: false },
-      { name: 'tp5',        description: 'TP5 price',      type: Opt.String, required: false },
-      { name: 'reason',     description: 'Reason (optional)', type: Opt.String, required: false },
-      { name: 'extra_role', description: 'Extra role mention(s)', type: Opt.String, required: false },
-      { name: 'tp1_pct',    description: 'Planned % at TP1', type: Opt.String, required: false },
-      { name: 'tp2_pct',    description: 'Planned % at TP2', type: Opt.String, required: false },
-      { name: 'tp3_pct',    description: 'Planned % at TP3', type: Opt.String, required: false },
-      { name: 'tp4_pct',    description: 'Planned % at TP4', type: Opt.String, required: false },
-      { name: 'tp5_pct',    description: 'Planned % at TP5', type: Opt.String, required: false },
-    ],
-  },
+if (!TOKEN || !APP_ID || !GUILD_ID) {
+  console.error('Missing TOKEN / APP_ID / GUILD_ID. Put them in config.js or env.');
+  process.exit(1);
+}
 
-  // NEW: /recap custom
-  {
-    name: 'recap',
-    description: 'Show trade recap(s)',
-    options: [
-      {
-        type: Opt.Subcommand,
-        name: 'custom',
-        description: 'Recap closed trades in a custom date range (local time)',
-        options: [
-          { type: Opt.String, name: 'start', description: 'Start date YYYY-MM-DD', required: true },
-          { type: Opt.String, name: 'end',   description: 'End date YYYY-MM-DD (inclusive)', required: true },
-        ],
-      },
-    ],
-  },
-];
+const commands = [];
+
+/* --- keep your existing /signal definition registered elsewhere ---
+   If you also register it here, that’s fine; duplicates just overwrite.
+*/
+
+/** Recap: week (choose a date via year/month/day pickers; optional end) */
+commands.push(
+  new SlashCommandBuilder()
+    .setName('recap-week')
+    .setDescription('Post a weekly recap (7-day window starting at the chosen date).')
+    .addIntegerOption(o =>
+      o.setName('year').setDescription('Year (e.g., 2025)').setMinValue(2000).setMaxValue(2100)
+    )
+    .addIntegerOption(o =>
+      o.setName('month').setDescription('Month (1-12)').setMinValue(1).setMaxValue(12)
+    )
+    .addIntegerOption(o =>
+      o.setName('day').setDescription('Day of month (1-31)').setMinValue(1).setMaxValue(31)
+    )
+    .addStringOption(o =>
+      o.setName('end').setDescription('Optional end date YYYY-MM-DD (otherwise uses start + 6 days)')
+    )
+);
+
+/** Recap: month (pick month & year) */
+commands.push(
+  new SlashCommandBuilder()
+    .setName('recap-month')
+    .setDescription('Post a monthly recap.')
+    .addIntegerOption(o =>
+      o.setName('month').setDescription('Month (1-12)').setMinValue(1).setMaxValue(12)
+    )
+    .addIntegerOption(o =>
+      o.setName('year').setDescription('Year (e.g., 2025)').setMinValue(2000).setMaxValue(2100)
+    )
+);
+
+/** Recap: trade (single trade by id) */
+commands.push(
+  new SlashCommandBuilder()
+    .setName('recap-trade')
+    .setDescription('Post a recap for a specific trade ID.')
+    .addStringOption(o =>
+      o.setName('id').setDescription('The trade id (from your signal storage)').setRequired(true)
+    )
+);
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
-async function main() {
-  await rest.put(
-    Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-    { body: commands }
-  );
-  console.log('✅ Slash commands registered.');
-}
-
-main().catch(console.error);
+(async () => {
+  try {
+    console.log('Refreshing application (/) commands…');
+    await rest.put(
+      Routes.applicationGuildCommands(APP_ID, GUILD_ID),
+      { body: commands.map(c => c.toJSON()) }
+    );
+    console.log('Done ✅');
+  } catch (err) {
+    console.error(err);
+    process.exit(1);
+  }
+})();
