@@ -544,47 +544,10 @@ client.on('interactionCreate', async (interaction) => {
     // ===== Recap commands (added) =====
 
     // /recap-week  — options: start(YYYY-MM-DD, optional), end(YYYY-MM-DD, optional)
-    // /recap-week — picks year/month/day (or defaults to last 7 days). Optional 'end' YYYY-MM-DD.
-if (interaction.isChatInputCommand() && interaction.commandName === 'recap-week') {
-  if (interaction.user.id !== config.ownerId) {
-    return interaction.reply({ content: 'Only the owner can use this command.', ephemeral: true });
-  }
-  await interaction.deferReply(); // public
-
-  const y = interaction.options.getInteger('year');
-  const m = interaction.options.getInteger('month'); // 1..12
-  const d = interaction.options.getInteger('day');   // 1..31
-  const endStr = interaction.options.getString('end'); // optional YYYY-MM-DD
-
-  let startMs;
-  if (y && m && d) {
-    const month = String(m).padStart(2, '0');
-    const day   = String(d).padStart(2, '0');
-    startMs = Date.parse(`${y}-${month}-${day}T00:00:00Z`);
-  } else {
-    // default: last 7 days ending now
-    const now = Date.now();
-    startMs = now - 6 * 24 * 3600 * 1000;
-  }
-
-  const endMs = endStr
-    ? Date.parse(endStr + 'T23:59:59Z')
-    : (startMs + 6 * 24 * 3600 * 1000);
-
-  const all = (await getSignals()).map(normalizeSignal);
-  const inRange = all.filter(s => {
-    if (!s.messageId) return false;
-    const ts = tsFromSnowflake(s.messageId);
-    return ts && ts >= startMs && ts <= endMs;
-  });
-
-  const text = renderWeeklyRecap(inRange, {
-    startLabel: ymd(startMs),
-    endLabel:   ymd(endMs)
-  });
-
-  return interaction.editReply({ content: text });
-}
+    if (interaction.isChatInputCommand() && interaction.commandName === 'recap-week') {
+      if (interaction.user.id !== config.ownerId) {
+        return interaction.reply({ content: 'Only the owner can use this command.', ephemeral: true });
+      }
       await interaction.deferReply(); // public
 
       const startStr = interaction.options.getString('start'); // e.g., 2025-09-08
