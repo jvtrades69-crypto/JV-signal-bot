@@ -1,14 +1,13 @@
 // index.js — JV Signal Bot (stable)
 // - Plain text messages (uses renders from embeds.js)
 // - TP plans + auto-exec
-// - Control panel (TP1–TP5 + 4 update modals + Close/BE/Out + Delete + Set SL→BE)
+// - Control panel (TP1–TP5 + 4 update modals + Close/BE/Out + Delete)
 // - Summary in currentTradesChannelId (exactly 1 message, debounced)
 // - Signals post in the channel where /signal is run (per-signal channelId)
 // - Ignores “ghost” signals whose original message was manually deleted
 // - Dedupe guard for interactions (no double posts)
 // - Safe acks (prevents “not sent or deferred” / “unknown interaction”)
 // - Global error guards
-// - FIX: when asset=OTHER, DO NOT defer before showModal()
 
 import {
   Client,
@@ -20,8 +19,7 @@ import {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  StringSelectMenuBuilder,
-  ComponentType,
+  MessageFlags,
 } from 'discord.js';
 import { customAlphabet } from 'nanoid';
 import config from './config.js';
@@ -29,14 +27,7 @@ import {
   saveSignal, getSignal, getSignals, updateSignal, deleteSignal,
   getThreadId, setThreadId
 } from './store.js';
-import {
-  renderSignalText,
-  renderSummaryText,
-  // recap renderers (already in embeds.js)
-  renderWeeklyRecap,
-  renderMonthlyRecap,
-  renderTradeRecap
-} from './embeds.js';
+import { renderSignalText, renderSummaryText } from './embeds.js';
 
 const nano = customAlphabet('1234567890abcdef', 10);
 const client = new Client({
@@ -74,21 +65,6 @@ function rAtPrice(direction, entry, slOriginal, price) {
   }
 }
 
-// --- Recap helpers ---
-function tsFromSnowflake(id) {
-  try {
-    const DISCORD_EPOCH = 1420070400000n; // 2015-01-01
-    return Number((BigInt(id) >> 22n) + DISCORD_EPOCH);
-  } catch {
-    return null;
-  }
-}
-function ymd(date) {
-  const d = new Date(date);
-  const m = d.toLocaleString('en-US', { month: 'short' });
-  return `${m} ${d.getDate()}`;
-}
-
 function computeRRChips(signal) {
   const chips = [];
   for (const key of TP_KEYS) {
@@ -117,15 +93,16 @@ function normalizeSignal(raw) {
     const v = s.plan[K];
     s.plan[K] = isNum(v) ? Number(v) : null;
   }
+  // track one-time TP hits
   s.tpHits = s.tpHits && typeof s.tpHits === 'object' ? s.tpHits : { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false };
+  // optional final-R override for closures
   if (s.finalR !== undefined && s.finalR !== null && !isNum(s.finalR)) delete s.finalR;
   return s;
 }
 
 function isSlMovedToBE(signal) {
   const s = normalizeSignal(signal);
-  return s.status === STATUS.RUN_VALID && isNum(s.entry) && isNum(s.sl)
-    && Number(s.entry) === Number(s.sl) && !!s.latestTpHit;
+  return s.status === STATUS.RUN_VALID && isNum(s.entry) && isNum(s.sl) && Number(s.entry) === Number(s.sl) && !!s.latestTpHit;
 }
 
 function extractRoleIds(defaultRoleId, extraRoleRaw) {
@@ -139,39 +116,40 @@ function extractRoleIds(defaultRoleId, extraRoleRaw) {
 function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
   const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
   const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
+  // On initial send we allowRoles to ping; on edits we suppress pings entirely
   if (forEdit) return { content, allowedMentions: { parse: [] } };
   if (!ids.length) return { content: '', allowedMentions: { parse: [] } };
   return { content, allowedMentions: { parse: [], roles: ids } };
 }
 
 // ------------------------------
-// Ack helpers
+// Ack helpers (prevent “not sent or deferred”)
 // ------------------------------
 async function ensureDeferred(interaction) {
   try {
     if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     }
   } catch {}
 }
 async function safeEditReply(interaction, payload) {
   try {
     if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     }
   } catch {}
   try {
     return await interaction.editReply(payload);
   } catch (e) {
     try {
-      if (!interaction.replied) return await interaction.reply({ ...payload, ephemeral: true });
+      if (!interaction.replied) return await interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
     } catch {}
     throw e;
   }
 }
 
 // ------------------------------
-// Posting / Editing messages
+// Posting / Editing messages (use per-signal channelId)
 // ------------------------------
 async function postSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
@@ -185,6 +163,7 @@ async function postSignalMessage(signal) {
   });
   return sent.id;
 }
+
 async function editSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
   const msg = await channel.messages.fetch(signal.messageId).catch(() => null);
@@ -199,6 +178,7 @@ async function editSignalMessage(signal) {
   }).catch(() => {});
   return true;
 }
+
 async function deleteSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
   const msg = await channel.messages.fetch(signal.messageId).catch(() => null);
@@ -206,7 +186,7 @@ async function deleteSignalMessage(signal) {
 }
 
 // ------------------------------
-// Summary (debounced)
+// Summary (edit-in-place or hard purge; debounced)
 // ------------------------------
 let _summaryTimer = null;
 let _summaryBusy = false;
@@ -241,6 +221,7 @@ async function updateSummary() {
     try {
       const summaryChannel = await client.channels.fetch(config.currentTradesChannelId);
 
+      // Build active list (must exist AND original message still exists in its own channel)
       const signals = (await getSignals()).map(normalizeSignal);
       const candidates = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
 
@@ -261,6 +242,7 @@ async function updateSummary() {
         ? `**JV Current Active Trades** 📊\n\n• There are currently no ongoing trades valid for entry – stay posted for future trades!`
         : renderSummaryText(active);
 
+      // Try to edit an existing bot message first
       const recent = await summaryChannel.messages.fetch({ limit: 10 }).catch(() => null);
       let existing = null;
       if (recent && recent.size) {
@@ -269,6 +251,7 @@ async function updateSummary() {
 
       if (existing) {
         await existing.edit({ content, allowedMentions: { parse: [] } }).catch(() => {});
+        // delete other bot-authored messages as safety
         for (const m of recent.values()) {
           if (m.id !== existing.id && m.author?.id === client.user.id) {
             try { await m.delete(); } catch {}
@@ -287,7 +270,7 @@ async function updateSummary() {
 }
 
 // ------------------------------
-// Control UI (TPs + updates + closes + Set SL→BE)
+// Control UI (TPs + updates + closes)
 // ------------------------------
 function btn(id, key) { return `btn:${key}:${id}`; }
 function modal(id, key) { return `modal:${key}:${id}`; }
@@ -307,19 +290,18 @@ function controlRows(signalId) {
   const row3 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'upd:trade')).setLabel('✏️ Update Trade Info').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:roles')).setLabel('✏️ Update Role Mention').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'setbe')).setLabel('↔️ Set SL → BE').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(btn(signalId,'fullclose')).setLabel('✅ Fully Close').setStyle(ButtonStyle.Primary),
-  );
-  const row4 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'stopbe')).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(btn(signalId,'stopped')).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId(btn(signalId,'del')).setLabel('❌ Delete').setStyle(ButtonStyle.Secondary),
+  );
+  const row4 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(btn(signalId,'del')).setLabel('❌ Delete').setStyle(ButtonStyle.Secondary)
   );
   return [row1, row2, row3, row4];
 }
 
 async function createControlThread(signal) {
-  const channel = await client.channels.fetch(signal.channelId);
+  const channel = await client.channels.fetch(signal.channelId); // per-signal channel
   const thread = await channel.threads.create({
     name: `controls-${signal.asset}-${signal.id.slice(0, 4)}`,
     type: ChannelType.PrivateThread,
@@ -330,6 +312,7 @@ async function createControlThread(signal) {
   await thread.send({ content: 'Owner Control Panel', components: controlRows(signal.id) });
   return thread.id;
 }
+
 async function deleteControlThread(signalId) {
   const tid = await getThreadId(signalId);
   if (!tid) return;
@@ -412,15 +395,6 @@ function makeFinalRModal(id, kind) {
   m.addComponents(new ActionRowBuilder().addComponents(r));
   return m;
 }
-// Week custom range modal
-function makeWeekCustomModal() {
-  const m = new ModalBuilder().setCustomId('modal:week:custom').setTitle('Weekly Recap — Custom Range');
-  const s = new TextInputBuilder().setCustomId('wk_start').setLabel('Start (YYYY-MM-DD)').setStyle(TextInputStyle.Short).setRequired(true);
-  const e = new TextInputBuilder().setCustomId('wk_end').setLabel('End (YYYY-MM-DD)').setStyle(TextInputStyle.Short).setRequired(true);
-  m.addComponents(new ActionRowBuilder().addComponents(s));
-  m.addComponents(new ActionRowBuilder().addComponents(e));
-  return m;
-}
 
 // ------------------------------
 // Bot lifecycle
@@ -430,10 +404,10 @@ client.once('ready', async () => {
   await pruneGhostSignals().catch(() => {});
 });
 
-// Manual delete watcher
+// Manual delete watcher (any channel)
 client.on('messageDelete', async (message) => {
   try {
-    if (!message) return;
+    if (!message) return; // we’ll match by messageId below
     const sigs = await getSignals();
     const found = sigs.find(s => s.messageId === message.id);
     if (!found) return;
@@ -445,6 +419,7 @@ client.on('messageDelete', async (message) => {
     console.error('messageDelete handler error:', e);
   }
 });
+
 client.on('messageDeleteBulk', async (collection) => {
   try {
     const ids = new Set(Array.from(collection.keys()));
@@ -474,24 +449,19 @@ function tryClaimInteraction(interaction) {
 }
 
 // ------------------------------
-// UI state for recap-month-ui
-// ------------------------------
-const monthUiState = new Map(); // key: userId => { month, year }
-
-// ------------------------------
 // Interaction router
 // ------------------------------
 client.on('interactionCreate', async (interaction) => {
   try {
+    // ensure we don't process the same interaction twice
     if (!tryClaimInteraction(interaction)) return;
 
     // /signal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
       if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use this command.', ephemeral: true });
+        return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
       }
 
-      // do not defer (might show modal)
       const assetSel   = interaction.options.getString('asset');
       const direction  = interaction.options.getString('direction');
       const entry      = interaction.options.getString('entry');
@@ -515,6 +485,7 @@ client.on('interactionCreate', async (interaction) => {
         const m = new ModalBuilder().setCustomId(modal(pid,'asset')).setTitle('Enter custom asset');
         const input = new TextInputBuilder().setCustomId('asset_value').setLabel('Asset (e.g., PEPE, XRP)').setStyle(TextInputStyle.Short).setRequired(true);
         m.addComponents(new ActionRowBuilder().addComponents(input));
+        // stash payload in memory by pid
         pendingSignals.set(pid, {
           direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole,
           plan: {
@@ -524,9 +495,9 @@ client.on('interactionCreate', async (interaction) => {
             TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
             TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
           },
-          channelId: interaction.channelId,
+          channelId: interaction.channelId, // remember where to post
         });
-        return interaction.showModal(m);
+        return interaction.showModal(m); // do NOT defer again before showModal
       }
 
       await createSignal({
@@ -544,171 +515,10 @@ client.on('interactionCreate', async (interaction) => {
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
 
-    // ===== Recap commands (typed) =====
-    if (interaction.isChatInputCommand() && interaction.commandName === 'recap-week') {
-      if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use this command.', ephemeral: true });
-      }
-      await interaction.deferReply(); // public
-
-      const startStr = interaction.options.getString('start');
-      const endStr   = interaction.options.getString('end');
-
-      const now = Date.now();
-      const startMs = startStr ? Date.parse(startStr + 'T00:00:00Z') : (now - 6 * 24 * 3600 * 1000);
-      const endMs   = endStr   ? Date.parse(endStr   + 'T23:59:59Z') : now;
-
-      const all = (await getSignals()).map(normalizeSignal);
-      const inRange = all.filter(s => {
-        if (!s.messageId) return false;
-        const ts = tsFromSnowflake(s.messageId);
-        return ts && ts >= startMs && ts <= endMs;
-      });
-
-      const text = renderWeeklyRecap(inRange, { startLabel: ymd(startMs), endLabel: ymd(endMs) });
-      return interaction.editReply({ content: text });
-    }
-    if (interaction.isChatInputCommand() && interaction.commandName === 'recap-month') {
-      if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use this command.', ephemeral: true });
-      }
-      await interaction.deferReply();
-
-      const monthOpt = interaction.options.getInteger('month'); // 1..12
-      const yearOpt  = interaction.options.getInteger('year');
-
-      const today = new Date();
-      const year  = yearOpt  || today.getUTCFullYear();
-      const month = monthOpt ? Math.min(12, Math.max(1, monthOpt)) : (today.getUTCMonth() + 1);
-
-      const startMs = Date.parse(`${year}-${String(month).padStart(2,'0')}-01T00:00:00Z`);
-      const endDate = new Date(startMs);
-      endDate.setUTCMonth(endDate.getUTCMonth() + 1);
-      endDate.setUTCHours(23,59,59,999);
-      const endMs = endDate.getTime();
-
-      const all = (await getSignals()).map(normalizeSignal);
-      const inRange = all.filter(s => {
-        if (!s.messageId) return false;
-        const ts = tsFromSnowflake(s.messageId);
-        return ts && ts >= startMs && ts <= endMs;
-      });
-
-      const monthLabel = new Date(startMs).toLocaleString('en-US', { month: 'long', year: 'numeric' });
-      const text = renderMonthlyRecap(inRange, monthLabel);
-
-      return interaction.editReply({ content: text });
-    }
-    if (interaction.isChatInputCommand() && interaction.commandName === 'recap-trade') {
-      if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use this command.', ephemeral: true });
-      }
-      await interaction.deferReply();
-      const id = interaction.options.getString('id');
-      const s = await getSignal(id).catch(() => null);
-      if (!s) return interaction.editReply({ content: '❌ Trade not found.' });
-
-      const text = renderTradeRecap(normalizeSignal(s));
-      return interaction.editReply({ content: text });
-    }
-
-    // ===== Recap commands (UI) =====
-    // /recap-month-ui -> show month/year selectors
-    if (interaction.isChatInputCommand() && interaction.commandName === 'recap-month-ui') {
-      if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use this command.', ephemeral: true });
-      }
-      const now = new Date();
-      const curY = now.getUTCFullYear();
-      const years = [curY - 1, curY, curY + 1];
-
-      const monthSelect = new StringSelectMenuBuilder()
-        .setCustomId('rm:month')
-        .setPlaceholder('Select month...')
-        .addOptions(
-          Array.from({ length: 12 }, (_, i) => ({
-            label: new Date(Date.UTC(2024, i, 1)).toLocaleString('en-US', { month: 'long' }),
-            value: String(i + 1),
-          }))
-        );
-
-      const yearSelect = new StringSelectMenuBuilder()
-        .setCustomId('rm:year')
-        .setPlaceholder('Select year...')
-        .addOptions(years.map(y => ({ label: String(y), value: String(y) })));
-
-      const goBtn = new ButtonBuilder().setCustomId('rm:go').setLabel('Generate').setStyle(ButtonStyle.Primary);
-
-      monthUiState.set(interaction.user.id, { month: null, year: null });
-
-      return interaction.reply({
-        ephemeral: true,
-        content: 'Pick a month and year, then click **Generate**.',
-        components: [
-          new ActionRowBuilder().addComponents(monthSelect),
-          new ActionRowBuilder().addComponents(yearSelect),
-          new ActionRowBuilder().addComponents(goBtn),
-        ],
-      });
-    }
-
-    // /recap-trade-ui -> show a dropdown of recent trades
-    if (interaction.isChatInputCommand() && interaction.commandName === 'recap-trade-ui') {
-      if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use this command.', ephemeral: true });
-      }
-      const all = (await getSignals()).map(normalizeSignal);
-      // sort by created time desc using message snowflake (fallback id)
-      const withTs = all.map(s => ({ s, ts: s.messageId ? tsFromSnowflake(s.messageId) : 0 })).sort((a,b) => b.ts - a.ts);
-      const recent = withTs.slice(0, 25).map(({ s }) => s);
-
-      if (!recent.length) {
-        return interaction.reply({ ephemeral: true, content: 'No trades found.' });
-      }
-
-      const sel = new StringSelectMenuBuilder()
-        .setCustomId('rt:pick')
-        .setPlaceholder('Select a trade...')
-        .addOptions(recent.map(s => ({
-          label: `${s.asset} ${s.direction} ${s.id.slice(0,4)}${s.latestTpHit ? ` • ${s.latestTpHit}` : ''}`,
-          value: s.id,
-          description: s.status.replace('_',' '),
-        })));
-
-      return interaction.reply({
-        ephemeral: true,
-        content: 'Pick a trade to generate a recap:',
-        components: [ new ActionRowBuilder().addComponents(sel) ],
-      });
-    }
-
-    // /recap-week-ui -> quick presets or custom modal
-    if (interaction.isChatInputCommand() && interaction.commandName === 'recap-week-ui') {
-      if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use this command.', ephemeral: true });
-      }
-      const presets = new StringSelectMenuBuilder()
-        .setCustomId('rw:preset')
-        .setPlaceholder('Choose a range...')
-        .addOptions(
-          { label: 'This week (Mon–Sun UTC)', value: 'this' },
-          { label: 'Last week (Mon–Sun UTC)', value: 'last' },
-          { label: 'Last 7 days', value: '7d' },
-          { label: 'Custom range…', value: 'custom' },
-        );
-
-      return interaction.reply({
-        ephemeral: true,
-        content: 'Weekly Recap — choose a range:',
-        components: [ new ActionRowBuilder().addComponents(presets) ],
-      });
-    }
-
     // ===== MODALS =====
     if (interaction.isModalSubmit()) {
-      const idPart = interaction.customId.split(':').pop();
-
-      // Custom asset
+      const idPart = interaction.customId.split(':').pop(); // after last :
+      // Custom asset modal
       if (interaction.customId.startsWith('modal:asset:')) {
         await ensureDeferred(interaction);
         const stash = pendingSignals.get(idPart);
@@ -717,33 +527,6 @@ client.on('interactionCreate', async (interaction) => {
         const asset = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
         await createSignal({ asset, ...stash }, stash.channelId || interaction.channelId);
         return safeEditReply(interaction, { content: `✅ Trade signal posted for ${asset}.` });
-      }
-
-      // Week custom range modal
-      if (interaction.customId === 'modal:week:custom') {
-        await ensureDeferred(interaction);
-        const startStr = interaction.fields.getTextInputValue('wk_start')?.trim();
-        const endStr   = interaction.fields.getTextInputValue('wk_end')?.trim();
-        if (!startStr || !endStr) return safeEditReply(interaction, { content: '❌ Both dates are required.' });
-
-        const startMs = Date.parse(startStr + 'T00:00:00Z');
-        const endMs   = Date.parse(endStr   + 'T23:59:59Z');
-        if (isNaN(startMs) || isNaN(endMs) || endMs < startMs) {
-          return safeEditReply(interaction, { content: '❌ Invalid date range.' });
-        }
-
-        const all = (await getSignals()).map(normalizeSignal);
-        const inRange = all.filter(s => {
-          if (!s.messageId) return false;
-          const ts = tsFromSnowflake(s.messageId);
-          return ts && ts >= startMs && ts <= endMs;
-        });
-
-        const text = renderWeeklyRecap(inRange, { startLabel: ymd(startMs), endLabel: ymd(endMs) });
-        // Post publicly in the channel where you ran the command
-        const channel = await client.channels.fetch(interaction.channelId);
-        await channel.send({ content: text, allowedMentions: { parse: [] } });
-        return safeEditReply(interaction, { content: '✅ Posted custom weekly recap.' });
       }
 
       // Update TP Prices
@@ -830,8 +613,8 @@ client.on('interactionCreate', async (interaction) => {
       // TP modal submit
       if (interaction.customId.startsWith('modal:tp:')) {
         await ensureDeferred(interaction);
-        const parts = interaction.customId.split(':');
-        const tpKey = parts[2];
+        const parts = interaction.customId.split(':'); // modal, tp, tpX, id
+        const tpKey = parts[2]; // tp1..tp5
         const id = parts[3];
 
         let signal = normalizeSignal(await getSignal(id));
@@ -915,7 +698,8 @@ client.on('interactionCreate', async (interaction) => {
         if (hasFinalR) {
           signal.finalR = Number(finalRStr);
         } else {
-          const price = Number(kind === 'BE' ? signal.entry : (signal.slOriginal ?? signal.sl));
+          let price = null;
+          price = Number(kind === 'BE' ? signal.entry : (signal.slOriginal ?? signal.sl));
           const remaining = 100 - (signal.fills || []).reduce((a, f) => a + Number(f.pct || 0), 0);
           if (remaining > 0 && isNum(price)) {
             signal.fills.push({ pct: remaining, price, source: kind === 'BE' ? 'STOP_BE' : 'STOP_OUT' });
@@ -933,107 +717,16 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // ===== SELECT MENUS & BUTTONS =====
-    if (interaction.isStringSelectMenu()) {
-      // Month/year picks
-      if (interaction.customId === 'rm:month' || interaction.customId === 'rm:year') {
-        const state = monthUiState.get(interaction.user.id) || {};
-        if (interaction.customId === 'rm:month') state.month = Number(interaction.values[0]);
-        if (interaction.customId === 'rm:year')  state.year  = Number(interaction.values[0]);
-        monthUiState.set(interaction.user.id, state);
-        return interaction.reply({ ephemeral: true, content: `Selected: ${state.month ?? '—'}/${state.year ?? '—'}` });
-      }
-
-      // Weekly presets
-      if (interaction.customId === 'rw:preset') {
-        const val = interaction.values[0];
-        if (val === 'custom') {
-          return interaction.showModal(makeWeekCustomModal());
-        }
-        // compute range
-        const now = new Date();
-        let startMs, endMs;
-        if (val === '7d') {
-          const end = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23,59,59,999);
-          const start = end - 6*24*3600*1000;
-          startMs = start; endMs = end;
-        } else {
-          // Find Monday of this week UTC
-          const day = now.getUTCDay(); // 0 Sun..6 Sat
-          const diffToMon = (day + 6) % 7; // days since Monday
-          const mondayThis = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - diffToMon, 0,0,0,0);
-          if (val === 'this') {
-            startMs = mondayThis;
-            endMs = mondayThis + 6*24*3600*1000 + (24*3600*1000 - 1);
-          } else { // last week
-            startMs = mondayThis - 7*24*3600*1000;
-            endMs = mondayThis - 1;
-          }
-        }
-
-        const all = (await getSignals()).map(normalizeSignal);
-        const inRange = all.filter(s => {
-          if (!s.messageId) return false;
-          const ts = tsFromSnowflake(s.messageId);
-          return ts && ts >= startMs && ts <= endMs;
-        });
-        const text = renderWeeklyRecap(inRange, { startLabel: ymd(startMs), endLabel: ymd(endMs) });
-        const channel = await client.channels.fetch(interaction.channelId);
-        await channel.send({ content: text, allowedMentions: { parse: [] } });
-        return interaction.reply({ ephemeral: true, content: '✅ Posted weekly recap.' });
-      }
-
-      // Trade picker
-      if (interaction.customId === 'rt:pick') {
-        const id = interaction.values[0];
-        const s = await getSignal(id).catch(() => null);
-        if (!s) return interaction.reply({ ephemeral: true, content: '❌ Trade not found.' });
-        const text = renderTradeRecap(normalizeSignal(s));
-        const channel = await client.channels.fetch(interaction.channelId);
-        await channel.send({ content: text, allowedMentions: { parse: [] } });
-        return interaction.reply({ ephemeral: true, content: '✅ Posted trade recap.' });
-      }
-    }
-
+    // ===== BUTTONS =====
     if (interaction.isButton()) {
-      // Recap-month UI "Generate"
-      if (interaction.customId === 'rm:go') {
-        const state = monthUiState.get(interaction.user.id) || {};
-        if (!state.month || !state.year) {
-          return interaction.reply({ ephemeral: true, content: '❌ Pick both month and year first.' });
-        }
-        const startMs = Date.parse(`${state.year}-${String(state.month).padStart(2,'0')}-01T00:00:00Z`);
-        const endDate = new Date(startMs);
-        endDate.setUTCMonth(endDate.getUTCMonth() + 1);
-        endDate.setUTCHours(23,59,59,999);
-        const endMs = endDate.getTime();
-
-        const all = (await getSignals()).map(normalizeSignal);
-        const inRange = all.filter(s => {
-          if (!s.messageId) return false;
-          const ts = tsFromSnowflake(s.messageId);
-          return ts && ts >= startMs && ts <= endMs;
-        });
-
-        const monthLabel = new Date(startMs).toLocaleString('en-US', { month: 'long', year: 'numeric' });
-        const text = renderMonthlyRecap(inRange, monthLabel);
-        const channel = await client.channels.fetch(interaction.channelId);
-        await channel.send({ content: text, allowedMentions: { parse: [] } });
-        monthUiState.delete(interaction.user.id);
-        return interaction.reply({ ephemeral: true, content: '✅ Posted monthly recap.' });
-      }
-
-      // ==== existing signal control buttons ====
       if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use these controls.', ephemeral: true });
+        return interaction.reply({ content: 'Only the owner can use these controls.', flags: MessageFlags.Ephemeral });
       }
-      const parts = interaction.customId.split(':'); // might be rm:go or btn:...
-      if (parts[0] !== 'btn') return; // non-signal button handled above
-
+      const parts = interaction.customId.split(':'); // btn, key..., id
       const id = parts.pop();
       const key = parts.slice(1).join(':'); // remove 'btn'
 
-      // Show modals (no defer)
+      // Show modals: DO NOT defer before showModal
       if (key === 'upd:tpprices') return interaction.showModal(makeUpdateTPPricesModal(id));
       if (key === 'upd:plan')     return interaction.showModal(makeUpdatePlanModal(id));
       if (key === 'upd:trade')    return interaction.showModal(makeUpdateTradeInfoModal(id));
@@ -1041,26 +734,6 @@ client.on('interactionCreate', async (interaction) => {
       if (key === 'fullclose')    return interaction.showModal(makeFullCloseModal(id));
       if (key === 'stopbe')       return interaction.showModal(makeFinalRModal(id, 'BE'));
       if (key === 'stopped')      return interaction.showModal(makeFinalRModal(id, 'OUT'));
-
-      // NEW: Set SL → BE (does NOT stop the trade)
-      if (key === 'setbe') {
-        await ensureDeferred(interaction);
-        const sig = normalizeSignal(await getSignal(id));
-        if (!sig) return safeEditReply(interaction, { content: 'Signal not found.' });
-
-        if (!isNum(sig.entry)) {
-          return safeEditReply(interaction, { content: '❌ Entry is not set; cannot move SL to BE.' });
-        }
-
-        // Keep original SL in slOriginal; only move current SL
-        const patch = { sl: sig.entry, validReentry: false };
-        await updateSignal(id, patch);
-
-        const updated = normalizeSignal(await getSignal(id));
-        await editSignalMessage(updated);
-        await updateSummary();
-        return safeEditReply(interaction, { content: '↔️ SL moved to breakeven (trade remains ACTIVE).' });
-      }
 
       if (key === 'del') {
         await ensureDeferred(interaction);
@@ -1076,11 +749,11 @@ client.on('interactionCreate', async (interaction) => {
 
       if (['tp1','tp2','tp3','tp4','tp5'].includes(key)) {
         const sig = normalizeSignal(await getSignal(id));
-        if (!sig) return interaction.reply({ content: 'Signal not found.', ephemeral: true });
+        if (!sig) return interaction.reply({ content: 'Signal not found.', flags: MessageFlags.Ephemeral });
 
         const tpUpper = key.toUpperCase();
         if (sig.tpHits?.[tpUpper]) {
-          return interaction.reply({ content: `${tpUpper} already recorded.`, ephemeral: true });
+          return interaction.reply({ content: `${tpUpper} already recorded.`, flags: MessageFlags.Ephemeral });
         }
 
         const planPct = sig.plan?.[tpUpper];
@@ -1104,7 +777,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.showModal(m);
       }
 
-      return interaction.reply({ content: 'Unknown action.', ephemeral: true });
+      return interaction.reply({ content: 'Unknown action.', flags: MessageFlags.Ephemeral });
     }
   } catch (err) {
     console.error('interaction error:', err);
@@ -1112,7 +785,7 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.deferred || interaction.replied) {
         await interaction.editReply({ content: '❌ Internal error.' });
       } else {
-        await interaction.reply({ content: '❌ Internal error.', ephemeral: true });
+        await interaction.reply({ content: '❌ Internal error.', flags: MessageFlags.Ephemeral });
       }
     } catch {}
   }
@@ -1142,7 +815,7 @@ async function createSignal(payload, channelId) {
     finalR: null,
     messageId: null,
     jumpUrl: null,
-    channelId,
+    channelId, // <= post and track in this channel
   });
 
   await saveSignal(signal);
@@ -1162,7 +835,7 @@ async function createSignal(payload, channelId) {
 }
 
 // ------------------------------
-// One-time ghost prune
+// One-time ghost prune (storage hygiene)
 // ------------------------------
 async function pruneGhostSignals() {
   try {
