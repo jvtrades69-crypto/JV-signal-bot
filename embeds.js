@@ -140,7 +140,7 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
 
   // Status
   lines.push('');
-  lines.push(`🚦 **Status**`);
+  lines.push(`📍 **Status**`);
   if (signal.status === 'RUN_VALID') {
     if (slMovedToBEActive) {
       const tp = signal.latestTpHit ? `${signal.latestTpHit}` : '';
