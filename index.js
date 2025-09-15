@@ -95,17 +95,19 @@ function normalizeSignal(raw) {
   }
   // track one-time TP hits
   s.tpHits = s.tpHits && typeof s.tpHits === 'object' ? s.tpHits : { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false };
-  // optional overrides/new fields
+  // optional final-R override for closures
   if (s.finalR !== undefined && s.finalR !== null && !isNum(s.finalR)) delete s.finalR;
-  if (!isNum(s.maxR)) s.maxR = null;          // <- optional max R reached (manual)
-  s.chartUrl = s.chartUrl || null;            // <- optional chart link or attachment URL
-  s.chartAttached = !!s.chartAttached;        // <- true if we attached the image on first post
+
+  // === NEW optional fields (safe to ignore in embeds until we wire them) ===
+  if (s.maxR !== undefined && s.maxR !== null && !isNum(s.maxR)) delete s.maxR; // number or undefined
+  s.chartUrl = (typeof s.chartUrl === 'string' && s.chartUrl.trim().length) ? s.chartUrl.trim() : null;
+
   return s;
 }
 
 function isSlMovedToBE(signal) {
   const s = normalizeSignal(signal);
-  return s.status === STATUS.RUN_VALID && isNum(s.entry) && isNum(s.sl) && Number(s.entry) === Number(s.sl);
+  return s.status === STATUS.RUN_VALID && isNum(s.entry) && isNum(s.sl) && Number(s.entry) === Number(s.sl) && !!s.latestTpHit;
 }
 
 function extractRoleIds(defaultRoleId, extraRoleRaw) {
@@ -160,17 +162,10 @@ async function postSignalMessage(signal) {
   const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
 
-  const payload = {
+  const sent = await channel.send({
     content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
-    ...(mentionLine ? { allowedMentions } : {}),
-  };
-
-  // If we have a chart URL from an attachment on creation, paste image inline
-  if (signal.chartUrl && signal.chartAttached) {
-    payload.files = [signal.chartUrl];
-  }
-
-  const sent = await channel.send(payload);
+    ...(mentionLine ? { allowedMentions } : {})
+  });
   return sent.id;
 }
 
@@ -294,7 +289,7 @@ function controlRows(signalId) {
   const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'tp4')).setLabel('🎯 TP4 Hit').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(btn(signalId,'tp5')).setLabel('🎯 TP5 Hit').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(btn(signalId,'upd:tpprices')).setLabel('✏️ Update TP Prices').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'upd:tpprices')).setLabel(✏️ Update TP Prices').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:plan')).setLabel('✏️ Update TP % Plan').setStyle(ButtonStyle.Secondary),
   );
   const row3 = new ActionRowBuilder().addComponents(
@@ -304,10 +299,11 @@ function controlRows(signalId) {
     new ButtonBuilder().setCustomId(btn(signalId,'stopbe')).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(btn(signalId,'stopped')).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
   );
+  // NEW row4: SL -> BE, Max R, Chart link, Delete
   const row4 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(btn(signalId,'setbe')).setLabel('🟨 Set SL → BE').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'upd:maxr')).setLabel('📈 Set Max R').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'upd:chart')).setLabel('🖼️ Set/Replace Chart Link').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'sl2be')).setLabel('⚖️ SL → BE').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(btn(signalId,'upd:maxr')).setLabel('📏 Max R').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'upd:chart')).setLabel('🖼️ Chart Link').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'del')).setLabel('❌ Delete').setStyle(ButtonStyle.Secondary),
   );
   return [row1, row2, row3, row4];
@@ -408,16 +404,26 @@ function makeFinalRModal(id, kind) {
   m.addComponents(new ActionRowBuilder().addComponents(r));
   return m;
 }
-function makeMaxRModal(id) {
-  const m = new ModalBuilder().setCustomId(modal(id,'maxr')).setTitle('Set Max R Reached');
-  const r = new TextInputBuilder().setCustomId('max_r').setLabel('Max R reached (number, no + sign)').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('e.g., 1.5');
-  m.addComponents(new ActionRowBuilder().addComponents(r));
+
+// === NEW: simple modals for Max R and Chart Link ===
+function makeUpdateMaxRModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'maxr')).setTitle('Update Max R Reached');
+  const input = new TextInputBuilder()
+    .setCustomId('maxr_val')
+    .setLabel('Max R reached (e.g., 1.5) — leave blank to clear')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false);
+  m.addComponents(new ActionRowBuilder().addComponents(input));
   return m;
 }
-function makeChartModal(id) {
-  const m = new ModalBuilder().setCustomId(modal(id,'chart')).setTitle('Set / Replace Chart Link');
-  const url = new TextInputBuilder().setCustomId('chart_url').setLabel('Image URL (https://...)').setStyle(TextInputStyle.Short).setRequired(true);
-  m.addComponents(new ActionRowBuilder().addComponents(url));
+function makeUpdateChartModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'chart')).setTitle('Update Chart Image Link');
+  const input = new TextInputBuilder()
+    .setCustomId('chart_url')
+    .setLabel('Paste chart image URL — leave blank to clear')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false);
+  m.addComponents(new ActionRowBuilder().addComponents(input));
   return m;
 }
 
@@ -505,8 +511,8 @@ client.on('interactionCreate', async (interaction) => {
       const tp4_pct = interaction.options.getString('tp4_pct');
       const tp5_pct = interaction.options.getString('tp5_pct');
 
-      // Optional chart attachment (pasted inline)
-      const chartAtt  = interaction.options.getAttachment?.('chart');
+      // NEW (optional): allow /signal to carry a chart_url if your register-commands includes it
+      const chartUrl   = interaction.options.getString('chart_url')?.trim() || null;
 
       if (assetSel === 'OTHER') {
         const pid = nano();
@@ -515,7 +521,7 @@ client.on('interactionCreate', async (interaction) => {
         m.addComponents(new ActionRowBuilder().addComponents(input));
         // stash payload in memory by pid
         pendingSignals.set(pid, {
-          direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole,
+          direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole, chartUrl,
           plan: {
             TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
             TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
@@ -524,25 +530,21 @@ client.on('interactionCreate', async (interaction) => {
             TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
           },
           channelId: interaction.channelId, // remember where to post
-          chartUrl: chartAtt?.url || null,
-          chartAttached: !!chartAtt?.url,
         });
-        return interaction.showModal(m); // do NOT defer before showModal
+        return interaction.showModal(m); // do NOT defer again before showModal
       }
 
       await createSignal({
         asset: assetSel,
         direction, entry, sl, tp1, tp2, tp3, tp4, tp5,
-        reason, extraRole,
+        reason, extraRole, chartUrl,
         plan: {
           TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
           TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
           TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
           TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
           TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
-        },
-        chartUrl: chartAtt?.url || null,
-        chartAttached: !!chartAtt?.url,
+        }
       }, interaction.channelId);
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
@@ -640,36 +642,6 @@ client.on('interactionCreate', async (interaction) => {
         await editSignalMessage(normalizeSignal(await getSignal(id)));
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Role mentions updated.' });
-      }
-
-      // Set Max R
-      if (interaction.customId.startsWith('modal:maxr:')) {
-        await ensureDeferred(interaction);
-        const id = idPart;
-        const signal = await getSignal(id);
-        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
-        const raw = interaction.fields.getTextInputValue('max_r')?.trim();
-        if (!isNum(raw)) return safeEditReply(interaction, { content: '❌ Max R must be a number.' });
-        await updateSignal(id, { maxR: Number(raw) });
-        await editSignalMessage(normalizeSignal(await getSignal(id)));
-        await updateSummary();
-        return safeEditReply(interaction, { content: '✅ Max R updated.' });
-      }
-
-      // Set/Replace Chart Link
-      if (interaction.customId.startsWith('modal:chart:')) {
-        await ensureDeferred(interaction);
-        const id = idPart;
-        const signal = await getSignal(id);
-        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
-        const url = interaction.fields.getTextInputValue('chart_url')?.trim();
-        if (!url || !/^https?:\/\//i.test(url)) {
-          return safeEditReply(interaction, { content: '❌ Please provide a valid http(s) URL.' });
-        }
-        await updateSignal(id, { chartUrl: url, chartAttached: false }); // edits will be link-only
-        await editSignalMessage(normalizeSignal(await getSignal(id)));
-        await updateSummary();
-        return safeEditReply(interaction, { content: '✅ Chart link updated.' });
       }
 
       // TP modal submit
@@ -777,6 +749,36 @@ client.on('interactionCreate', async (interaction) => {
         await deleteControlThread(id);
         return safeEditReply(interaction, { content: kind === 'BE' ? '✅ Stopped at breakeven.' : '✅ Stopped out.' });
       }
+
+      // === NEW: Max R & Chart link modal submits ===
+      if (interaction.customId.startsWith('modal:maxr:')) {
+        await ensureDeferred(interaction);
+        const id = idPart;
+        const val = (interaction.fields.getTextInputValue('maxr_val') ?? '').trim();
+        const patch = {};
+        if (val === '') {
+          patch.maxR = null; // clear
+        } else if (isNum(val)) {
+          patch.maxR = Number(val);
+        } else {
+          return safeEditReply(interaction, { content: '❌ Max R must be a number (e.g., 1.25) or left blank to clear.' });
+        }
+        await updateSignal(id, patch);
+        await editSignalMessage(normalizeSignal(await getSignal(id)));
+        await updateSummary();
+        return safeEditReply(interaction, { content: '✅ Max R updated.' });
+      }
+
+      if (interaction.customId.startsWith('modal:chart:')) {
+        await ensureDeferred(interaction);
+        const id = idPart;
+        const url = (interaction.fields.getTextInputValue('chart_url') ?? '').trim();
+        const patch = { chartUrl: url || null }; // replace/clear
+        await updateSignal(id, patch);
+        await editSignalMessage(normalizeSignal(await getSignal(id)));
+        await updateSummary();
+        return safeEditReply(interaction, { content: '✅ Chart link updated.' });
+      }
     }
 
     // ===== BUTTONS =====
@@ -796,22 +798,24 @@ client.on('interactionCreate', async (interaction) => {
       if (key === 'fullclose')    return interaction.showModal(makeFullCloseModal(id));
       if (key === 'stopbe')       return interaction.showModal(makeFinalRModal(id, 'BE'));
       if (key === 'stopped')      return interaction.showModal(makeFinalRModal(id, 'OUT'));
-      if (key === 'upd:maxr')     return interaction.showModal(makeMaxRModal(id));
-      if (key === 'upd:chart')    return interaction.showModal(makeChartModal(id));
 
-      if (key === 'setbe') {
+      // NEW: Max R & Chart link modals
+      if (key === 'upd:maxr')     return interaction.showModal(makeUpdateMaxRModal(id));
+      if (key === 'upd:chart')    return interaction.showModal(makeUpdateChartModal(id));
+
+      // NEW: Set SL -> BE (not a stop event)
+      if (key === 'sl2be') {
         await ensureDeferred(interaction);
-        const sig0 = normalizeSignal(await getSignal(id));
-        if (!sig0) return safeEditReply(interaction, { content: 'Signal not found.' });
+        const sig = normalizeSignal(await getSignal(id));
+        if (!sig) return safeEditReply(interaction, { content: 'Signal not found.' });
 
-        if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
-
-        // Move SL to BE (do not change slOriginal)
-        await updateSignal(id, { sl: Number(sig0.entry), validReentry: false });
+        if (!isNum(sig.entry)) return safeEditReply(interaction, { content: '❌ Cannot move SL to BE: entry is not a number.' });
+        // set SL to entry, keep status RUN_VALID, and mark not valid for re-entry
+        await updateSignal(id, { sl: sig.entry, validReentry: false });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
         await updateSummary();
-        return safeEditReply(interaction, { content: '✅ SL moved to breakeven.' });
+        return safeEditReply(interaction, { content: '✅ SL moved to Breakeven.' });
       }
 
       if (key === 'del') {
@@ -892,13 +896,13 @@ async function createSignal(payload, channelId) {
     fills: [],
     tpHits: { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false },
     finalR: null,
-    // new optional fields
-    maxR: null,
-    chartUrl: payload.chartUrl || null,
-    chartAttached: !!payload.chartAttached,
     messageId: null,
     jumpUrl: null,
     channelId, // <= post and track in this channel
+
+    // NEW optional on create:
+    chartUrl: payload.chartUrl || null,
+    maxR: payload.maxR ?? null,
   });
 
   await saveSignal(signal);
