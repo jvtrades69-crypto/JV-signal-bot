@@ -1,5 +1,5 @@
 // index.js — JV Signal Bot (stable)
-// - Plain text rendered inside an Embed (uses renders from embeds.js)
+// - Plain text messages (uses renders from embeds.js)
 // - TP plans + auto-exec
 // - Control panel (TP1–TP5 + 4 update modals + Close/BE/Out + Delete)
 // - Summary in currentTradesChannelId (exactly 1 message, debounced)
@@ -20,7 +20,6 @@ import {
   TextInputBuilder,
   TextInputStyle,
   MessageFlags,
-  EmbedBuilder,                 // ← Embed for masked link rendering
 } from 'discord.js';
 import { customAlphabet } from 'nanoid';
 import config from './config.js';
@@ -161,16 +160,13 @@ async function postSignalMessage(signal) {
   const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
 
-  // Put formatted text in an embed so [chart](url) renders masked
-  const embed = new EmbedBuilder().setDescription(text);
-
   const payload = {
-    embeds: [embed],
-    content: mentionLine || '',
-    ...(mentionLine ? { allowedMentions } : {}),
-  };
+  // Show the link if we *didn't* attach the image inline
+  content: `${text}${signal.chartUrl && !signal.chartAttached ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+  ...(mentionLine ? { allowedMentions } : {}),
+};
 
-  // If creation had an attachment, include it inline (Option A)
+  // Option A: if creation had an attachment, include it inline
   if (signal.chartUrl && signal.chartAttached) {
     payload.files = [signal.chartUrl];
   }
@@ -188,15 +184,13 @@ async function editSignalMessage(signal) {
   const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
 
-  const embed = new EmbedBuilder().setDescription(text);
-
   const editPayload = {
-    embeds: [embed],
-    content: mentionLine || '',
-    ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
-  };
+  // Always show the link on updates (Option B). It appears above the mentions.
+  content: `${text}${signal.chartUrl ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+  ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
+};
 
-  // Option B (link-only): remove any previously attached image(s)
+  // Option B: when replacing via control panel (chartAttached=false), remove any previous attachments
   if (!signal.chartAttached) {
     editPayload.attachments = []; // clears old image(s)
   }
