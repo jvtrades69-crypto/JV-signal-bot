@@ -20,8 +20,6 @@ import {
   TextInputBuilder,
   TextInputStyle,
   MessageFlags,
-  StringSelectMenuBuilder,
-  StringSelectMenuOptionBuilder,
 } from 'discord.js';
 import { customAlphabet } from 'nanoid';
 import config from './config.js';
@@ -162,12 +160,11 @@ async function postSignalMessage(signal) {
   const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
 
-  // IMPORTANT: do NOT append raw chartUrl here.
-  // embeds.js already prints `[Chart](url)` when appropriate.
   const payload = {
-    content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
-    ...(mentionLine ? { allowedMentions } : {}),
-  };
+  // Show the link if we *didn't* attach the image inline
+  content: `${text}${signal.chartUrl && !signal.chartAttached ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+  ...(mentionLine ? { allowedMentions } : {}),
+};
 
   // Option A: if creation had an attachment, include it inline
   if (signal.chartUrl && signal.chartAttached) {
@@ -187,11 +184,11 @@ async function editSignalMessage(signal) {
   const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
 
-  // Do NOT add raw chartUrl. embeds.js handles the nice "[Chart]" link.
   const editPayload = {
-    content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
-    ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
-  };
+  // Always show the link on updates (Option B). It appears above the mentions.
+  content: `${text}${signal.chartUrl ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+  ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
+};
 
   // Option B: when replacing via control panel (chartAttached=false), remove any previous attachments
   if (!signal.chartAttached) {
@@ -435,37 +432,6 @@ function makeChartModal(id) {
 }
 
 // ------------------------------
-// Recap helpers (for /recap trade)
-// ------------------------------
-function labelForSignal(s) {
-  const dir = s.direction === 'SHORT' ? 'Short' : 'Long';
-  const status =
-    s.status === STATUS.RUN_VALID ? 'Active' :
-    s.status === STATUS.CLOSED ? 'Closed' :
-    s.status === STATUS.STOPPED_BE ? 'BE' :
-    s.status === STATUS.STOPPED_OUT ? 'Stopped' : s.status;
-  return `$${s.asset} • ${dir} • ${status}`;
-}
-
-async function getRecentSignalsSorted(limit = 25) {
-  const sigs = (await getSignals()).map(normalizeSignal);
-  const withMsgTime = [];
-  for (const s of sigs) {
-    let ts = 0;
-    if (s.channelId && s.messageId) {
-      try {
-        const ch = await client.channels.fetch(s.channelId);
-        const m = await ch.messages.fetch(s.messageId);
-        ts = m.createdTimestamp || 0;
-      } catch {}
-    }
-    withMsgTime.push({ s, ts });
-  }
-  withMsgTime.sort((a, b) => b.ts - a.ts); // newest first
-  return withMsgTime.slice(0, limit).map(x => x.s);
-}
-
-// ------------------------------
 // Bot lifecycle
 // ------------------------------
 client.once('ready', async () => {
@@ -589,47 +555,6 @@ client.on('interactionCreate', async (interaction) => {
         chartAttached: !!chartAtt?.url,
       }, interaction.channelId);
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
-    }
-
-    // /recap
-    if (interaction.isChatInputCommand() && interaction.commandName === 'recap') {
-      if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
-      }
-
-      const type = interaction.options.getString('type');   // trade | weekly | monthly
-      const assetFilter = (interaction.options.getString('asset') || '').toUpperCase();
-      // const range = interaction.options.getString('range') || null; // (future use)
-
-      if (type === 'trade') {
-        const recents = await getRecentSignalsSorted(25);
-        const filtered = assetFilter ? recents.filter(s => (s.asset || '').toUpperCase() === assetFilter) : recents;
-
-        if (!filtered.length) {
-          return interaction.reply({ content: 'No trades found to recap.', flags: MessageFlags.Ephemeral });
-        }
-
-        const menu = new StringSelectMenuBuilder()
-          .setCustomId('recap:trade:pick')
-          .setPlaceholder('Select a trade to recap…')
-          .addOptions(
-            filtered.map(s =>
-              new StringSelectMenuOptionBuilder()
-                .setLabel(labelForSignal(s).slice(0, 100))
-                .setDescription((s.jumpUrl ? 'Open original signal' : 'Signal').slice(0, 100))
-                .setValue(s.id)
-            )
-          );
-
-        const row = new ActionRowBuilder().addComponents(menu);
-        return interaction.reply({
-          content: 'Pick a trade for your recap:',
-          components: [row],
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      return interaction.reply({ content: 'Coming soon: weekly/monthly recaps.', flags: MessageFlags.Ephemeral });
     }
 
     // ===== MODALS =====
@@ -863,26 +788,6 @@ client.on('interactionCreate', async (interaction) => {
         await deleteControlThread(id);
         return safeEditReply(interaction, { content: kind === 'BE' ? '✅ Stopped at breakeven.' : '✅ Stopped out.' });
       }
-    }
-
-    // ===== SELECT MENUS =====
-    if (interaction.isStringSelectMenu() && interaction.customId === 'recap:trade:pick') {
-      if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use this control.', flags: MessageFlags.Ephemeral });
-      }
-      const [chosenId] = interaction.values || [];
-      const s = chosenId ? normalizeSignal(await getSignal(chosenId)) : null;
-      if (!s) {
-        return interaction.update({ content: 'Trade not found.', components: [] });
-      }
-
-      const rrChips = computeRRChips(s);
-      const recapText = `**Trade Recap**\n${renderSignalText(s, rrChips, isSlMovedToBE(s))}`;
-
-      const channel = await client.channels.fetch(interaction.channelId);
-      await channel.send({ content: recapText, allowedMentions: { parse: [] } });
-
-      return interaction.update({ content: '✅ Recap posted.', components: [] });
     }
 
     // ===== BUTTONS =====
