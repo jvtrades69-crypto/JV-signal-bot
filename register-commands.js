@@ -24,21 +24,31 @@ const signalCmd = new SlashCommandBuilder()
   )
   .addStringOption(opt => opt.setName('entry').setDescription('Entry (free text number)').setRequired(true))
   .addStringOption(opt => opt.setName('sl').setDescription('SL (free text number)').setRequired(true))
+
+  // --- OPTIONAL (Chart FIRST) ---
+  .addAttachmentOption(opt =>
+    opt.setName('chart')
+      .setDescription('Attach chart image (optional)')
+      .setRequired(false)
+  )
+
+  // TP price levels (optional)
   .addStringOption(opt => opt.setName('tp1').setDescription('TP1 (optional)').setRequired(false))
   .addStringOption(opt => opt.setName('tp2').setDescription('TP2 (optional)').setRequired(false))
   .addStringOption(opt => opt.setName('tp3').setDescription('TP3 (optional)').setRequired(false))
   .addStringOption(opt => opt.setName('tp4').setDescription('TP4 (optional)').setRequired(false))
   .addStringOption(opt => opt.setName('tp5').setDescription('TP5 (optional)').setRequired(false))
-  // planned percentages (optional)
+
+  // Planned percentages (optional)
   .addStringOption(opt => opt.setName('tp1_pct').setDescription('Planned % at TP1 (0–100)').setRequired(false))
   .addStringOption(opt => opt.setName('tp2_pct').setDescription('Planned % at TP2 (0–100)').setRequired(false))
   .addStringOption(opt => opt.setName('tp3_pct').setDescription('Planned % at TP3 (0–100)').setRequired(false))
   .addStringOption(opt => opt.setName('tp4_pct').setDescription('Planned % at TP4 (0–100)').setRequired(false))
   .addStringOption(opt => opt.setName('tp5_pct').setDescription('Planned % at TP5 (0–100)').setRequired(false))
+
+  // Meta (optional)
   .addStringOption(opt => opt.setName('reason').setDescription('Reason (optional)').setRequired(false))
-  .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)').setRequired(false))
-  // NEW: optional chart image attachment (pastes inline on first post)
-  .addAttachmentOption(opt => opt.setName('chart').setDescription('Attach chart image (optional)').setRequired(false));
+  .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)').setRequired(false));
 
 const commands = [pingCmd, signalCmd].map(c => c.toJSON());
 
