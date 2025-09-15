@@ -161,9 +161,10 @@ async function postSignalMessage(signal) {
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
 
   const payload = {
-    content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
-    ...(mentionLine ? { allowedMentions } : {}),
-  };
+  // Show the link if we *didn't* attach the image inline
+  content: `${text}${signal.chartUrl && !signal.chartAttached ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+  ...(mentionLine ? { allowedMentions } : {}),
+};
 
   // Option A: if creation had an attachment, include it inline
   if (signal.chartUrl && signal.chartAttached) {
@@ -184,9 +185,10 @@ async function editSignalMessage(signal) {
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
 
   const editPayload = {
-    content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
-    ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
-  };
+  // Always show the link on updates (Option B). It appears above the mentions.
+  content: `${text}${signal.chartUrl ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+  ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
+};
 
   // Option B: when replacing via control panel (chartAttached=false), remove any previous attachments
   if (!signal.chartAttached) {
