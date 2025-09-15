@@ -21,6 +21,14 @@ function signAbsR(r) {
   return { text: `${sign}${abs}R`, abs, sign };
 }
 
+// MaxR formatter (no leading "+")
+function maxRText(r) {
+  if (r === null || r === undefined || r === '') return null;
+  const v = Number(r);
+  if (Number.isNaN(v)) return null;
+  return `${Math.abs(v - Math.round(v)) < 1e-9 ? Math.round(v).toFixed(0) : v.toFixed(2)}R`;
+}
+
 function rrLineFromChips(rrChips) {
   if (!rrChips || !rrChips.length) return null;
   return rrChips.map(c => `${c.key} ${Number(c.r).toFixed(2)}R`).join(' | ');
@@ -124,14 +132,21 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     const chip = rrChips.find(c => c.key === label);
     const rrTxt = chip ? `${chip.r.toFixed(2)}R` : null;
     if (pct > 0 && rrTxt) {
-  lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
-} else if (pct > 0) {
-  lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out)`);
-} else if (rrTxt) {
-  lines.push(`- ${label}: \`${fmt(v)}\` (${rrTxt})`);
-} else {
-  lines.push(`- ${label}: \`${fmt(v)}\``);
-}
+      lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
+    } else if (pct > 0) {
+      lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out)`);
+    } else if (rrTxt) {
+      lines.push(`- ${label}: \`${fmt(v)}\` (${rrTxt})`);
+    } else {
+      lines.push(`- ${label}: \`${fmt(v)}\``);
+    }
+  }
+
+  // Optional chart link (display only if present)
+  if (signal.chartUrl && String(signal.chartUrl).trim().length) {
+    lines.push('');
+    lines.push(`🖼 **Chart**`);
+    lines.push(String(signal.chartUrl).trim());
   }
 
   if (signal.reason && String(signal.reason).trim().length) {
@@ -140,7 +155,7 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     lines.push(String(signal.reason).trim());
   }
 
-  // Status
+  // Status (unchanged style)
   lines.push('');
   lines.push(`📍 **Status**`);
   if (signal.status === 'RUN_VALID') {
@@ -168,6 +183,21 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
       lines.push(`Inactive 🟥`);
     }
     lines.push(`Valid for re-entry: ❌`);
+  }
+
+  // ---- Max R Reached (optional, before Realized) ----
+  const showMaxR = signal.maxR !== null && signal.maxR !== undefined && String(signal.maxR) !== '';
+  if (showMaxR) {
+    const mtxt = maxRText(signal.maxR);
+    if (mtxt) {
+      lines.push('');
+      lines.push(`📈 **Max R Reached**`);
+      if (signal.status === 'RUN_VALID') {
+        lines.push(`${mtxt} so far`);
+      } else {
+        lines.push(mtxt);
+      }
+    }
   }
 
   // Realized
