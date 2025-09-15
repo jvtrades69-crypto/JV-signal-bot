@@ -21,14 +21,6 @@ function signAbsR(r) {
   return { text: `${sign}${abs}R`, abs, sign };
 }
 
-// MaxR formatter (no leading "+")
-function maxRText(r) {
-  if (r === null || r === undefined || r === '') return null;
-  const v = Number(r);
-  if (Number.isNaN(v)) return null;
-  return `${Math.abs(v - Math.round(v)) < 1e-9 ? Math.round(v).toFixed(0) : v.toFixed(2)}R`;
-}
-
 function rrLineFromChips(rrChips) {
   if (!rrChips || !rrChips.length) return null;
   return rrChips.map(c => `${c.key} ${Number(c.r).toFixed(2)}R`).join(' | ');
@@ -142,20 +134,13 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     }
   }
 
-  // Optional chart link (display only if present)
-  if (signal.chartUrl && String(signal.chartUrl).trim().length) {
-    lines.push('');
-    lines.push(`🖼 **Chart**`);
-    lines.push(String(signal.chartUrl).trim());
-  }
-
   if (signal.reason && String(signal.reason).trim().length) {
     lines.push('');
     lines.push(`📝 **Reasoning**`);
     lines.push(String(signal.reason).trim());
   }
 
-  // Status (unchanged style)
+  // Status
   lines.push('');
   lines.push(`📍 **Status**`);
   if (signal.status === 'RUN_VALID') {
@@ -185,19 +170,25 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     lines.push(`Valid for re-entry: ❌`);
   }
 
-  // ---- Max R Reached (optional, before Realized) ----
-  const showMaxR = signal.maxR !== null && signal.maxR !== undefined && String(signal.maxR) !== '';
-  if (showMaxR) {
-    const mtxt = maxRText(signal.maxR);
-    if (mtxt) {
-      lines.push('');
-      lines.push(`📈 **Max R Reached**`);
-      if (signal.status === 'RUN_VALID') {
-        lines.push(`${mtxt} so far`);
-      } else {
-        lines.push(mtxt);
-      }
+  // Max R reached (before Realized)
+  if (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) {
+    const mr = Number(signal.maxR).toFixed(2);
+    const soFar = signal.status === 'RUN_VALID' ? ' so far' : '';
+    lines.push('');
+    lines.push(`📈 **Max R reached**`);
+    lines.push(`${mr}R${soFar}`);
+    // If no TP hits yet and trade still running, mention awaiting TP1
+    const anyTpHit = !!(signal.tpHits && Object.values(signal.tpHits).some(Boolean));
+    if (signal.status === 'RUN_VALID' && !anyTpHit) {
+      lines.push(`Awaiting TP1…`);
     }
+  }
+
+  // Chart link (always as text; creation-attachment is handled by index.js)
+  if (signal.chartUrl) {
+    lines.push('');
+    lines.push(`🖼️ **Chart**`);
+    lines.push(`${signal.chartUrl}`);
   }
 
   // Realized
