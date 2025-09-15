@@ -114,14 +114,6 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
   lines.push(`- Entry: \`${fmt(signal.entry)}\``);
   lines.push(`- SL: \`${fmt(signal.sl)}\``);
 
-  // OPTION B (link mode): show a short chart link *right after* Trade Details.
-  // We only print the link when the image is NOT attached inline.
-  if (signal.chartUrl && !signal.chartAttached) {
-    lines.push('');
-    lines.push(`[chart](${signal.chartUrl})`);
-  }
-
-  // TP lines
   const tps = ['tp1','tp2','tp3','tp4','tp5'];
   const execOrPlan = computeTpPercents(signal);
   for (const k of tps) {
@@ -227,6 +219,13 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
       } else if (list) {
         lines.push(`${pretty} so far ( ${list} )`);
       }
+    }
+
+    // OPTION B (link mode): show a short chart link under Realized.
+    // We only print the link when the image is NOT attached inline.
+    if (signal.chartUrl && !signal.chartAttached) {
+      lines.push('');
+      lines.push(`[chart](${signal.chartUrl})`);
     }
   }
 
