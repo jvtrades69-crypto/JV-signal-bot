@@ -97,9 +97,9 @@ function normalizeSignal(raw) {
   s.tpHits = s.tpHits && typeof s.tpHits === 'object' ? s.tpHits : { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false };
   // optional overrides/new fields
   if (s.finalR !== undefined && s.finalR !== null && !isNum(s.finalR)) delete s.finalR;
-  if (!isNum(s.maxR)) s.maxR = null;          // <- optional max R reached (manual)
-  s.chartUrl = s.chartUrl || null;            // <- optional chart link or attachment URL
-  s.chartAttached = !!s.chartAttached;        // <- true if we attached the image on first post
+  if (!isNum(s.maxR)) s.maxR = null;          // optional max R reached (manual)
+  s.chartUrl = s.chartUrl || null;            // optional chart link or attachment URL
+  s.chartAttached = !!s.chartAttached;        // true if we attached the image on first post
   return s;
 }
 
@@ -165,7 +165,7 @@ async function postSignalMessage(signal) {
     ...(mentionLine ? { allowedMentions } : {}),
   };
 
-  // If we have a chart URL from an attachment on creation, paste image inline
+  // Option A: if creation had an attachment, include it inline
   if (signal.chartUrl && signal.chartAttached) {
     payload.files = [signal.chartUrl];
   }
@@ -178,14 +178,22 @@ async function editSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
   const msg = await channel.messages.fetch(signal.messageId).catch(() => null);
   if (!msg) return false;
+
   const rrChips = computeRRChips(signal);
   const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
 
-  await msg.edit({
+  const editPayload = {
     content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
     ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
-  }).catch(() => {});
+  };
+
+  // Option B: when replacing via control panel (chartAttached=false), remove any previous attachments
+  if (!signal.chartAttached) {
+    editPayload.attachments = []; // clears old image(s)
+  }
+
+  await msg.edit(editPayload).catch(() => {});
   return true;
 }
 
@@ -666,7 +674,8 @@ client.on('interactionCreate', async (interaction) => {
         if (!url || !/^https?:\/\//i.test(url)) {
           return safeEditReply(interaction, { content: '❌ Please provide a valid http(s) URL.' });
         }
-        await updateSignal(id, { chartUrl: url, chartAttached: false }); // edits will be link-only
+        // Switch to "link only" mode and ensure old inline image is removed on edit
+        await updateSignal(id, { chartUrl: url, chartAttached: false });
         await editSignalMessage(normalizeSignal(await getSignal(id)));
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Chart link updated.' });
