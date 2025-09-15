@@ -177,7 +177,6 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     lines.push('');
     lines.push(`📈 **Max R reached**`);
     lines.push(`${mr}R${soFar}`);
-    // If no TP hits yet and trade still running, mention awaiting TP1
     const anyTpHit = !!(signal.tpHits && Object.values(signal.tpHits).some(Boolean));
     if (signal.status === 'RUN_VALID' && !anyTpHit) {
       lines.push(`Awaiting TP1…`);
@@ -222,10 +221,11 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
       }
     }
 
-    // Chart link (OPTION B): if present, show the raw link directly under Realized (no "Chart" header)
-    if (signal.chartLink) {
+    // OPTION B (link mode): show a short chart link under Realized.
+    // We only print the link when the image is NOT attached inline.
+    if (signal.chartUrl && !signal.chartAttached) {
       lines.push('');
-      lines.push(signal.chartLink);
+      lines.push(`[Chart](${signal.chartUrl})`);
     }
   }
 
