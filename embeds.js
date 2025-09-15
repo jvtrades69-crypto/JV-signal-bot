@@ -33,7 +33,7 @@ function computeTpPercents(signal) {
   for (const f of signal.fills || []) {
     const src = String(f.source || '').toUpperCase();
     if (src.startsWith('TP')) {
-      const key = src.slice(0,3);
+      const key = src.slice(0, 3);
       if (acc[key] !== undefined) acc[key] += Number(f.pct || 0);
     }
   }
@@ -55,6 +55,7 @@ function rAtPrice(direction, entry, slOriginal, price) {
     const risk = S - E; if (risk <= 0) return null; return (E - P) / risk;
   }
 }
+
 function computeRealized(signal) {
   const fills = signal.fills || [];
   if (!fills.length) return { realized: 0, parts: [] };
@@ -170,7 +171,7 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     lines.push(`Valid for re-entry: ❌`);
   }
 
-  // Max R reached (before Realized) — no plus sign
+  // Max R reached
   if (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) {
     const mr = Number(signal.maxR).toFixed(2);
     const soFar = signal.status === 'RUN_VALID' ? ' so far' : '';
@@ -183,7 +184,7 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     }
   }
 
-  // Realized
+  // Realized + chart link
   const hasFills = Array.isArray(signal.fills) && signal.fills.length > 0;
   if (signal.status !== 'RUN_VALID' || hasFills) {
     lines.push('');
@@ -221,8 +222,7 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
       }
     }
 
-    // OPTION B (link mode): show a short chart link under Realized.
-    // We only print the link when the image is NOT attached inline.
+    // Clean chart link only
     if (signal.chartUrl && !signal.chartAttached) {
       lines.push('');
       lines.push(`[chart](${signal.chartUrl})`);
