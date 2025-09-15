@@ -33,7 +33,7 @@ function computeTpPercents(signal) {
   for (const f of signal.fills || []) {
     const src = String(f.source || '').toUpperCase();
     if (src.startsWith('TP')) {
-      const key = src.slice(0, 3);
+      const key = src.slice(0,3);
       if (acc[key] !== undefined) acc[key] += Number(f.pct || 0);
     }
   }
@@ -55,7 +55,6 @@ function rAtPrice(direction, entry, slOriginal, price) {
     const risk = S - E; if (risk <= 0) return null; return (E - P) / risk;
   }
 }
-
 function computeRealized(signal) {
   const fills = signal.fills || [];
   if (!fills.length) return { realized: 0, parts: [] };
@@ -115,14 +114,14 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
   lines.push(`- Entry: \`${fmt(signal.entry)}\``);
   lines.push(`- SL: \`${fmt(signal.sl)}\``);
 
-  const tps = ['tp1', 'tp2', 'tp3', 'tp4', 'tp5'];
+  const tps = ['tp1','tp2','tp3','tp4','tp5'];
   const execOrPlan = computeTpPercents(signal);
   for (const k of tps) {
     const v = signal[k];
     if (v === null || v === undefined || v === '') continue;
     const label = k.toUpperCase();
     const pct = execOrPlan[label];
-    const chip = rrChips?.find?.(c => c.key === label);
+    const chip = rrChips.find(c => c.key === label);
     const rrTxt = chip ? `${chip.r.toFixed(2)}R` : null;
     if (pct > 0 && rrTxt) {
       lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
@@ -171,28 +170,25 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     lines.push(`Valid for re-entry: ❌`);
   }
 
-  // === NEW: Max R Reached (shown BEFORE Realized) ===
-  // - No "+" sign.
-  // - Shows "so far" only while RUN_VALID.
-  // - Adds "(awaiting TP1)" if active and no TP has hit yet.
-  const hasMaxR = typeof signal.maxR === 'number' && !Number.isNaN(signal.maxR);
-  const anyTPHit = !!(signal.tpHits && Object.values(signal.tpHits).some(Boolean));
-  if (hasMaxR) {
+  // Max R reached (before Realized)
+  if (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) {
+    const mr = Number(signal.maxR).toFixed(2);
+    const soFar = signal.status === 'RUN_VALID' ? ' so far' : '';
     lines.push('');
-    lines.push(`📏 **Max R Reached**`);
-    const maxRtxt = `${signal.maxR.toFixed(2)}R`;
-    if (signal.status === 'RUN_VALID') {
-      lines.push(`- ${maxRtxt} so far${!anyTPHit ? ' (awaiting TP1)' : ''}`);
-    } else {
-      lines.push(`- ${maxRtxt}`);
+    lines.push(`📈 **Max R reached**`);
+    lines.push(`${mr}R${soFar}`);
+    // If no TP hits yet and trade still running, mention awaiting TP1
+    const anyTpHit = !!(signal.tpHits && Object.values(signal.tpHits).some(Boolean));
+    if (signal.status === 'RUN_VALID' && !anyTpHit) {
+      lines.push(`Awaiting TP1…`);
     }
   }
 
-  // === NEW: Chart link (optional) ===
-  if (signal.chartUrl && String(signal.chartUrl).trim().length) {
+  // Chart link (always as text; creation-attachment is handled by index.js)
+  if (signal.chartUrl) {
     lines.push('');
     lines.push(`🖼️ **Chart**`);
-    lines.push(String(signal.chartUrl).trim());
+    lines.push(`${signal.chartUrl}`);
   }
 
   // Realized
@@ -206,9 +202,8 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
         const after = signal.latestTpHit ? ` after ${signal.latestTpHit}` : '';
         lines.push(`${text} ( fully closed${after} )`);
       } else if (signal.status === 'STOPPED_BE') {
-        if (Number(signal.finalR) === 0) {
-          lines.push(`0.00R ( stopped breakeven )`);
-        } else {
+        if (Number(signal.finalR) === 0) lines.push(`0.00R ( stopped breakeven )`);
+        else {
           const after = signal.latestTpHit ? ` after ${signal.latestTpHit}` : '';
           lines.push(`${text} ( stopped breakeven${after} )`);
         }
@@ -247,7 +242,7 @@ export function renderSummaryText(activeSignals) {
   activeSignals.forEach((s, i) => {
     const dirWord = s.direction === 'SHORT' ? 'Short' : 'Long';
     const circle = s.direction === 'SHORT' ? '🔴' : '🟢';
-    lines.push(`${i + 1}️⃣ $${s.asset} | ${dirWord} ${circle}`);
+    lines.push(`${i+1}️⃣ $${s.asset} | ${dirWord} ${circle}`);
     lines.push(`- Entry: \`${fmt(s.entry)}\``);
     lines.push(`- SL: \`${fmt(s.sl)}\``);
     lines.push(`- Status: Active 🟩`);
