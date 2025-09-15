@@ -170,7 +170,7 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     lines.push(`Valid for re-entry: ❌`);
   }
 
-  // Max R reached (before Realized)
+  // Max R reached (before Realized) — no plus sign
   if (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) {
     const mr = Number(signal.maxR).toFixed(2);
     const soFar = signal.status === 'RUN_VALID' ? ' so far' : '';
@@ -182,13 +182,6 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     if (signal.status === 'RUN_VALID' && !anyTpHit) {
       lines.push(`Awaiting TP1…`);
     }
-  }
-
-  // Chart link (always as text; creation-attachment is handled by index.js)
-  if (signal.chartUrl) {
-    lines.push('');
-    lines.push(`🖼️ **Chart**`);
-    lines.push(`${signal.chartUrl}`);
   }
 
   // Realized
@@ -227,6 +220,12 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
       } else if (list) {
         lines.push(`${pretty} so far ( ${list} )`);
       }
+    }
+
+    // Chart link (OPTION B): if present, show the raw link directly under Realized (no "Chart" header)
+    if (signal.chartLink) {
+      lines.push('');
+      lines.push(signal.chartLink);
     }
   }
 
