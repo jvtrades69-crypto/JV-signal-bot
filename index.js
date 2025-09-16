@@ -1,5 +1,3 @@
-Could u help me edit send the full one? Here’s my current index :
-
 // index.js — JV Signal Bot (stable)
 // - Plain text messages (uses renders from embeds.js)
 // - TP plans + auto-exec
