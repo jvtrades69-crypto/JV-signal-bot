@@ -3,25 +3,25 @@
 function fmt(v) {
   if (v === null || v === undefined || v === '') return '—';
   const n = Number(v);
-  if (Number.isNaN(n)) return v;
+  if (Number.isNaN(n)) return String(v);
   return addCommas(n);
 }
 
 function addCommas(num) {
-  if (num === null || num === undefined || num === '') return num;
+  if (num === null || num === undefined || num === '') return String(num);
   const n = Number(num);
-  if (isNaN(n)) return num;
+  if (Number.isNaN(n)) return String(num);
   return n.toLocaleString('en-US');
 }
 
-function signAbsR(r) {
+export function signAbsR(r) {
   const x = Number(r || 0);
   const abs = Math.abs(x).toFixed(2);
   const sign = x > 0 ? '+' : x < 0 ? '-' : '';
   return { text: `${sign}${abs}R`, abs, sign };
 }
 
-function rrLineFromChips(rrChips) {
+export function rrLineFromChips(rrChips) {
   if (!rrChips || !rrChips.length) return null;
   return rrChips.map(c => `${c.key} ${Number(c.r).toFixed(2)}R`).join(' | ');
 }
@@ -122,8 +122,8 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     if (v === null || v === undefined || v === '') continue;
     const label = k.toUpperCase();
     const pct = execOrPlan[label];
-    const chip = rrLineFromChips; // not used here but kept available
-    const rrTxt = null; // chips rendered inline in your older version — we keep text clean here
+    const chip = rrChips?.find?.(c => c.key === label);
+    const rrTxt = chip ? `${chip.r.toFixed(2)}R` : null;
     if (pct > 0 && rrTxt) {
       lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
     } else if (pct > 0) {
@@ -253,57 +253,46 @@ export function renderSummaryText(activeSignals) {
   return lines.join('\n').trimEnd();
 }
 
-// ------------------------------
-// RECAP RENDERERS (added)
-// ------------------------------
+/* ---------------------------
+   Optional recap renderers
+   (Not required by index.js, but available if you want to import them later)
+----------------------------*/
 export function renderTradeRecap(signal) {
   const { realized } = computeRealized(signal);
-  const r = (signal.finalR != null) ? Number(signal.finalR) : realized;
+  const rText = signal.finalR != null && signal.status !== 'RUN_VALID'
+    ? signAbsR(signal.finalR).text
+    : signAbsR(realized).text;
+
   const lines = [];
-  const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
-  lines.push(`**$${signal.asset} | ${dirWord} Recap**`);
+  lines.push(`**$${String(signal.asset).toUpperCase()} | ${signal.direction} Recap**`);
   lines.push(`Entry: ${fmt(signal.entry)} | SL: ${fmt(signal.sl)}`);
-  if (signal.tp1) lines.push(`TP1: ${fmt(signal.tp1)}`);
-  if (signal.tp2) lines.push(`TP2: ${fmt(signal.tp2)}`);
-  if (signal.tp3) lines.push(`TP3: ${fmt(signal.tp3)}`);
-  if (signal.tp4) lines.push(`TP4: ${fmt(signal.tp4)}`);
-  if (signal.tp5) lines.push(`TP5: ${fmt(signal.tp5)}`);
-  lines.push(`Result: ${signAbsR(r).text}`);
-  return lines.join('\n');
-}
-
-export function renderWeeklyRecap(signals, label) {
-  const lines = [`**Weekly Recap (${label})** 📅`];
-  if (!signals || !signals.length) {
-    lines.push('No trades found in this week.');
-    return lines.join('\n');
-  }
-  let total = 0;
-  signals.forEach((s, i) => {
-    const { realized } = computeRealized(s);
-    const r = (s.finalR != null) ? Number(s.finalR) : realized;
-    total += r;
-    const dirWord = s.direction === 'SHORT' ? 'Short' : 'Long';
-    lines.push(`${i+1}. $${s.asset} ${dirWord} → ${signAbsR(r).text}`);
+  const tps = [];
+  ['tp1','tp2','tp3','tp4','tp5'].forEach(k => {
+    if (signal[k] != null && signal[k] !== '') tps.push(`${k.toUpperCase()}: ${fmt(signal[k])}`);
   });
-  lines.push('');
-  lines.push(`Total: ${signAbsR(total).text}`);
+  if (tps.length) lines.push(tps.join(' | '));
+
+  if (signal.status === 'STOPPED_OUT') lines.push(`Result: ${rText} (stopped out)`);
+  else if (signal.status === 'STOPPED_BE') lines.push(`Result: ${rText} (breakeven)`);
+  else if (signal.status === 'CLOSED') lines.push(`Result: ${rText} (fully closed)`);
+  else lines.push(`Result so far: ${rText}`);
+
   return lines.join('\n');
 }
 
-export function renderMonthlyRecap(signals, label) {
-  const lines = [`**Monthly Recap (${label})** 📅`];
-  if (!signals || !signals.length) {
-    lines.push('No trades found in this month.');
-    return lines.join('\n');
-  }
+export function renderPeriodRecap(signals, header = 'Period Recap') {
+  if (!signals || !signals.length) return `**${header}**\n\n• No trades found in this period.`;
+  const lines = [`**${header}**`];
   let total = 0;
   signals.forEach((s, i) => {
-    const { realized } = computeRealized(s);
-    const r = (s.finalR != null) ? Number(s.finalR) : realized;
-    total += r;
-    const dirWord = s.direction === 'SHORT' ? 'Short' : 'Long';
-    lines.push(`${i+1}. $${s.asset} ${dirWord} → ${signAbsR(r).text}`);
+    const final = (s.status !== 'RUN_VALID' && s.finalR != null) ? Number(s.finalR) : computeRealized(s).realized;
+    total += final;
+    const status =
+      s.status === 'CLOSED' ? 'closed' :
+      s.status === 'STOPPED_BE' ? 'breakeven' :
+      s.status === 'STOPPED_OUT' ? 'stopped out' :
+      'running';
+    lines.push(`${i+1}. $${String(s.asset).toUpperCase()} ${s.direction} → ${signAbsR(final).text} (${status})`);
   });
   lines.push('');
   lines.push(`Total: ${signAbsR(total).text}`);
