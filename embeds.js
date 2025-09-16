@@ -122,8 +122,8 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     if (v === null || v === undefined || v === '') continue;
     const label = k.toUpperCase();
     const pct = execOrPlan[label];
-    const chip = rrChips.find(c => c.key === label);
-    const rrTxt = chip ? `${chip.r.toFixed(2)}R` : null;
+    const chip = rrLineFromChips; // not used here but kept available
+    const rrTxt = null; // chips rendered inline in your older version — we keep text clean here
     if (pct > 0 && rrTxt) {
       lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
     } else if (pct > 0) {
@@ -251,4 +251,61 @@ export function renderSummaryText(activeSignals) {
     lines.push('');
   });
   return lines.join('\n').trimEnd();
+}
+
+// ------------------------------
+// RECAP RENDERERS (added)
+// ------------------------------
+export function renderTradeRecap(signal) {
+  const { realized } = computeRealized(signal);
+  const r = (signal.finalR != null) ? Number(signal.finalR) : realized;
+  const lines = [];
+  const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
+  lines.push(`**$${signal.asset} | ${dirWord} Recap**`);
+  lines.push(`Entry: ${fmt(signal.entry)} | SL: ${fmt(signal.sl)}`);
+  if (signal.tp1) lines.push(`TP1: ${fmt(signal.tp1)}`);
+  if (signal.tp2) lines.push(`TP2: ${fmt(signal.tp2)}`);
+  if (signal.tp3) lines.push(`TP3: ${fmt(signal.tp3)}`);
+  if (signal.tp4) lines.push(`TP4: ${fmt(signal.tp4)}`);
+  if (signal.tp5) lines.push(`TP5: ${fmt(signal.tp5)}`);
+  lines.push(`Result: ${signAbsR(r).text}`);
+  return lines.join('\n');
+}
+
+export function renderWeeklyRecap(signals, label) {
+  const lines = [`**Weekly Recap (${label})** 📅`];
+  if (!signals || !signals.length) {
+    lines.push('No trades found in this week.');
+    return lines.join('\n');
+  }
+  let total = 0;
+  signals.forEach((s, i) => {
+    const { realized } = computeRealized(s);
+    const r = (s.finalR != null) ? Number(s.finalR) : realized;
+    total += r;
+    const dirWord = s.direction === 'SHORT' ? 'Short' : 'Long';
+    lines.push(`${i+1}. $${s.asset} ${dirWord} → ${signAbsR(r).text}`);
+  });
+  lines.push('');
+  lines.push(`Total: ${signAbsR(total).text}`);
+  return lines.join('\n');
+}
+
+export function renderMonthlyRecap(signals, label) {
+  const lines = [`**Monthly Recap (${label})** 📅`];
+  if (!signals || !signals.length) {
+    lines.push('No trades found in this month.');
+    return lines.join('\n');
+  }
+  let total = 0;
+  signals.forEach((s, i) => {
+    const { realized } = computeRealized(s);
+    const r = (s.finalR != null) ? Number(s.finalR) : realized;
+    total += r;
+    const dirWord = s.direction === 'SHORT' ? 'Short' : 'Long';
+    lines.push(`${i+1}. $${s.asset} ${dirWord} → ${signAbsR(r).text}`);
+  });
+  lines.push('');
+  lines.push(`Total: ${signAbsR(total).text}`);
+  return lines.join('\n');
 }
