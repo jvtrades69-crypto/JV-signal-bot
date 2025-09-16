@@ -136,6 +136,7 @@ function renderRecap(signals) {
   });
   return lines.join('\n').trimEnd();
 }
+  function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
   const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
   const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
   // On initial send we allowRoles to ping; on edits we suppress pings entirely
@@ -143,7 +144,6 @@ function renderRecap(signals) {
   if (!ids.length) return { content: '', allowedMentions: { parse: [] } };
   return { content, allowedMentions: { parse: [], roles: ids } };
 }
-
 // ------------------------------
 // Ack helpers (prevent “not sent or deferred”)
 // ------------------------------
