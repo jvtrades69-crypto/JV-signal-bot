@@ -118,7 +118,24 @@ function extractRoleIds(defaultRoleId, extraRoleRaw) {
   if (found) ids.push(...found);
   return Array.from(new Set(ids));
 }
-function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
+function renderRecap(signals) {
+  if (!signals.length) return '**📊 Trade Recap**\n\nNo trades to show.';
+  const lines = ['**📊 Trade Recap**', ''];
+  signals.forEach((s, i) => {
+    const dirWord = s.direction === 'SHORT' ? 'Short' : 'Long';
+    const circle = s.direction === 'SHORT' ? '🔴' : '🟢';
+    let statusTxt = '';
+    if (s.status === STATUS.CLOSED) statusTxt = '✅ Closed';
+    else if (s.status === STATUS.STOPPED_BE) statusTxt = '🟨 Stopped BE';
+    else if (s.status === STATUS.STOPPED_OUT) statusTxt = '❌ Stopped Out';
+    else if (s.status === STATUS.RUN_VALID && s.latestTpHit) statusTxt = `⚡ Running (after ${s.latestTpHit})`;
+    const rTxt = s.finalR != null ? `${Number(s.finalR).toFixed(2)}R` : '';
+    lines.push(`${i+1}️⃣ $${s.asset} | ${dirWord} ${circle} — ${statusTxt}${rTxt ? ` | ${rTxt}` : ''}`);
+    if (s.jumpUrl) lines.push(`[View Signal](${s.jumpUrl})`);
+    lines.push('');
+  });
+  return lines.join('\n').trimEnd();
+}
   const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
   const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
   // On initial send we allowRoles to ping; on edits we suppress pings entirely
@@ -589,6 +606,20 @@ client.on('interactionCreate', async (interaction) => {
         chartAttached: !!chartAtt?.url,
       }, interaction.channelId);
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
+    // /recap
+    if (interaction.isChatInputCommand() && interaction.commandName === 'recap') {
+      await interaction.deferReply();
+      const all = (await getSignals()).map(normalizeSignal);
+      const filtered = all.filter(s =>
+        s.status === STATUS.CLOSED ||
+        s.status === STATUS.STOPPED_BE ||
+        s.status === STATUS.STOPPED_OUT ||
+        (s.status === STATUS.RUN_VALID && s.latestTpHit)
+      );
+      const content = renderRecap(filtered.slice(-10)); // last 10 trades
+      return interaction.editReply({ content });
+    }
+
     }
 
     // /recap
