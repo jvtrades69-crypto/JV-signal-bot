@@ -954,4 +954,4 @@ async function pruneGhostSignals() {
   }
 }
 
-client.login(config.token);
+client.login(config.token);\
