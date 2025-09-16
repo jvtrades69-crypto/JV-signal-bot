@@ -52,30 +52,10 @@ const signalCmd = new SlashCommandBuilder()
   .addStringOption(opt => opt.setName('reason').setDescription('Reason (optional)').setRequired(false))
   .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)').setRequired(false));
 
-/* /recap (owner will be checked in index.js) */
+/* /recap */
 const recapCmd = new SlashCommandBuilder()
   .setName('recap')
-  .setDescription('Generate a recap of trades (owner only).')
-  .addStringOption(opt =>
-    opt.setName('type')
-      .setDescription('Recap type')
-      .setRequired(true)
-      .addChoices(
-        { name: 'Trade',   value: 'trade' },
-        { name: 'Weekly',  value: 'weekly' },
-        { name: 'Monthly', value: 'monthly' },
-      )
-  )
-  .addStringOption(opt =>
-    opt.setName('range')
-      .setDescription('For weekly/monthly: e.g. 2025-W37 or 2025-09 (optional)')
-      .setRequired(false)
-  )
-  .addStringOption(opt =>
-    opt.setName('asset')
-      .setDescription('Asset filter (e.g., BTC) — optional')
-      .setRequired(false)
-  );
+  .setDescription('Show recap of recent trades.');
 
 const commands = [pingCmd, signalCmd, recapCmd].map(c => c.toJSON());
 
