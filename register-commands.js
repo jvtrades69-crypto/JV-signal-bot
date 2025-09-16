@@ -1,4 +1,4 @@
-// register-commands.js — Registers /ping and /signal (BTC/ETH/SOL/OTHER)
+// register-commands.js — Registers /ping, /signal, and /recap
 
 import { REST, Routes, SlashCommandBuilder } from 'discord.js';
 import config from './config.js';
@@ -7,10 +7,12 @@ const { token, clientId, guildId } = config;
 
 const ASSETS = ['BTC', 'ETH', 'SOL', 'OTHER'];
 
+/* /ping */
 const pingCmd = new SlashCommandBuilder()
   .setName('ping')
   .setDescription('Simple health check (owner only answers).');
 
+/* /signal */
 const signalCmd = new SlashCommandBuilder()
   .setName('signal')
   .setDescription('Create a new trade signal.')
@@ -24,23 +26,58 @@ const signalCmd = new SlashCommandBuilder()
   )
   .addStringOption(opt => opt.setName('entry').setDescription('Entry (free text number)').setRequired(true))
   .addStringOption(opt => opt.setName('sl').setDescription('SL (free text number)').setRequired(true))
+
+  // --- OPTIONAL (Chart FIRST) ---
+  .addAttachmentOption(opt =>
+    opt.setName('chart')
+      .setDescription('Attach chart image (optional)')
+      .setRequired(false)
+  )
+
+  // TP price levels (optional)
   .addStringOption(opt => opt.setName('tp1').setDescription('TP1 (optional)').setRequired(false))
   .addStringOption(opt => opt.setName('tp2').setDescription('TP2 (optional)').setRequired(false))
   .addStringOption(opt => opt.setName('tp3').setDescription('TP3 (optional)').setRequired(false))
   .addStringOption(opt => opt.setName('tp4').setDescription('TP4 (optional)').setRequired(false))
   .addStringOption(opt => opt.setName('tp5').setDescription('TP5 (optional)').setRequired(false))
-  // planned percentages (optional)
+
+  // Planned percentages (optional)
   .addStringOption(opt => opt.setName('tp1_pct').setDescription('Planned % at TP1 (0–100)').setRequired(false))
   .addStringOption(opt => opt.setName('tp2_pct').setDescription('Planned % at TP2 (0–100)').setRequired(false))
   .addStringOption(opt => opt.setName('tp3_pct').setDescription('Planned % at TP3 (0–100)').setRequired(false))
   .addStringOption(opt => opt.setName('tp4_pct').setDescription('Planned % at TP4 (0–100)').setRequired(false))
   .addStringOption(opt => opt.setName('tp5_pct').setDescription('Planned % at TP5 (0–100)').setRequired(false))
-  .addStringOption(opt => opt.setName('reason').setDescription('Reason (optional)').setRequired(false))
-  .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)').setRequired(false))
-  // NEW: optional chart image attachment (pastes inline on first post)
-  .addAttachmentOption(opt => opt.setName('chart').setDescription('Attach chart image (optional)').setRequired(false));
 
-const commands = [pingCmd, signalCmd].map(c => c.toJSON());
+  // Meta (optional)
+  .addStringOption(opt => opt.setName('reason').setDescription('Reason (optional)').setRequired(false))
+  .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)').setRequired(false));
+
+/* /recap (owner will be checked in index.js) */
+const recapCmd = new SlashCommandBuilder()
+  .setName('recap')
+  .setDescription('Generate a recap of trades (owner only).')
+  .addStringOption(opt =>
+    opt.setName('type')
+      .setDescription('Recap type')
+      .setRequired(true)
+      .addChoices(
+        { name: 'Trade',   value: 'trade' },
+        { name: 'Weekly',  value: 'weekly' },
+        { name: 'Monthly', value: 'monthly' },
+      )
+  )
+  .addStringOption(opt =>
+    opt.setName('range')
+      .setDescription('For weekly/monthly: e.g. 2025-W37 or 2025-09 (optional)')
+      .setRequired(false)
+  )
+  .addStringOption(opt =>
+    opt.setName('asset')
+      .setDescription('Asset filter (e.g., BTC) — optional')
+      .setRequired(false)
+  );
+
+const commands = [pingCmd, signalCmd, recapCmd].map(c => c.toJSON());
 
 async function main() {
   if (!token || !clientId || !guildId) {

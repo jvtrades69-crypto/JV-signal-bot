@@ -33,7 +33,7 @@ function computeTpPercents(signal) {
   for (const f of signal.fills || []) {
     const src = String(f.source || '').toUpperCase();
     if (src.startsWith('TP')) {
-      const key = src.slice(0,3);
+      const key = src.slice(0, 3);
       if (acc[key] !== undefined) acc[key] += Number(f.pct || 0);
     }
   }
@@ -55,6 +55,7 @@ function rAtPrice(direction, entry, slOriginal, price) {
     const risk = S - E; if (risk <= 0) return null; return (E - P) / risk;
   }
 }
+
 function computeRealized(signal) {
   const fills = signal.fills || [];
   if (!fills.length) return { realized: 0, parts: [] };
@@ -170,21 +171,20 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     lines.push(`Valid for re-entry: ❌`);
   }
 
-  // Max R reached (before Realized) — no plus sign
+  // Max R reached
   if (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) {
     const mr = Number(signal.maxR).toFixed(2);
     const soFar = signal.status === 'RUN_VALID' ? ' so far' : '';
     lines.push('');
     lines.push(`📈 **Max R reached**`);
     lines.push(`${mr}R${soFar}`);
-    // If no TP hits yet and trade still running, mention awaiting TP1
     const anyTpHit = !!(signal.tpHits && Object.values(signal.tpHits).some(Boolean));
     if (signal.status === 'RUN_VALID' && !anyTpHit) {
       lines.push(`Awaiting TP1…`);
     }
   }
 
-  // Realized
+  // Realized + chart link
   const hasFills = Array.isArray(signal.fills) && signal.fills.length > 0;
   if (signal.status !== 'RUN_VALID' || hasFills) {
     lines.push('');
@@ -222,10 +222,10 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
       }
     }
 
-    // Chart link (OPTION B): if present, show the raw link directly under Realized (no "Chart" header)
-    if (signal.chartLink) {
+    // Clean chart link only
+    if (signal.chartUrl && !signal.chartAttached) {
       lines.push('');
-      lines.push(signal.chartLink);
+      lines.push(`[chart](${signal.chartUrl})`);
     }
   }
 
