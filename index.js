@@ -950,4 +950,8 @@ async function pruneGhostSignals() {
       }
     }
   } catch (e) {
-    console.error('pruneGh
+    console.error('pruneGhostSignals error:', e);
+  }
+}
+
+client.login(config.token);
