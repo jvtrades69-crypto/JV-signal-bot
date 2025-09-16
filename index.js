@@ -1,13 +1,14 @@
-// index.js — JV Signal Bot (stable)
+// index.js — JV Signal Bot (stable) + Recap + Thread Auto-Rename
 // - Plain text messages (uses renders from embeds.js)
 // - TP plans + auto-exec
-// - Control panel (TP1–TP5 + 4 update modals + Close/BE/Out + Delete)
+// - Control panel (TP1–TP5 + 4 update modals + Close/BE/Out)  <-- Delete removed
 // - Summary in currentTradesChannelId (exactly 1 message, debounced)
 // - Signals post in the channel where /signal is run (per-signal channelId)
 // - Ignores “ghost” signals whose original message was manually deleted
 // - Dedupe guard for interactions (no double posts)
 // - Safe acks (prevents “not sent or deferred” / “unknown interaction”)
 // - Global error guards
+// - NEW: /recap trade|weekly|monthly (owner-only), createdAt timestamps, control-thread auto-renaming
 
 import {
   Client,
@@ -100,6 +101,7 @@ function normalizeSignal(raw) {
   if (!isNum(s.maxR)) s.maxR = null;          // optional max R reached (manual)
   s.chartUrl = s.chartUrl || null;            // optional chart link or attachment URL
   s.chartAttached = !!s.chartAttached;        // true if we attached the image on first post
+  if (!isNum(s.createdAt)) s.createdAt = null; // will be backfilled
   return s;
 }
 
@@ -108,6 +110,25 @@ function isSlMovedToBE(signal) {
   return s.status === STATUS.RUN_VALID && isNum(s.entry) && isNum(s.sl) && Number(s.entry) === Number(s.sl);
 }
 
+// --- Realized R (local) for thread titles & recaps ---
+function computeRealized(signal) {
+  const fills = signal.fills || [];
+  if (!fills.length) return { realized: 0 };
+  let sum = 0;
+  for (const f of fills) {
+    const pct = Number(f.pct || 0);
+    const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, f.price);
+    if (Number.isNaN(pct) || r === null) continue;
+    sum += (pct * r) / 100;
+  }
+  return { realized: Number(sum.toFixed(2)) };
+}
+function realizedForSignal(signal) {
+  if (signal.status !== STATUS.RUN_VALID && isNum(signal.finalR)) return Number(signal.finalR);
+  return computeRealized(signal).realized;
+}
+
+// Mentions
 function extractRoleIds(defaultRoleId, extraRoleRaw) {
   const ids = [];
   if (defaultRoleId) ids.push(defaultRoleId);
@@ -119,7 +140,7 @@ function extractRoleIds(defaultRoleId, extraRoleRaw) {
 function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
   const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
   const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
-  // On initial send we allowRoles to ping; on edits we suppress pings entirely
+  // On edits we keep highlight but suppress new pings
   if (forEdit) return { content, allowedMentions: { parse: [] } };
   if (!ids.length) return { content: '', allowedMentions: { parse: [] } };
   return { content, allowedMentions: { parse: [], roles: ids } };
@@ -161,12 +182,10 @@ async function postSignalMessage(signal) {
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
 
   const payload = {
-  // Show the link if we *didn't* attach the image inline
-  content: `${text}${signal.chartUrl && !signal.chartAttached ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
-  ...(mentionLine ? { allowedMentions } : {}),
-};
+    content: `${text}${signal.chartUrl && !signal.chartAttached ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+    ...(mentionLine ? { allowedMentions } : {}),
+  };
 
-  // Option A: if creation had an attachment, include it inline
   if (signal.chartUrl && signal.chartAttached) {
     payload.files = [signal.chartUrl];
   }
@@ -185,12 +204,10 @@ async function editSignalMessage(signal) {
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
 
   const editPayload = {
-  // Always show the link on updates (Option B). It appears above the mentions.
-  content: `${text}${signal.chartUrl ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
-  ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
-};
+    content: `${text}${signal.chartUrl ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+    ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
+  };
 
-  // Option B: when replacing via control panel (chartAttached=false), remove any previous attachments
   if (!signal.chartAttached) {
     editPayload.attachments = []; // clears old image(s)
   }
@@ -318,15 +335,37 @@ function controlRows(signalId) {
     new ButtonBuilder().setCustomId(btn(signalId,'setbe')).setLabel('🟨 Set SL → BE').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:maxr')).setLabel('📈 Set Max R').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:chart')).setLabel('🖼️ Set/Replace Chart Link').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'del')).setLabel('❌ Delete').setStyle(ButtonStyle.Secondary),
+    // ❌ Delete removed
   );
   return [row1, row2, row3, row4];
+}
+
+// ---- Control Thread Naming ----
+function threadBase(signal) {
+  const dir = signal.direction === DIR.SHORT ? 'short' : 'long';
+  return `${String(signal.asset || '').toUpperCase()} ${dir}`;
+}
+function threadNameFor(signal) {
+  const base = threadBase(signal);
+  if (signal.status === STATUS.STOPPED_OUT) return `${base} stopped out`;
+  if (signal.status === STATUS.STOPPED_BE)  return `${base} breakeven`;
+  const r = realizedForSignal(signal);
+  if (signal.status === STATUS.CLOSED) {
+    const signed = (r >= 0 ? '+' : '') + r.toFixed(2);
+    return `${base} ${signed}`;
+  }
+  // RUN_VALID
+  if (isNum(r) && r !== 0) {
+    const signed = (r >= 0 ? '+' : '') + r.toFixed(2);
+    return `${base} ${signed}`;
+  }
+  return base;
 }
 
 async function createControlThread(signal) {
   const channel = await client.channels.fetch(signal.channelId); // per-signal channel
   const thread = await channel.threads.create({
-    name: `controls-${signal.asset}-${signal.id.slice(0, 4)}`,
+    name: threadNameFor(signal),
     type: ChannelType.PrivateThread,
     invitable: false
   });
@@ -334,6 +373,19 @@ async function createControlThread(signal) {
   await setThreadId(signal.id, thread.id);
   await thread.send({ content: 'Owner Control Panel', components: controlRows(signal.id) });
   return thread.id;
+}
+
+async function updateControlThreadName(signal) {
+  try {
+    const tid = await getThreadId(signal.id);
+    if (!tid) return;
+    const thread = await client.channels.fetch(tid).catch(() => null);
+    if (!thread || !thread.isThread()) return;
+    const newName = threadNameFor(signal);
+    if (thread.name !== newName) {
+      await thread.setName(newName).catch(() => {});
+    }
+  } catch {}
 }
 
 async function deleteControlThread(signalId) {
@@ -437,6 +489,7 @@ function makeChartModal(id) {
 client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   await pruneGhostSignals().catch(() => {});
+  await backfillCreatedAt().catch(() => {});
 });
 
 // Manual delete watcher (any channel)
@@ -557,6 +610,45 @@ client.on('interactionCreate', async (interaction) => {
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
 
+    // ===== /recap =====
+    if (interaction.isChatInputCommand() && interaction.commandName === 'recap') {
+      if (interaction.user.id !== config.ownerId) {
+        return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
+      }
+      await ensureDeferred(interaction);
+
+      const type  = interaction.options.getString('type');   // trade | weekly | monthly
+      const range = interaction.options.getString('range');  // optional
+      const asset = interaction.options.getString('asset');  // optional
+
+      const all = (await getSignals()).map(normalizeSignal).sort((a,b) => (a.createdAt||0) - (b.createdAt||0));
+      const pool = asset ? filterByAsset(all, asset) : all;
+
+      let content = '';
+
+      if (type === 'trade') {
+        const last = pool[pool.length - 1];
+        content = last ? renderTradeRecapInline(last) : '❌ No trades found.';
+        return safeEditReply(interaction, { content });
+      }
+
+      if (type === 'weekly') {
+        const [start, end, label] = parseWeeklyRangeOrCurrent(range);
+        const subset = pool.filter(s => isNum(s.createdAt) && s.createdAt >= start && s.createdAt < end);
+        content = renderPeriodRecapInline(subset, `Weekly Recap (${label})`);
+        return safeEditReply(interaction, { content });
+      }
+
+      if (type === 'monthly') {
+        const [start, end, label] = parseMonthlyRangeOrCurrent(range);
+        const subset = pool.filter(s => isNum(s.createdAt) && s.createdAt >= start && s.createdAt < end);
+        content = renderPeriodRecapInline(subset, `Monthly Recap (${label})`);
+        return safeEditReply(interaction, { content });
+      }
+
+      return safeEditReply(interaction, { content: '❌ Unknown recap type.' });
+    }
+
     // ===== MODALS =====
     if (interaction.isModalSubmit()) {
       const idPart = interaction.customId.split(':').pop(); // after last :
@@ -567,7 +659,7 @@ client.on('interactionCreate', async (interaction) => {
         pendingSignals.delete(idPart);
         if (!stash) return safeEditReply(interaction, { content: '❌ Session expired. Try /signal again.' });
         const asset = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
-        await createSignal({ asset, ...stash }, stash.channelId || interaction.channelId);
+        const sig = await createSignal({ asset, ...stash }, stash.channelId || interaction.channelId);
         return safeEditReply(interaction, { content: `✅ Trade signal posted for ${asset}.` });
       }
 
@@ -587,6 +679,7 @@ client.on('interactionCreate', async (interaction) => {
         const updated = normalizeSignal(await getSignal(id));
         if (isSlMovedToBE(updated)) { updated.validReentry = false; await updateSignal(id, { validReentry: false }); }
         await editSignalMessage(updated);
+        await updateControlThreadName(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ TP prices updated.' });
       }
@@ -605,7 +698,9 @@ client.on('interactionCreate', async (interaction) => {
           if (isNum(raw)) patchPlan[t.toUpperCase()] = Math.max(0, Math.min(100, Number(raw)));
         }
         await updateSignal(id, { plan: patchPlan });
-        await editSignalMessage(normalizeSignal(await getSignal(id)));
+        const next = normalizeSignal(await getSignal(id));
+        await editSignalMessage(next);
+        await updateControlThreadName(next);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ TP % plan updated.' });
       }
@@ -633,7 +728,9 @@ client.on('interactionCreate', async (interaction) => {
         await updateSignal(id, patch);
         const updated = normalizeSignal(await getSignal(id));
         if (isSlMovedToBE(updated)) { updated.validReentry = false; await updateSignal(id, { validReentry: false }); }
-        await editSignalMessage(updated);
+        const fresh = normalizeSignal(await getSignal(id));
+        await editSignalMessage(fresh);
+        await updateControlThreadName(fresh);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Trade info updated.' });
       }
@@ -647,7 +744,9 @@ client.on('interactionCreate', async (interaction) => {
 
         const rolesRaw = interaction.fields.getTextInputValue('roles_input') ?? '';
         await updateSignal(id, { extraRole: rolesRaw });
-        await editSignalMessage(normalizeSignal(await getSignal(id)));
+        const next = normalizeSignal(await getSignal(id));
+        await editSignalMessage(next);
+        await updateControlThreadName(next);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Role mentions updated.' });
       }
@@ -661,7 +760,9 @@ client.on('interactionCreate', async (interaction) => {
         const raw = interaction.fields.getTextInputValue('max_r')?.trim();
         if (!isNum(raw)) return safeEditReply(interaction, { content: '❌ Max R must be a number.' });
         await updateSignal(id, { maxR: Number(raw) });
-        await editSignalMessage(normalizeSignal(await getSignal(id)));
+        const next = normalizeSignal(await getSignal(id));
+        await editSignalMessage(next);
+        await updateControlThreadName(next);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Max R updated.' });
       }
@@ -676,9 +777,10 @@ client.on('interactionCreate', async (interaction) => {
         if (!url || !/^https?:\/\//i.test(url)) {
           return safeEditReply(interaction, { content: '❌ Please provide a valid http(s) URL.' });
         }
-        // Switch to "link only" mode and ensure old inline image is removed on edit
         await updateSignal(id, { chartUrl: url, chartAttached: false });
-        await editSignalMessage(normalizeSignal(await getSignal(id)));
+        const next = normalizeSignal(await getSignal(id));
+        await editSignalMessage(next);
+        await updateControlThreadName(next);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Chart link updated.' });
       }
@@ -711,7 +813,9 @@ client.on('interactionCreate', async (interaction) => {
         signal.tpHits[tpUpper] = true;
 
         await updateSignal(id, { fills: signal.fills, latestTpHit: signal.latestTpHit, tpHits: signal.tpHits });
-        await editSignalMessage(signal);
+        const next = normalizeSignal(await getSignal(id));
+        await editSignalMessage(next);
+        await updateControlThreadName(next);
         await updateSummary();
         return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${hasPct && pct > 0 ? ` (${pct}%).` : '.'}` });
       }
@@ -748,7 +852,9 @@ client.on('interactionCreate', async (interaction) => {
         signal.latestTpHit = latest;
 
         await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, latestTpHit: latest, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
-        await editSignalMessage(signal);
+        const next = normalizeSignal(await getSignal(id));
+        await editSignalMessage(next);
+        await updateControlThreadName(next);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Fully closed.' });
       }
@@ -783,9 +889,11 @@ client.on('interactionCreate', async (interaction) => {
         signal.validReentry = false;
 
         await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
-        await editSignalMessage(signal);
+        const next = normalizeSignal(await getSignal(id));
+        await editSignalMessage(next);
+        await updateControlThreadName(next);
         await updateSummary();
-        await deleteControlThread(id);
+        // NOTE: Do NOT delete control thread; we rename it (stopped out / breakeven)
         return safeEditReply(interaction, { content: kind === 'BE' ? '✅ Stopped at breakeven.' : '✅ Stopped out.' });
       }
     }
@@ -817,24 +925,12 @@ client.on('interactionCreate', async (interaction) => {
 
         if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
 
-        // Move SL to BE (do not change slOriginal)
         await updateSignal(id, { sl: Number(sig0.entry), validReentry: false });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
+        await updateControlThreadName(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ SL moved to breakeven.' });
-      }
-
-      if (key === 'del') {
-        await ensureDeferred(interaction);
-        const sig = await getSignal(id).catch(() => null);
-        if (sig) {
-          await deleteSignalMessage(sig).catch(() => {});
-          await deleteControlThread(id).catch(() => {});
-          await deleteSignal(id).catch(() => {});
-          await updateSummary().catch(() => {});
-        }
-        return safeEditReply(interaction, { content: '🗑️ Signal deleted.' });
       }
 
       if (['tp1','tp2','tp3','tp4','tp5'].includes(key)) {
@@ -856,7 +952,9 @@ client.on('interactionCreate', async (interaction) => {
           sig.tpHits[tpUpper] = true;
 
           await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits });
-          await editSignalMessage(sig);
+          const next = normalizeSignal(await getSignal(id));
+          await editSignalMessage(next);
+          await updateControlThreadName(next);
           await updateSummary();
           await ensureDeferred(interaction);
           return safeEditReply(interaction, { content: `✅ ${tpUpper} executed (${planPct}%).` });
@@ -910,6 +1008,7 @@ async function createSignal(payload, channelId) {
     messageId: null,
     jumpUrl: null,
     channelId, // <= post and track in this channel
+    createdAt: Date.now(),
   });
 
   await saveSignal(signal);
@@ -953,5 +1052,144 @@ async function pruneGhostSignals() {
     console.error('pruneGhostSignals error:', e);
   }
 }
+
+// ------------------------------
+// Backfill createdAt for older signals
+// ------------------------------
+async function backfillCreatedAt() {
+  try {
+    const all = (await getSignals()).map(normalizeSignal);
+    for (const s of all) {
+      if (isNum(s.createdAt)) continue;
+      let ts = Date.now();
+      try {
+        if (s.channelId && s.messageId) {
+          const ch = await client.channels.fetch(s.channelId);
+          const msg = await ch.messages.fetch(s.messageId);
+          if (msg?.createdTimestamp) ts = msg.createdTimestamp;
+        }
+      } catch {}
+      await updateSignal(s.id, { createdAt: ts }).catch(() => {});
+    }
+  } catch (e) {
+    console.error('backfillCreatedAt error:', e);
+  }
+}
+
+// ------------------------------
+// Recap helpers (inline renderers)
+// ------------------------------
+function fmt(v) {
+  if (v === null || v === undefined || v === '') return '—';
+  const n = Number(v);
+  if (Number.isNaN(n)) return String(v);
+  return n.toLocaleString('en-US');
+}
+function signAbsR(r) {
+  const x = Number(r || 0);
+  const abs = Math.abs(x).toFixed(2);
+  const sign = x > 0 ? '+' : x < 0 ? '-' : '';
+  return `${sign}${abs}R`;
+}
+function renderTradeRecapInline(s) {
+  const r = realizedForSignal(s);
+  const lines = [];
+  lines.push(`**$${String(s.asset).toUpperCase()} | ${s.direction} Recap**`);
+  lines.push(`Entry: ${fmt(s.entry)} | SL: ${fmt(s.sl)}`);
+  const tps = [];
+  for (const k of TP_KEYS) if (isNum(s[k])) tps.push(`${k.toUpperCase()}: ${fmt(s[k])}`);
+  if (tps.length) lines.push(tps.join(' | '));
+  if (s.status === STATUS.STOPPED_OUT) lines.push(`Result: ${signAbsR(r)} (stopped out)`);
+  else if (s.status === STATUS.STOPPED_BE) lines.push(`Result: ${Number(r) === 0 ? '0.00R' : signAbsR(r)} (breakeven)`);
+  else if (s.status === STATUS.CLOSED) lines.push(`Result: ${signAbsR(r)} (fully closed)`);
+  else lines.push(`Result so far: ${signAbsR(r)}`);
+  return lines.join('\n');
+}
+
+function renderPeriodRecapInline(list, header) {
+  if (!list.length) return `**${header}**\n\n• No trades found in this period.`;
+  const lines = [`**${header}**`];
+  let total = 0;
+  list.forEach((s, i) => {
+    const r = realizedForSignal(s);
+    total += Number(r || 0);
+    const status =
+      s.status === STATUS.CLOSED ? 'closed' :
+      s.status === STATUS.STOPPED_BE ? 'breakeven' :
+      s.status === STATUS.STOPPED_OUT ? 'stopped out' :
+      'running';
+    lines.push(`${i+1}. $${String(s.asset).toUpperCase()} ${s.direction} → ${signAbsR(r)} (${status})`);
+  });
+  lines.push('');
+  const signTotal = signAbsR(total);
+  lines.push(`Total: ${signTotal}`);
+  return lines.join('\n');
+}
+
+// Asset filter helper
+function filterByAsset(arr, asset) {
+  const want = String(asset || '').replace(/^\$/,'').trim().toUpperCase();
+  if (!want) return arr;
+  return arr.filter(s => String(s.asset || '').toUpperCase() === want);
+}
+
+// Date range helpers
+function parseWeeklyRangeOrCurrent(input) {
+  if (input) {
+    const m = /^(\d{4})-W(\d{2})$/.exec(input.trim());
+    if (m) {
+      const y = Number(m[1]); const w = Number(m[2]);
+      const startDate = isoWeekStartUTC(y, w);
+      const endDate = new Date(startDate); endDate.setUTCDate(startDate.getUTCDate() + 7);
+      return [startDate.getTime(), endDate.getTime(), `${y}-W${String(w).padStart(2,'0')}`];
+    }
+  }
+  // current week (UTC)
+  const now = new Date();
+  const curr = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const day = curr.getUTCDay() || 7; // 1..7, with 7=Sun
+  const monday = new Date(curr);
+  monday.setUTCDate(curr.getUTCDate() - day + 1);
+  monday.setUTCHours(0,0,0,0);
+  const end = new Date(monday); end.setUTCDate(monday.getUTCDate() + 7);
+  // label
+  const y = monday.getUTCFullYear();
+  const w = isoWeekNumberUTC(monday);
+  return [monday.getTime(), end.getTime(), `${y}-W${String(w).padStart(2,'0')}`];
+}
+function parseMonthlyRangeOrCurrent(input) {
+  if (input) {
+    const m = /^(\d{4})-(\d{2})$/.exec(input.trim());
+    if (m) {
+      const y = Number(m[1]); const mo = Number(m[2]) - 1;
+      const start = Date.UTC(y, mo, 1, 0,0,0,0);
+      const end = Date.UTC(y, mo + 1, 1, 0,0,0,0);
+      return [start, end, `${y}-${String(mo+1).padStart(2,'0')}`];
+    }
+  }
+  const now = new Date();
+  const start = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0,0,0,0);
+  const end = Date.UTC(now.getUTCFullYear(), now.getUTCMonth()+1, 1, 0,0,0,0);
+  return [start, end, `${new Date(start).getUTCFullYear()}-${String(new Date(start).getUTCMonth()+1).padStart(2,'0')}`];
+}
+function isoWeekStartUTC(year, week) {
+  const simple = new Date(Date.UTC(year, 0, 1 + (week - 1) * 7));
+  const dow = simple.getUTCDay() || 7;
+  const monday = new Date(simple);
+  monday.setUTCDate(simple.getUTCDate() - dow + 1);
+  monday.setUTCHours(0,0,0,0);
+  return monday;
+}
+function isoWeekNumberUTC(d) {
+  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const dayNum = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(),0,1));
+  return Math.ceil((((date - yearStart) / 86400000) + 1)/7);
+}
+
+// ------------------------------
+// One-time ghost prune (storage hygiene) — already above
+// ------------------------------
 
 client.login(config.token);
