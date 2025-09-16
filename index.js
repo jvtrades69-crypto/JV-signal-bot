@@ -1,9 +1,10 @@
-// index.js — JV Signal Bot (stable)
+// index.js — JV Signal Bot (stable + recap formats)
 // - Plain text messages (uses renders from embeds.js)
 // - TP plans + auto-exec
 // - Control panel (TP1–TP5 + 4 update modals + Close/BE/Out + Delete)
 // - Summary in currentTradesChannelId (exactly 1 message, debounced)
 // - Signals post in the channel where /signal is run (per-signal channelId)
+// - Recaps: trade (picker), weekly, monthly (custom formats)
 // - Ignores “ghost” signals whose original message was manually deleted
 // - Dedupe guard for interactions (no double posts)
 // - Safe acks (prevents “not sent or deferred” / “unknown interaction”)
@@ -118,25 +119,8 @@ function extractRoleIds(defaultRoleId, extraRoleRaw) {
   if (found) ids.push(...found);
   return Array.from(new Set(ids));
 }
-function renderRecap(signals) {
-  if (!signals.length) return '**📊 Trade Recap**\n\nNo trades to show.';
-  const lines = ['**📊 Trade Recap**', ''];
-  signals.forEach((s, i) => {
-    const dirWord = s.direction === 'SHORT' ? 'Short' : 'Long';
-    const circle = s.direction === 'SHORT' ? '🔴' : '🟢';
-    let statusTxt = '';
-    if (s.status === STATUS.CLOSED) statusTxt = '✅ Closed';
-    else if (s.status === STATUS.STOPPED_BE) statusTxt = '🟨 Stopped BE';
-    else if (s.status === STATUS.STOPPED_OUT) statusTxt = '❌ Stopped Out';
-    else if (s.status === STATUS.RUN_VALID && s.latestTpHit) statusTxt = `⚡ Running (after ${s.latestTpHit})`;
-    const rTxt = s.finalR != null ? `${Number(s.finalR).toFixed(2)}R` : '';
-    lines.push(`${i+1}️⃣ $${s.asset} | ${dirWord} ${circle} — ${statusTxt}${rTxt ? ` | ${rTxt}` : ''}`);
-    if (s.jumpUrl) lines.push(`[View Signal](${s.jumpUrl})`);
-    lines.push('');
-  });
-  return lines.join('\n').trimEnd();
-}
-  function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
+
+function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
   const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
   const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
   // On initial send we allowRoles to ping; on edits we suppress pings entirely
@@ -144,30 +128,382 @@ function renderRecap(signals) {
   if (!ids.length) return { content: '', allowedMentions: { parse: [] } };
   return { content, allowedMentions: { parse: [], roles: ids } };
 }
+
 // ------------------------------
-// Ack helpers (prevent “not sent or deferred”)
+// Recap helpers (formatting + stats)
 // ------------------------------
-async function ensureDeferred(interaction) {
-  try {
-    if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    }
-  } catch {}
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const DIGITS = ['0️⃣','1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟'];
+const WORST_EMOJI = '🟥';
+
+function dClone(d){ return new Date(d.getTime()); }
+function niceDate(d){ return `${MONTHS[d.getMonth()]} ${d.getDate()}`; }
+
+function weekFromIso(isoWeek) {
+  // isoWeek: "YYYY-Www"
+  const m = /^(\d{4})-W(\d{2})$/.exec(isoWeek || '');
+  if (!m) return null;
+  const year = Number(m[1]);
+  const week = Number(m[2]);
+  // ISO week: week 1 is the week with Jan 4th; start Monday
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const dayOfWeek = jan4.getUTCDay() || 7; // 1..7
+  const mondayOfWeek1 = new Date(jan4);
+  mondayOfWeek1.setUTCDate(jan4.getUTCDate() - (dayOfWeek - 1));
+  const start = new Date(mondayOfWeek1);
+  start.setUTCDate(mondayOfWeek1.getUTCDate() + (week - 1) * 7);
+  const end = new Date(start);
+  end.setUTCDate(start.getUTCDate() + 6);
+  return { start, end };
 }
-async function safeEditReply(interaction, payload) {
-  try {
-    if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    }
-  } catch {}
-  try {
-    return await interaction.editReply(payload);
-  } catch (e) {
+
+function monthFromStr(ym) {
+  // ym: "YYYY-MM"
+  const m = /^(\d{4})-(\d{2})$/.exec(ym || '');
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]) - 1;
+  const start = new Date(Date.UTC(y, mo, 1));
+  const end = new Date(Date.UTC(y, mo + 1, 0, 23, 59, 59, 999));
+  return { start, end };
+}
+
+async function fetchSignalTimestamp(s) {
+  if (s._ts) return s._ts;
+  if (s.channelId && s.messageId) {
     try {
-      if (!interaction.replied) return await interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
+      const ch = await client.channels.fetch(s.channelId);
+      const m = await ch.messages.fetch(s.messageId);
+      s._ts = m.createdTimestamp || 0;
+      return s._ts;
     } catch {}
-    throw e;
   }
+  return 0;
+}
+
+async function getSignalsInRange(startMs, endMs, assetFilter='') {
+  const sigs = (await getSignals()).map(normalizeSignal);
+  const picked = [];
+  for (const s of sigs) {
+    const ts = await fetchSignalTimestamp(s);
+    if (!ts) continue;
+    if (ts >= startMs && ts <= endMs) {
+      if (assetFilter && (String(s.asset||'').toUpperCase() !== String(assetFilter).toUpperCase())) continue;
+      picked.push({ s, ts });
+    }
+  }
+  picked.sort((a,b)=>a.ts-b.ts);
+  return picked.map(x=>x.s);
+}
+
+function realizedR(signal) {
+  const s = normalizeSignal(signal);
+  const baseSL = isNum(s.slOriginal) ? s.slOriginal : s.sl;
+  if (!isNum(s.entry) || !isNum(baseSL)) return null;
+  if (isNum(s.finalR)) return Number(s.finalR);
+  if (!Array.isArray(s.fills) || !s.fills.length) return 0;
+  let sum = 0, pctSum = 0;
+  for (const f of s.fills) {
+    const pct = Number(f.pct || 0);
+    if (pct <= 0 || !isNum(f.price)) continue;
+    const r = rAtPrice(s.direction, s.entry, baseSL, f.price);
+    if (r === null) continue;
+    sum += (pct/100) * r;
+    pctSum += pct;
+  }
+  return pctSum ? Number(sum.toFixed(2)) : 0;
+}
+
+function computeMaxR(signal) {
+  const s = normalizeSignal(signal);
+  const baseSL = isNum(s.slOriginal) ? s.slOriginal : s.sl;
+  if (!isNum(s.entry) || !isNum(baseSL)) return isNum(s.maxR) ? Number(s.maxR) : null;
+  let maxR = isNum(s.maxR) ? Number(s.maxR) : null;
+
+  for (let i=1;i<=5;i++){
+    const keyUp = `TP${i}`;
+    const price = s[`tp${i}`];
+    if (s.tpHits?.[keyUp] && isNum(price)) {
+      const r = rAtPrice(s.direction, s.entry, baseSL, price);
+      if (r !== null) maxR = (maxR===null) ? r : Math.max(maxR, r);
+    }
+  }
+  if (isNum(s.finalR)) {
+    const fr = Number(s.finalR);
+    maxR = (maxR===null) ? fr : Math.max(maxR, fr);
+  }
+  return maxR===null ? null : Number(maxR.toFixed(2));
+}
+
+function dirWordAndDot(s) {
+  return s.direction === 'SHORT'
+    ? { word: 'Short', dot: '🔴' }
+    : { word: 'Long',  dot: '🟢' };
+}
+
+function tpRecapLine(s, n) {
+  const price = s[`tp${n}`];
+  if (!isNum(price)) return null;
+  const plan = s.plan?.[`TP${n}`];
+  const fill = (s.fills||[]).find(f => String(f.source).toUpperCase() === `TP${n}`);
+  const pct = isNum(fill?.pct) ? fill.pct : (isNum(plan) ? plan : null);
+  const hit = !!(s.tpHits?.[`TP${n}`]);
+  const r = rAtPrice(s.direction, s.entry, s.slOriginal ?? s.sl, price);
+  const rStr = r===null ? '—' : `${r.toFixed(2)}R`;
+  return `- TP${n}: \`${price}\`${pct!=null?` (${pct}% out | ${rStr} ${hit?'✅':'❌'})`:` (${rStr} ${hit?'✅':'❌'})`}`;
+}
+
+function formatTradeRecap(s) {
+  const { word, dot } = dirWordAndDot(s);
+  const realRVal = realizedR(s);
+  const realRStr = isNum(realRVal) ? `${realRVal.toFixed(2)}R` : '—';
+
+  const lines = [];
+  lines.push(`**$${s.asset} | ${word} ${dot} ${realRStr} (Realized)**`);
+  lines.push('');
+  lines.push(`📊 **Trade Details**`);
+  lines.push(`- Entry: \`${isNum(s.entry) ? s.entry : '—'}\``);
+  lines.push(`- SL: \`${isNum(s.sl) ? s.sl : '—'}\``);
+  for (let n=1;n<=3;n++){ const L = tpRecapLine(s, n); if (L) lines.push(L); }
+  lines.push('');
+  lines.push('📝 **Reasoning**');
+  if (s.reason && s.reason.trim()) {
+    const bullets = s.reason.split(/\n|;|•|^- /m).map(x=>String(x).trim()).filter(Boolean);
+    if (bullets.length) bullets.forEach(b => lines.push(`- ${b}`)); else lines.push('- —');
+  } else {
+    lines.push('- —');
+  }
+  lines.push('');
+  lines.push('🚦 **Status**');
+  const isActive = s.status === STATUS.RUN_VALID;
+  lines.push(`- ${isActive ? 'Active 🟩' : 'Closed 🔴'}`);
+  lines.push(`- Valid for re-entry: ${s.validReentry ? '✅' : '❌'}`);
+  lines.push('');
+  lines.push('⚖️ **Max R Reached**');
+  const maxR = computeMaxR(s);
+  lines.push(`${isNum(maxR) ? `${maxR.toFixed(2)}R` : '—'} (${isActive ? 'so far' : 'closed'})`);
+  lines.push('');
+  lines.push('🖼️ **Chart**');
+  lines.push(s.chartUrl ? '*(image auto-pasted here)*' : '*No chart provided*');
+  lines.push('');
+  const link = s.jumpUrl ? s.jumpUrl : '#️⃣';
+  lines.push(`🔗 [View Original Trade](${link})`);
+  return lines.join('\n');
+}
+
+function shortTradeLine(s) {
+  const { word, dot } = dirWordAndDot(s);
+  const rr = realizedR(s);
+  const rrStr = isNum(rr) ? `${rr.toFixed(2)}R` : '—';
+  const view = s.jumpUrl ? s.jumpUrl : '#️⃣';
+  return `$${s.asset} | ${word} ${dot} ${rrStr} → [View Trade](${view})`;
+}
+
+function tpHitLinesCompact(s) {
+  const lines = [];
+  if (s.status === STATUS.STOPPED_OUT) {
+    lines.push('- Stopped Out ❌');
+    return lines;
+  }
+  if (s.status === STATUS.STOPPED_BE) {
+    lines.push('- Stopped BE 🟨');
+    return lines;
+  }
+  // show TPs that exist (1..3 priority), with ✅ if hit
+  for (let n=1;n<=3;n++) {
+    const price = s[`tp${n}`];
+    if (!isNum(price)) continue;
+    const r = rAtPrice(s.direction, s.entry, s.slOriginal ?? s.sl, price);
+    const rStr = r===null ? '—' : `${r.toFixed(2)}R`;
+    const hit = s.tpHits?.[`TP${n}`] ? '✅' : '❌';
+    lines.push(`- TP${n}: \`${price}\` (${rStr} ${hit})`);
+  }
+  return lines;
+}
+
+function statsFromTrades(sigs) {
+  const rs = sigs.map(s => Number(realizedR(s) || 0));
+  let wins = 0, losses = 0, be = 0;
+  for (const r of rs) {
+    if (r > 0) wins++;
+    else if (r < 0) losses++;
+    else be++;
+  }
+  const net = rs.reduce((a,b)=>a+b,0);
+  const total = sigs.length;
+  const winRate = total ? Math.round((wins / total) * 100) : 0;
+  const avgR = total ? net / total : 0;
+
+  // best/worst (by realized R)
+  let best = null, worst = null;
+  for (const s of sigs) {
+    const r = Number(realizedR(s) || 0);
+    if (best===null || r > best.r) best = { s, r };
+    if (worst===null || r < worst.r) worst = { s, r };
+  }
+  return {
+    wins, losses, be, net: Number(net.toFixed(2)), total,
+    winRate, avgR: Number(avgR.toFixed(2)),
+    best, worst
+  };
+}
+
+function mostConsistentAssetLine(sigs) {
+  // highest win rate (min 2 trades)
+  const by = {};
+  for (const s of sigs) {
+    const a = (s.asset || '').toUpperCase();
+    if (!by[a]) by[a] = [];
+    by[a].push(s);
+  }
+  let bestAsset = null, bestRate = -1;
+  for (const [asset, arr] of Object.entries(by)) {
+    if (arr.length < 2) continue;
+    const st = statsFromTrades(arr);
+    if (st.winRate > bestRate) {
+      bestRate = st.winRate;
+      bestAsset = asset;
+    }
+  }
+  return bestAsset ? `${bestAsset} (${bestRate}% win rate)` : '—';
+}
+
+function formatWeeklyRecap(titleRange, trades) {
+  const lines = [];
+  lines.push(`📊 **JV Trades | Weekly Recap (${titleRange})**`);
+  lines.push('');
+  if (!trades.length) {
+    lines.push('_No trades in this period._');
+    return lines.join('\n');
+  }
+  trades.forEach((s, i) => {
+    const idx = i+1;
+    const digit = DIGITS[idx] || `${idx}.`;
+    lines.push(`${digit} ${shortTradeLine(s)}`);
+    lines.push(`- Entry: \`${isNum(s.entry)?s.entry:'—'}\` | SL: \`${isNum(s.sl)?s.sl:'—'}\``);
+    tpHitLinesCompact(s).forEach(L => lines.push(L));
+    const maxr = computeMaxR(s);
+    lines.push(`- Max R Reached: ${isNum(maxr)? `${maxr.toFixed(2)}R` : '—'}`);
+    lines.push('');
+  });
+  const st = statsFromTrades(trades);
+  if (st.best?.s) {
+    const { word, dot } = dirWordAndDot(st.best.s);
+    lines.push(`🏆 Best Trade: $${st.best.s.asset} ${word} ${dot} (${st.best.r.toFixed(2)}R)`);
+  }
+  if (st.worst?.s) {
+    const { word, dot } = dirWordAndDot(st.worst.s);
+    lines.push(`${WORST_EMOJI} Worst Trade: $${st.worst.s.asset} ${word} ${dot} (${st.worst.r.toFixed(2)}R)`);
+  }
+  lines.push('');
+  lines.push('⚖️ Totals');
+  lines.push(`- Trades: ${st.total} | Wins: ${st.wins} | Losses: ${st.losses}${st.be ? ` | BE: ${st.be}` : ''}`);
+  lines.push(`- Net: **${st.net.toFixed(2)}R**`);
+  lines.push(`- Win Rate: ${st.winRate}%`);
+  return lines.join('\n');
+}
+
+function formatMonthlyRecap(titleMonth, trades) {
+  const lines = [];
+  lines.push(`📊 **JV Trades | Monthly Recap (${titleMonth})**`);
+  lines.push('');
+  if (!trades.length) {
+    lines.push('_No trades in this month._');
+    return lines.join('\n');
+  }
+  const st = statsFromTrades(trades);
+  lines.push(`- Trades: ${st.total}`);
+  lines.push(`- Wins: ${st.wins} | Losses: ${st.losses}${st.be ? ` | BE: ${st.be}` : ''}`);
+  lines.push(`- Net: **${st.net.toFixed(2)}R**`);
+  lines.push(`- Win Rate: ${st.winRate}%`);
+  lines.push(`- Avg R/Trade: ${st.avgR.toFixed(2)}R`);
+  lines.push('');
+  if (st.best?.s) {
+    const { word, dot } = dirWordAndDot(st.best.s);
+    const view = st.best.s.jumpUrl ? st.best.s.jumpUrl : '#️⃣';
+    lines.push(`🏆 Best: $${st.best.s.asset} ${word} ${dot} (${st.best.r.toFixed(2)}R) → [View Trade](${view})`);
+  }
+  if (st.worst?.s) {
+    const { word, dot } = dirWordAndDot(st.worst.s);
+    const view = st.worst.s.jumpUrl ? st.worst.s.jumpUrl : '#️⃣';
+    lines.push(`${WORST_EMOJI} Worst: $${st.worst.s.asset} ${word} ${dot} (${st.worst.r.toFixed(2)}R) → [View Trade](${view})`);
+  }
+  const mc = mostConsistentAssetLine(trades);
+  lines.push(`📈 Most Consistent: ${mc}`);
+  return lines.join('\n');
+}
+
+function labelForSignal(s) {
+  const dir = s.direction === 'SHORT' ? 'Short' : 'Long';
+  const status =
+    s.status === STATUS.RUN_VALID ? 'Active' :
+    s.status === STATUS.CLOSED ? 'Closed' :
+    s.status === STATUS.STOPPED_BE ? 'BE' :
+    s.status === STATUS.STOPPED_OUT ? 'Stopped' : s.status;
+  return `$${s.asset} • ${dir} • ${status}`;
+}
+
+async function getRecentSignalsSorted(limit = 25) {
+  const sigs = (await getSignals()).map(normalizeSignal);
+  const withMsgTime = [];
+  for (const s of sigs) {
+    const ts = await fetchSignalTimestamp(s);
+    withMsgTime.push({ s, ts });
+  }
+  withMsgTime.sort((a, b) => b.ts - a.ts); // newest first
+  return withMsgTime.slice(0, limit).map(x => x.s);
+}
+
+// ------------------------------
+// Bot lifecycle
+// ------------------------------
+client.once('ready', async () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+  await pruneGhostSignals().catch(() => {});
+});
+
+// Manual delete watcher (any channel)
+client.on('messageDelete', async (message) => {
+  try {
+    if (!message) return; // we’ll match by messageId below
+    const sigs = await getSignals();
+    const found = sigs.find(s => s.messageId === message.id);
+    if (!found) return;
+    await deleteControlThread(found.id).catch(() => {});
+    await deleteSignal(found.id).catch(() => {});
+    await updateSummary().catch(() => {});
+    console.log(`ℹ️ Signal ${found.id} removed due to manual delete.`);
+  } catch (e) {
+    console.error('messageDelete handler error:', e);
+  }
+});
+
+client.on('messageDeleteBulk', async (collection) => {
+  try {
+    const ids = new Set(Array.from(collection.keys()));
+    const sigs = await getSignals();
+    const toRemove = sigs.filter(s => ids.has(s.messageId));
+    for (const s of toRemove) {
+      await deleteControlThread(s.id).catch(() => {});
+      await deleteSignal(s.id).catch(() => {});
+    }
+    if (toRemove.length) await updateSummary().catch(() => {});
+  } catch (e) {
+    console.error('messageDeleteBulk handler error:', e);
+  }
+});
+
+// ------------------------------
+// Interactions (dedupe guard)
+// ------------------------------
+const claimed = new Set();
+const CLAIM_TTL_MS = 60_000;
+function tryClaimInteraction(interaction) {
+  const id = interaction.id;
+  if (claimed.has(id)) return false;
+  claimed.add(id);
+  setTimeout(() => claimed.delete(id), CLAIM_TTL_MS);
+  return true;
 }
 
 // ------------------------------
@@ -179,14 +515,13 @@ async function postSignalMessage(signal) {
   const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
 
-  // IMPORTANT: do NOT append raw chartUrl here.
-  // embeds.js already prints `[Chart](url)` when appropriate.
+  // Do NOT append raw chartUrl here. embeds.js prints "[Chart](url)" when appropriate.
   const payload = {
     content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
     ...(mentionLine ? { allowedMentions } : {}),
   };
 
-  // Option A: if creation had an attachment, include it inline
+  // If creation had an attachment, include it inline
   if (signal.chartUrl && signal.chartAttached) {
     payload.files = [signal.chartUrl];
   }
@@ -210,7 +545,7 @@ async function editSignalMessage(signal) {
     ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
   };
 
-  // Option B: when replacing via control panel (chartAttached=false), remove any previous attachments
+  // When replacing via control panel (chartAttached=false), remove any previous attachments
   if (!signal.chartAttached) {
     editPayload.attachments = []; // clears old image(s)
   }
@@ -452,89 +787,6 @@ function makeChartModal(id) {
 }
 
 // ------------------------------
-// Recap helpers (for /recap trade)
-// ------------------------------
-function labelForSignal(s) {
-  const dir = s.direction === 'SHORT' ? 'Short' : 'Long';
-  const status =
-    s.status === STATUS.RUN_VALID ? 'Active' :
-    s.status === STATUS.CLOSED ? 'Closed' :
-    s.status === STATUS.STOPPED_BE ? 'BE' :
-    s.status === STATUS.STOPPED_OUT ? 'Stopped' : s.status;
-  return `$${s.asset} • ${dir} • ${status}`;
-}
-
-async function getRecentSignalsSorted(limit = 25) {
-  const sigs = (await getSignals()).map(normalizeSignal);
-  const withMsgTime = [];
-  for (const s of sigs) {
-    let ts = 0;
-    if (s.channelId && s.messageId) {
-      try {
-        const ch = await client.channels.fetch(s.channelId);
-        const m = await ch.messages.fetch(s.messageId);
-        ts = m.createdTimestamp || 0;
-      } catch {}
-    }
-    withMsgTime.push({ s, ts });
-  }
-  withMsgTime.sort((a, b) => b.ts - a.ts); // newest first
-  return withMsgTime.slice(0, limit).map(x => x.s);
-}
-
-// ------------------------------
-// Bot lifecycle
-// ------------------------------
-client.once('ready', async () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-  await pruneGhostSignals().catch(() => {});
-});
-
-// Manual delete watcher (any channel)
-client.on('messageDelete', async (message) => {
-  try {
-    if (!message) return; // we’ll match by messageId below
-    const sigs = await getSignals();
-    const found = sigs.find(s => s.messageId === message.id);
-    if (!found) return;
-    await deleteControlThread(found.id).catch(() => {});
-    await deleteSignal(found.id).catch(() => {});
-    await updateSummary().catch(() => {});
-    console.log(`ℹ️ Signal ${found.id} removed due to manual delete.`);
-  } catch (e) {
-    console.error('messageDelete handler error:', e);
-  }
-});
-
-client.on('messageDeleteBulk', async (collection) => {
-  try {
-    const ids = new Set(Array.from(collection.keys()));
-    const sigs = await getSignals();
-    const toRemove = sigs.filter(s => ids.has(s.messageId));
-    for (const s of toRemove) {
-      await deleteControlThread(s.id).catch(() => {});
-      await deleteSignal(s.id).catch(() => {});
-    }
-    if (toRemove.length) await updateSummary().catch(() => {});
-  } catch (e) {
-    console.error('messageDeleteBulk handler error:', e);
-  }
-});
-
-// ------------------------------
-// Interactions (dedupe guard)
-// ------------------------------
-const claimed = new Set();
-const CLAIM_TTL_MS = 60_000;
-function tryClaimInteraction(interaction) {
-  const id = interaction.id;
-  if (claimed.has(id)) return false;
-  claimed.add(id);
-  setTimeout(() => claimed.delete(id), CLAIM_TTL_MS);
-  return true;
-}
-
-// ------------------------------
 // Interaction router
 // ------------------------------
 client.on('interactionCreate', async (interaction) => {
@@ -542,7 +794,7 @@ client.on('interactionCreate', async (interaction) => {
     // ensure we don't process the same interaction twice
     if (!tryClaimInteraction(interaction)) return;
 
-    // /signal
+    // ===== /signal =====
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
@@ -605,24 +857,10 @@ client.on('interactionCreate', async (interaction) => {
         chartUrl: chartAtt?.url || null,
         chartAttached: !!chartAtt?.url,
       }, interaction.channelId);
-      return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
-    // /recap
-    if (interaction.isChatInputCommand() && interaction.commandName === 'recap') {
-      await interaction.deferReply();
-      const all = (await getSignals()).map(normalizeSignal);
-      const filtered = all.filter(s =>
-        s.status === STATUS.CLOSED ||
-        s.status === STATUS.STOPPED_BE ||
-        s.status === STATUS.STOPPED_OUT ||
-        (s.status === STATUS.RUN_VALID && s.latestTpHit)
-      );
-      const content = renderRecap(filtered.slice(-10)); // last 10 trades
-      return interaction.editReply({ content });
+      return interaction.reply({ content: '✅ Trade signal posted.', flags: MessageFlags.Ephemeral });
     }
 
-    }
-
-    // /recap
+    // ===== /recap =====
     if (interaction.isChatInputCommand() && interaction.commandName === 'recap') {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
@@ -630,8 +868,9 @@ client.on('interactionCreate', async (interaction) => {
 
       const type = interaction.options.getString('type');   // trade | weekly | monthly
       const assetFilter = (interaction.options.getString('asset') || '').toUpperCase();
-      // const range = interaction.options.getString('range') || null; // (future use)
+      const range = interaction.options.getString('range') || null;
 
+      // --- TRADE PICKER ---
       if (type === 'trade') {
         const recents = await getRecentSignalsSorted(25);
         const filtered = assetFilter ? recents.filter(s => (s.asset || '').toUpperCase() === assetFilter) : recents;
@@ -660,12 +899,160 @@ client.on('interactionCreate', async (interaction) => {
         });
       }
 
-      return interaction.reply({ content: 'Coming soon: weekly/monthly recaps.', flags: MessageFlags.Ephemeral });
+      // --- WEEKLY ---
+      if (type === 'weekly') {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        let start, end;
+        if (range) {
+          const w = weekFromIso(range);
+          if (!w) return interaction.editReply({ content: 'Invalid weekly range. Use `YYYY-Www` (e.g., 2025-W37).' });
+          start = w.start; end = w.end;
+        } else {
+          // default: last 7 full days (UTC)
+          end = new Date();
+          start = new Date();
+          start.setUTCDate(end.getUTCDate() - 6);
+        }
+        // clamp to day boundaries
+        start = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate(), 0,0,0,0));
+        end   = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate(), 23,59,59,999));
+
+        const trades = await getSignalsInRange(start.getTime(), end.getTime(), assetFilter);
+        const titleRange = `${niceDate(start)} – ${niceDate(end)}`;
+        const content = formatWeeklyRecap(titleRange, trades);
+        await interaction.editReply({ content });
+        return;
+      }
+
+      // --- MONTHLY ---
+      if (type === 'monthly') {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        let start, end, title;
+        if (range) {
+          const m = monthFromStr(range);
+          if (!m) return interaction.editReply({ content: 'Invalid monthly range. Use `YYYY-MM` (e.g., 2025-09).' });
+          start = m.start; end = m.end; title = `${MONTHS[start.getUTCMonth()]} ${start.getUTCFullYear()}`;
+        } else {
+          const now = new Date();
+          start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+          end   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth()+1, 0, 23,59,59,999));
+          title = `${MONTHS[start.getUTCMonth()]} ${start.getUTCFullYear()}`;
+        }
+
+        const trades = await getSignalsInRange(start.getTime(), end.getTime(), assetFilter);
+        const content = formatMonthlyRecap(title, trades);
+        await interaction.editReply({ content });
+        return;
+      }
+
+      return interaction.reply({ content: 'Unknown recap type. Use trade | weekly | monthly.', flags: MessageFlags.Ephemeral });
     }
 
-    // ===== MODALS =====
+    // ===== SELECT MENUS (Trade recap finalize) =====
+    if (interaction.isStringSelectMenu() && interaction.customId === 'recap:trade:pick') {
+      if (interaction.user.id !== config.ownerId) {
+        return interaction.reply({ content: 'Only the owner can use this control.', flags: MessageFlags.Ephemeral });
+      }
+      const [chosenId] = interaction.values || [];
+      const s = chosenId ? normalizeSignal(await getSignal(chosenId)) : null;
+      if (!s) {
+        return interaction.update({ content: 'Trade not found.', components: [] });
+      }
+
+      const recapText = formatTradeRecap(s);
+      const channel = await client.channels.fetch(interaction.channelId);
+
+      const files = [];
+      if (s.chartUrl) files.push(s.chartUrl);
+
+      await channel.send({ content: recapText, files, allowedMentions: { parse: [] } });
+      return interaction.update({ content: '✅ Recap posted.', components: [] });
+    }
+
+    // ===== BUTTONS =====
+    if (interaction.isButton()) {
+      if (interaction.user.id !== config.ownerId) {
+        return interaction.reply({ content: 'Only the owner can use these controls.', flags: MessageFlags.Ephemeral });
+      }
+      const parts = interaction.customId.split(':'); // btn, key..., id
+      const id = parts.pop();
+      const key = parts.slice(1).join(':'); // remove 'btn'
+
+      // Show modals: DO NOT defer before showModal
+      if (key === 'upd:tpprices') return interaction.showModal(makeUpdateTPPricesModal(id));
+      if (key === 'upd:plan')     return interaction.showModal(makeUpdatePlanModal(id));
+      if (key === 'upd:trade')    return interaction.showModal(makeUpdateTradeInfoModal(id));
+      if (key === 'upd:roles')    return interaction.showModal(makeUpdateRolesModal(id));
+      if (key === 'fullclose')    return interaction.showModal(makeFullCloseModal(id));
+      if (key === 'stopbe')       return interaction.showModal(makeFinalRModal(id, 'BE'));
+      if (key === 'stopped')      return interaction.showModal(makeFinalRModal(id, 'OUT'));
+      if (key === 'upd:maxr')     return interaction.showModal(makeMaxRModal(id));
+      if (key === 'upd:chart')    return interaction.showModal(makeChartModal(id));
+
+      if (key === 'setbe') {
+        await ensureDeferred(interaction);
+        const sig0 = normalizeSignal(await getSignal(id));
+        if (!sig0) return safeEditReply(interaction, { content: 'Signal not found.' });
+
+        if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
+
+        // Move SL to BE (do not change slOriginal)
+        await updateSignal(id, { sl: Number(sig0.entry), validReentry: false });
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated);
+        await updateSummary();
+        return safeEditReply(interaction, { content: '✅ SL moved to breakeven.' });
+      }
+
+      if (key === 'del') {
+        await ensureDeferred(interaction);
+        const sig = await getSignal(id).catch(() => null);
+        if (sig) {
+          await deleteSignalMessage(sig).catch(() => {});
+          await deleteControlThread(id).catch(() => {});
+          await deleteSignal(id).catch(() => {});
+          await updateSummary().catch(() => {});
+        }
+        return safeEditReply(interaction, { content: '🗑️ Signal deleted.' });
+      }
+
+      if (['tp1','tp2','tp3','tp4','tp5'].includes(key)) {
+        const sig = normalizeSignal(await getSignal(id));
+        if (!sig) return interaction.reply({ content: 'Signal not found.', flags: MessageFlags.Ephemeral });
+
+        const tpUpper = key.toUpperCase();
+        if (sig.tpHits?.[tpUpper]) {
+          return interaction.reply({ content: `${tpUpper} already recorded.`, flags: MessageFlags.Ephemeral });
+        }
+
+        const planPct = sig.plan?.[tpUpper];
+        const tpPrice = sig[key];
+
+        if (isNum(planPct) && Number(planPct) > 0 && isNum(tpPrice)) {
+          const already = (sig.fills || []).some(f => String(f.source).toUpperCase() === tpUpper);
+          if (!already) sig.fills.push({ pct: Number(planPct), price: Number(tpPrice), source: tpUpper });
+          sig.latestTpHit = tpUpper;
+          sig.tpHits[tpUpper] = true;
+
+          await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits });
+          await editSignalMessage(sig);
+          await updateSummary();
+          await ensureDeferred(interaction);
+          return safeEditReply(interaction, { content: `✅ ${tpUpper} executed (${planPct}%).` });
+        }
+
+        const m = makeTPModal(id, key);
+        if (isNum(planPct)) m.components[0].components[0].setValue(String(planPct));
+        return interaction.showModal(m);
+      }
+
+      return interaction.reply({ content: 'Unknown action.', flags: MessageFlags.Ephemeral });
+    }
+
+    // ===== MODALS (update handlers) =====
     if (interaction.isModalSubmit()) {
       const idPart = interaction.customId.split(':').pop(); // after last :
+
       // Custom asset modal
       if (interaction.customId.startsWith('modal:asset:')) {
         await ensureDeferred(interaction);
@@ -789,39 +1176,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Chart link updated.' });
       }
 
-      // TP modal submit
-      if (interaction.customId.startsWith('modal:tp:')) {
-        await ensureDeferred(interaction);
-        const parts = interaction.customId.split(':'); // modal, tp, tpX, id
-        const tpKey = parts[2]; // tp1..tp5
-        const id = parts[3];
-
-        let signal = normalizeSignal(await getSignal(id));
-        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
-
-        const tpUpper = tpKey.toUpperCase();
-        if (signal.tpHits?.[tpUpper]) return safeEditReply(interaction, { content: `${tpUpper} already recorded.` });
-
-        const pctRaw = interaction.fields.getTextInputValue('tp_pct')?.trim();
-        const hasPct = pctRaw !== undefined && pctRaw !== null && pctRaw !== '';
-        const pct = hasPct ? Number(pctRaw) : null;
-        if (hasPct && (isNaN(pct) || pct < 0 || pct > 100)) {
-          return safeEditReply(interaction, { content: '❌ Close % must be between 0 and 100 (or leave blank to skip).' });
-        }
-        const tpPrice = signal[tpKey];
-        if (hasPct && pct > 0 && isNum(tpPrice)) {
-          const already = (signal.fills || []).some(f => String(f.source).toUpperCase() === tpUpper);
-          if (!already) signal.fills.push({ pct: Number(pct), price: Number(tpPrice), source: tpUpper });
-        }
-        signal.latestTpHit = tpUpper;
-        signal.tpHits[tpUpper] = true;
-
-        await updateSignal(id, { fills: signal.fills, latestTpHit: signal.latestTpHit, tpHits: signal.tpHits });
-        await editSignalMessage(signal);
-        await updateSummary();
-        return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${hasPct && pct > 0 ? ` (${pct}%).` : '.'}` });
-      }
-
       // Fully close + FinalR
       if (interaction.customId.startsWith('modal:full:')) {
         await ensureDeferred(interaction);
@@ -859,6 +1213,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Fully closed.' });
       }
 
+      // FinalR for BE/OUT
       if (interaction.customId.startsWith('modal:finalr:')) {
         await ensureDeferred(interaction);
         const parts = interaction.customId.split(':'); // modal, finalr, BE/OUT, id
@@ -894,106 +1249,6 @@ client.on('interactionCreate', async (interaction) => {
         await deleteControlThread(id);
         return safeEditReply(interaction, { content: kind === 'BE' ? '✅ Stopped at breakeven.' : '✅ Stopped out.' });
       }
-    }
-
-    // ===== SELECT MENUS =====
-    if (interaction.isStringSelectMenu() && interaction.customId === 'recap:trade:pick') {
-      if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use this control.', flags: MessageFlags.Ephemeral });
-      }
-      const [chosenId] = interaction.values || [];
-      const s = chosenId ? normalizeSignal(await getSignal(chosenId)) : null;
-      if (!s) {
-        return interaction.update({ content: 'Trade not found.', components: [] });
-      }
-
-      const rrChips = computeRRChips(s);
-      const recapText = `**Trade Recap**\n${renderSignalText(s, rrChips, isSlMovedToBE(s))}`;
-
-      const channel = await client.channels.fetch(interaction.channelId);
-      await channel.send({ content: recapText, allowedMentions: { parse: [] } });
-
-      return interaction.update({ content: '✅ Recap posted.', components: [] });
-    }
-
-    // ===== BUTTONS =====
-    if (interaction.isButton()) {
-      if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use these controls.', flags: MessageFlags.Ephemeral });
-      }
-      const parts = interaction.customId.split(':'); // btn, key..., id
-      const id = parts.pop();
-      const key = parts.slice(1).join(':'); // remove 'btn'
-
-      // Show modals: DO NOT defer before showModal
-      if (key === 'upd:tpprices') return interaction.showModal(makeUpdateTPPricesModal(id));
-      if (key === 'upd:plan')     return interaction.showModal(makeUpdatePlanModal(id));
-      if (key === 'upd:trade')    return interaction.showModal(makeUpdateTradeInfoModal(id));
-      if (key === 'upd:roles')    return interaction.showModal(makeUpdateRolesModal(id));
-      if (key === 'fullclose')    return interaction.showModal(makeFullCloseModal(id));
-      if (key === 'stopbe')       return interaction.showModal(makeFinalRModal(id, 'BE'));
-      if (key === 'stopped')      return interaction.showModal(makeFinalRModal(id, 'OUT'));
-      if (key === 'upd:maxr')     return interaction.showModal(makeMaxRModal(id));
-      if (key === 'upd:chart')    return interaction.showModal(makeChartModal(id));
-
-      if (key === 'setbe') {
-        await ensureDeferred(interaction);
-        const sig0 = normalizeSignal(await getSignal(id));
-        if (!sig0) return safeEditReply(interaction, { content: 'Signal not found.' });
-
-        if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
-
-        // Move SL to BE (do not change slOriginal)
-        await updateSignal(id, { sl: Number(sig0.entry), validReentry: false });
-        const updated = normalizeSignal(await getSignal(id));
-        await editSignalMessage(updated);
-        await updateSummary();
-        return safeEditReply(interaction, { content: '✅ SL moved to breakeven.' });
-      }
-
-      if (key === 'del') {
-        await ensureDeferred(interaction);
-        const sig = await getSignal(id).catch(() => null);
-        if (sig) {
-          await deleteSignalMessage(sig).catch(() => {});
-          await deleteControlThread(id).catch(() => {});
-          await deleteSignal(id).catch(() => {});
-          await updateSummary().catch(() => {});
-        }
-        return safeEditReply(interaction, { content: '🗑️ Signal deleted.' });
-      }
-
-      if (['tp1','tp2','tp3','tp4','tp5'].includes(key)) {
-        const sig = normalizeSignal(await getSignal(id));
-        if (!sig) return interaction.reply({ content: 'Signal not found.', flags: MessageFlags.Ephemeral });
-
-        const tpUpper = key.toUpperCase();
-        if (sig.tpHits?.[tpUpper]) {
-          return interaction.reply({ content: `${tpUpper} already recorded.`, flags: MessageFlags.Ephemeral });
-        }
-
-        const planPct = sig.plan?.[tpUpper];
-        const tpPrice = sig[key];
-
-        if (isNum(planPct) && Number(planPct) > 0 && isNum(tpPrice)) {
-          const already = (sig.fills || []).some(f => String(f.source).toUpperCase() === tpUpper);
-          if (!already) sig.fills.push({ pct: Number(planPct), price: Number(tpPrice), source: tpUpper });
-          sig.latestTpHit = tpUpper;
-          sig.tpHits[tpUpper] = true;
-
-          await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits });
-          await editSignalMessage(sig);
-          await updateSummary();
-          await ensureDeferred(interaction);
-          return safeEditReply(interaction, { content: `✅ ${tpUpper} executed (${planPct}%).` });
-        }
-
-        const m = makeTPModal(id, key);
-        if (isNum(planPct)) m.components[0].components[0].setValue(String(planPct));
-        return interaction.showModal(m);
-      }
-
-      return interaction.reply({ content: 'Unknown action.', flags: MessageFlags.Ephemeral });
     }
   } catch (err) {
     console.error('interaction error:', err);
