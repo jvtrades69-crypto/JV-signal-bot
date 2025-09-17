@@ -110,21 +110,8 @@ function isSlMovedToBE(signal) {
 }
 
 // ------------------------------
-// Mentions (keep highlight even after edits)
+// Mentions (keep highlight even after edits — no extra pings)
 // ------------------------------
-function extractRoleIds(defaultRoleId, extraRoleRaw) {
-  const ids = [];
-  if (defaultRoleId) ids.push(defaultRoleId);
-  if (!extraRoleRaw) return ids;
-  const found = `${extraRoleRaw}`.match(/\d{6,}/g);
-  if (found) ids.push(...found);
-  return Array.from(new Set(ids));
-}
-function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
-  const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
-  const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
-  // On initial send we allowRoles to ping; on edits we suppress pings entirely (keeps highlight)
-  // Mentions (keep highlight even after edits — no extra pings)
 function extractRoleIds(defaultRoleId, extraRoleRaw) {
   const ids = [];
   if (defaultRoleId) ids.push(defaultRoleId);
@@ -138,19 +125,11 @@ function extractRoleIds(defaultRoleId, extraRoleRaw) {
 function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
   const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
   const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
-
-  // On edits we still parse role mentions so they remain styled/highlighted.
-  // Discord won't re-ping on edits.
-  if (forEdit && ids.length) return { content, allowedMentions: { roles: ids } };
-
   if (!ids.length) return { content: '', allowedMentions: { parse: [] } };
 
-  // Initial send: allow only these roles
+  // We allow role mentions both on create and on edit so they stay highlighted.
+  // Discord does NOT re-ping on edits, so this keeps styling without notifying again.
   return { content, allowedMentions: { roles: ids } };
-}
-
-  if (!ids.length) return { content: '', allowedMentions: { parse: [] } };
-  return { content, allowedMentions: { parse: [], roles: ids } };
 }
 
 // ------------------------------
@@ -243,7 +222,7 @@ async function postSignalMessage(signal) {
   const payload = {
     // Show the link if we *didn't* attach the image inline
     content: `${text}${signal.chartUrl && !signal.chartAttached ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
-    ...(mentionLine ? { allowedMentions } : {}),
+    ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } }),
   };
 
   // Option A: if creation had an attachment, include it inline
@@ -525,7 +504,6 @@ function computeFinalR(signal) {
   if (signal.status !== STATUS.RUN_VALID && isNum(signal.finalR)) return Number(signal.finalR);
   return computeRealizedR(signal);
 }
-
 function makeRecapDetailsModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id, 'recapfill')).setTitle('Trade Recap Details');
   m.addComponents(new ActionRowBuilder().addComponents(
@@ -552,6 +530,7 @@ function makeRecapDetailsModal(id) {
 client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   await pruneGhostSignals().catch(() => {});
+  await repairActiveReentryFlags().catch(() => {}); // one-time data fix for older RUN_VALID trades
 });
 
 // Manual delete watcher (any channel)
@@ -742,7 +721,7 @@ client.on('interactionCreate', async (interaction) => {
         }
         await updateSignal(id, { ...patch });
         const updated = normalizeSignal(await getSignal(id));
-        if (isSlMovedToBE(updated)) { updated.validReentry = false; await updateSignal(id, { validReentry: false }); }
+        // DO NOT toggle validReentry here anymore
         await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ TP prices updated.' });
@@ -789,7 +768,7 @@ client.on('interactionCreate', async (interaction) => {
 
         await updateSignal(id, patch);
         const updated = normalizeSignal(await getSignal(id));
-        if (isSlMovedToBE(updated)) { updated.validReentry = false; await updateSignal(id, { validReentry: false }); }
+        // DO NOT toggle validReentry here anymore
         await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Trade info updated.' });
@@ -920,7 +899,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
         const finalRStr = interaction.fields.getTextInputValue('final_r')?.trim();
-        const hasFinalR = finalRStr !== undefined && finalRStr !== '';
+        the hasFinalR = finalRStr !== undefined && finalRStr !== '';
         if (hasFinalR && !isNum(finalRStr)) {
           return safeEditReply(interaction, { content: '❌ Final R must be a number (e.g., 0, -1, -0.5).' });
         }
@@ -955,7 +934,6 @@ client.on('interactionCreate', async (interaction) => {
 
         const reason = interaction.fields.getTextInputValue('recap_reason') ?? '';
         const confluences = interaction.fields.getTextInputValue('recap_confluences') ?? '';
-        // const tpnotes = interaction.fields.getTextInputValue('recap_tp') ?? ''; // not needed with fancy renderer
         const notes = interaction.fields.getTextInputValue('recap_notes') ?? '';
         const chartUrl = (interaction.fields.getTextInputValue('recap_chart') || signal.chartUrl || '').trim();
 
@@ -1011,8 +989,8 @@ client.on('interactionCreate', async (interaction) => {
 
         if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
 
-        // Move SL to BE (do not change slOriginal)
-        await updateSignal(id, { sl: Number(sig0.entry), validReentry: false });
+        // Move SL to BE (do not change slOriginal); DO NOT toggle validReentry
+        await updateSignal(id, { sl: Number(sig0.entry) });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
         await updateSummary();
@@ -1127,7 +1105,7 @@ async function createSignal(payload, channelId) {
 }
 
 // ------------------------------
-// One-time ghost prune (storage hygiene)
+// One-time ghost prune (storage hygiene) + repair flags
 // ------------------------------
 async function pruneGhostSignals() {
   try {
@@ -1149,6 +1127,20 @@ async function pruneGhostSignals() {
     }
   } catch (e) {
     console.error('pruneGhostSignals error:', e);
+  }
+}
+
+// Fix older RUN_VALID trades that were incorrectly marked not valid for re-entry
+async function repairActiveReentryFlags() {
+  try {
+    const all = (await getSignals()).map(normalizeSignal);
+    for (const s of all) {
+      if (s.status === STATUS.RUN_VALID && s.validReentry === false) {
+        await updateSignal(s.id, { validReentry: true }).catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.error('repairActiveReentryFlags error:', e);
   }
 }
 
