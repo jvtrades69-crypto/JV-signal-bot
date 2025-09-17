@@ -8,10 +8,6 @@
 // - Dedupe guard for interactions (no double posts)
 // - Safe acks (prevents “not sent or deferred” / “unknown interaction”)
 // - Global error guards
-//
-// NEW:
-// - /recap command: pick a trade by status (Closed/BE/Out) via dropdown (no IDs),
-//   fill optional notes in a modal, auto-post a fancy recap (with chart + link)
 
 import {
   Client,
@@ -32,7 +28,7 @@ import {
   saveSignal, getSignal, getSignals, updateSignal, deleteSignal,
   getThreadId, setThreadId
 } from './store.js';
-import { renderSignalText, renderSummaryText, renderSingleTradeRecapFancy } from './embeds.js';
+import { renderSignalText, renderSummaryText } from './embeds.js';
 
 const nano = customAlphabet('1234567890abcdef', 10);
 const client = new Client({
@@ -114,7 +110,7 @@ function isSlMovedToBE(signal) {
 }
 
 // ------------------------------
-// Mentions
+// Mentions (keep highlight even after edits)
 // ------------------------------
 function extractRoleIds(defaultRoleId, extraRoleRaw) {
   const ids = [];
@@ -160,7 +156,7 @@ async function safeEditReply(interaction, payload) {
 }
 
 // ------------------------------
-// Thread title helpers (for control thread name)
+// Thread title helpers (rename to “BTC long +1.34”, “BTC long stopped out”, etc.)
 // ------------------------------
 function computeRealizedR(signal) {
   const fills = Array.isArray(signal.fills) ? signal.fills : [];
@@ -201,12 +197,14 @@ async function renameControlThread(signal) {
     const tid = await getThreadId(signal.id);
     if (!tid) return;
     const thread = await client.channels.fetch(tid).catch(() => null);
-    if (!thread || !thread.isThread?.()) return;
+    if (!thread || typeof thread.setName !== 'function') return;
     const desired = computeThreadName(signal);
     if (thread.name !== desired) {
       await thread.setName(desired).catch(() => {});
     }
-  } catch {}
+  } catch (e) {
+    console.error('renameControlThread error:', e);
+  }
 }
 
 // ------------------------------
@@ -374,7 +372,7 @@ function controlRows(signalId) {
     new ButtonBuilder().setCustomId(btn(signalId,'stopbe')).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(btn(signalId,'stopped')).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
   );
-  // row4 (DELETE button removed)
+  // row4 (DELETE button removed as requested)
   const row4 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'setbe')).setLabel('🟨 Set SL → BE').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:maxr')).setLabel('📈 Set Max R').setStyle(ButtonStyle.Secondary),
@@ -401,90 +399,168 @@ async function deleteControlThread(signalId) {
   const tid = await getThreadId(signalId);
   if (!tid) return;
   const thread = await client.channels.fetch(tid).catch(() => null);
-  if (thread && thread.isThread()) {
+  if (thread && typeof thread.delete === 'function') {
     await thread.delete().catch(() => {});
   }
 }
 
 // ------------------------------
-// Recap helpers (NEW)
+// Modals
 // ------------------------------
-function statusFromInput(val) {
-  if (!val) return null;
-  const v = String(val).toUpperCase();
-  if (v === 'CLOSED') return STATUS.CLOSED;
-  if (v === 'STOPPED_BE' || v === 'BE' || v === 'BREAKEVEN') return STATUS.STOPPED_BE;
-  if (v === 'STOPPED_OUT' || v === 'OUT' || v === 'STOPPED') return STATUS.STOPPED_OUT;
-  return null;
+function makeTPModal(id, tpKey) {
+  const m = new ModalBuilder().setCustomId(modal(id, `tp:${tpKey}`)).setTitle(`${tpKey.toUpperCase()} Hit`);
+  const pct = new TextInputBuilder()
+    .setCustomId('tp_pct')
+    .setLabel('Close % (0 - 100; leave blank to skip)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false);
+  m.addComponents(new ActionRowBuilder().addComponents(pct));
+  return m;
 }
-
-function labelForSignalOption(s) {
-  const dir = s.direction === DIR.SHORT ? 'Short' : 'Long';
-  const r = isNum(s.finalR) ? Number(s.finalR) : computeRealizedR(s);
-  const rTxt = `${r > 0 ? '+' : ''}${r.toFixed(2)}R`;
-  const st =
-    s.status === STATUS.CLOSED ? 'Closed' :
-    s.status === STATUS.STOPPED_BE ? 'BE' :
-    s.status === STATUS.STOPPED_OUT ? 'Stopped' : 'Active';
-  return `$${String(s.asset).toUpperCase()} ${dir} • ${rTxt} • ${st}`;
+function makeUpdateTPPricesModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'tpprices')).setTitle('Update TP Prices (TP1–TP5)');
+  for (const [cid, label] of [['upd_tp1','TP1'],['upd_tp2','TP2'],['upd_tp3','TP3'],['upd_tp4','TP4'],['upd_tp5','TP5']]) {
+    m.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId(cid).setLabel(label).setStyle(TextInputStyle.Short).setRequired(false)
+    ));
+  }
+  return m;
 }
-
-function makeRecapSelect(statusKey, options) {
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId(`recap:pick:${statusKey || 'ALL'}`)
-    .setPlaceholder('Select a trade')
-    .setMinValues(1)
-    .setMaxValues(1)
-    .addOptions(options);
-  return new ActionRowBuilder().addComponents(menu);
+function makeUpdatePlanModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'plan')).setTitle('Update TP % Plan (0–100)');
+  for (const t of ['tp1','tp2','tp3','tp4','tp5']) {
+    m.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId(`plan_${t}`).setLabel(`${t.toUpperCase()} planned %`).setStyle(TextInputStyle.Short).setRequired(false)
+    ));
+  }
+  return m;
 }
-
-function makeRecapModal(id, defaults = {}) {
-  const m = new ModalBuilder().setCustomId(modal(id, 'recap')).setTitle('Trade Recap Details');
-
-  const reason = new TextInputBuilder()
-    .setCustomId('recap_reason')
-    .setLabel('Trade Reason (bullets, optional)')
+function makeUpdateTradeInfoModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'trade')).setTitle('Update Trade Info');
+  const fields = [
+    ['upd_entry', 'Entry', TextInputStyle.Short],
+    ['upd_sl', 'SL', TextInputStyle.Short],
+    ['upd_asset', 'Asset (e.g., BTC, ETH, SOL)', TextInputStyle.Short],
+    ['upd_dir', 'Direction (LONG/SHORT)', TextInputStyle.Short],
+    ['upd_reason', 'Reason (optional)', TextInputStyle.Paragraph],
+  ];
+  for (const [cid, label, style] of fields) {
+    m.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId(cid).setLabel(label).setStyle(style).setRequired(false)
+    ));
+  }
+  return m;
+}
+function makeUpdateRolesModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'roles')).setTitle('Update Role Mention(s)');
+  const input = new TextInputBuilder()
+    .setCustomId('roles_input')
+    .setLabel('Enter one or more roles (IDs or @mentions)')
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(false);
-  if (defaults.reason) reason.setValue(defaults.reason.slice(0, 4000));
-
-  const conf = new TextInputBuilder()
-    .setCustomId('recap_confluences')
-    .setLabel('Entry Confluences (bullets, optional)')
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(false);
-  if (defaults.confluences) conf.setValue(defaults.confluences.slice(0, 4000));
-
-  const notes = new TextInputBuilder()
-    .setCustomId('recap_notes')
-    .setLabel('Notes (optional)')
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(false);
-  if (defaults.notes) notes.setValue(defaults.notes.slice(0, 4000));
-
-  m.addComponents(
-    new ActionRowBuilder().addComponents(reason),
-    new ActionRowBuilder().addComponents(conf),
-    new ActionRowBuilder().addComponents(notes),
-  );
+  m.addComponents(new ActionRowBuilder().addComponents(input));
+  return m;
+}
+function makeFullCloseModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'full')).setTitle('Fully Close Position');
+  const price = new TextInputBuilder().setCustomId('close_price').setLabel('Close Price').setStyle(TextInputStyle.Short).setRequired(true);
+  const pct = new TextInputBuilder().setCustomId('close_pct').setLabel('Close % (default = remaining)').setStyle(TextInputStyle.Short).setRequired(false);
+  const finalR = new TextInputBuilder().setCustomId('final_r').setLabel('Final R (optional)').setPlaceholder('e.g., 0, -0.5, -1 — overrides calc').setStyle(TextInputStyle.Short).setRequired(false);
+  m.addComponents(new ActionRowBuilder().addComponents(price));
+  m.addComponents(new ActionRowBuilder().addComponents(pct));
+  m.addComponents(new ActionRowBuilder().addComponents(finalR));
+  return m;
+}
+function makeFinalRModal(id, kind) {
+  const m = new ModalBuilder().setCustomId(modal(id, `finalr:${kind}`)).setTitle(kind === 'BE' ? 'Stopped Breakeven' : 'Stopped Out');
+  const r = new TextInputBuilder().setCustomId('final_r').setLabel('Final R (optional)').setPlaceholder('e.g., 0, -0.5, -1 — overrides calc').setStyle(TextInputStyle.Short).setRequired(false);
+  m.addComponents(new ActionRowBuilder().addComponents(r));
+  return m;
+}
+function makeMaxRModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'maxr')).setTitle('Set Max R Reached');
+  const r = new TextInputBuilder().setCustomId('max_r').setLabel('Max R reached (number, no + sign)').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('e.g., 1.5');
+  m.addComponents(new ActionRowBuilder().addComponents(r));
+  return m;
+}
+function makeChartModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'chart')).setTitle('Set / Replace Chart Link');
+  const url = new TextInputBuilder().setCustomId('chart_url').setLabel('Image URL (https://...)').setStyle(TextInputStyle.Short).setRequired(true);
+  m.addComponents(new ActionRowBuilder().addComponents(url));
   return m;
 }
 
-async function postTradeRecap(signal, extras, targetChannelId) {
-  const channel = await client.channels.fetch(targetChannelId);
-  const text = renderSingleTradeRecapFancy(signal, {
-    reason: extras.reason || '',
-    confluences: extras.confluences || '',
-    notes: extras.notes || ''
-  });
+// ---------- Recap helpers (picker + modal + render) ----------
+function statusTag(s) {
+  if (s.status === STATUS.CLOSED) return 'Closed';
+  if (s.status === STATUS.STOPPED_BE) return 'Stopped BE';
+  if (s.status === STATUS.STOPPED_OUT) return 'Stopped Out';
+  return 'Active';
+}
+function computeFinalR(signal) {
+  if (signal.status !== STATUS.RUN_VALID && isNum(signal.finalR)) return Number(signal.finalR);
+  return computeRealizedR(signal);
+}
+function renderSingleTradeRecap(signal, form) {
+  const dirWord = signal.direction === DIR.SHORT ? 'Short' : 'Long';
+  const circle  = signal.direction === DIR.SHORT ? '🔴' : '🟢';
+  const finalR  = computeFinalR(signal);
+  const title   = `**$${String(signal.asset).toUpperCase()} | Trade Recap ${finalR >= 0 ? finalR.toFixed(2) : (-finalR).toFixed(2)}R ${finalR >= 0 ? '✅' : '❌'} (${dirWord}) ${circle}**`;
 
-  const payload = { content: text };
-  // Attach chart image if available (otherwise the recap still posts)
-  if (signal.chartUrl) {
-    payload.files = [signal.chartUrl];
+  const bullets = (txt) =>
+    String(txt || '')
+      .split('\n')
+      .map(t => t.trim())
+      .filter(Boolean)
+      .map(t => `- ${t}`)
+      .join('\n');
+
+  const lines = [];
+  lines.push(title, '');
+  if (form.reason) {
+    lines.push(`📍 **Trade Reason**`);
+    lines.push(bullets(form.reason), '');
   }
-  await channel.send(payload);
+  if (form.confluences) {
+    lines.push(`📊 **Entry Confluences**`);
+    lines.push(bullets(form.confluences), '');
+  }
+  if (form.tpnotes) {
+    lines.push(`🎯 **Take Profit**`);
+    lines.push(bullets(form.tpnotes), '');
+  }
+  lines.push(`⚖️ **Results**`);
+  lines.push(`- Final: ${finalR >= 0 ? finalR.toFixed(2) : (-finalR).toFixed(2)}R ${finalR >= 0 ? '✅' : '❌'}`);
+  if (isNum(signal.maxR)) lines.push(`- Max R Reached: ${Number(signal.maxR).toFixed(2)}R`);
+  lines.push('');
+  if (form.notes) {
+    lines.push(`📝 **Notes**`);
+    lines.push(bullets(form.notes), '');
+  }
+  const jump = signal.jumpUrl || '#️⃣';
+  lines.push(`🔗 [View Original Trade](${jump})`);
+
+  return lines.join('\n');
+}
+
+function makeRecapDetailsModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id, 'recapfill')).setTitle('Trade Recap Details');
+  m.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('recap_reason').setLabel('Trade Reason (bulleted, 1 per line)').setStyle(TextInputStyle.Paragraph).setRequired(false)
+  ));
+  m.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('recap_confluences').setLabel('Entry Confluences (bulleted)').setStyle(TextInputStyle.Paragraph).setRequired(false)
+  ));
+  m.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('recap_tp').setLabel('Take Profit lines (bulleted)').setStyle(TextInputStyle.Paragraph).setRequired(false)
+  ));
+  m.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('recap_notes').setLabel('Notes (optional)').setStyle(TextInputStyle.Paragraph).setRequired(false)
+  ));
+  m.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('recap_chart').setLabel('Chart URL (optional)').setStyle(TextInputStyle.Short).setRequired(false)
+  ));
+  return m;
 }
 
 // ------------------------------
@@ -547,7 +623,7 @@ client.on('interactionCreate', async (interaction) => {
     // ensure we don't process the same interaction twice
     if (!tryClaimInteraction(interaction)) return;
 
-    // /signal (existing)
+    // ===== SLASH: /signal =====
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
@@ -593,7 +669,8 @@ client.on('interactionCreate', async (interaction) => {
           chartUrl: chartAtt?.url || null,
           chartAttached: !!chartAtt?.url,
         });
-        return interaction.showModal(m); // do NOT defer before showModal
+        await interaction.showModal(m); // await to avoid unknown-interaction on mobile
+        return;
       }
 
       await createSignal({
@@ -613,41 +690,50 @@ client.on('interactionCreate', async (interaction) => {
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
 
-    // /recap (NEW) — choose by status, then show modal for your notes, then post fancy recap
+    // ===== SLASH: /recap (picker flow; no IDs) =====
     if (interaction.isChatInputCommand() && interaction.commandName === 'recap') {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
       }
 
-      const rawStatus = interaction.options.getString('status') || interaction.options.getString('state') || interaction.options.getString('type') || null;
-      const wanted = statusFromInput(rawStatus); // CLOSED | STOPPED_BE | STOPPED_OUT | null
       const all = (await getSignals()).map(normalizeSignal);
+      const finished = all
+        .filter(s => s.status === STATUS.CLOSED || s.status === STATUS.STOPPED_BE || s.status === STATUS.STOPPED_OUT)
+        .slice(-25) // Discord select max 25
+        .reverse();
 
-      const pool = all
-        .filter(s => [STATUS.CLOSED, STATUS.STOPPED_BE, STATUS.STOPPED_OUT].includes(s.status))
-        .filter(s => (wanted ? s.status === wanted : true));
-
-      if (!pool.length) {
-        return interaction.reply({ content: 'No matching trades found.', flags: MessageFlags.Ephemeral });
+      if (!finished.length) {
+        return interaction.reply({ content: 'No finished trades yet (Closed / BE / Stopped Out).', flags: MessageFlags.Ephemeral });
       }
 
-      // Build select options (Discord max 25 options)
-      const options = pool.slice(-25).reverse().map(s => ({
-        label: labelForSignalOption(s).slice(0, 100),
-        value: s.id
-      }));
+      const opts = finished.map(s => {
+        const r = computeFinalR(s);
+        const tag = statusTag(s);
+        const label = `$${String(s.asset).toUpperCase()} ${s.direction === DIR.SHORT ? 'Short' : 'Long'} • ${tag} • ${r >= 0 ? '+' : ''}${r.toFixed(2)}R`;
+        return {
+          label,
+          value: s.id,
+          description: `Entry ${s.entry ?? '—'} | SL ${s.sl ?? '—'}`
+        };
+      });
 
-      const row = makeRecapSelect(wanted || 'ALL', options);
+      const select = new StringSelectMenuBuilder()
+        .setCustomId('recap:pick')
+        .setPlaceholder('Select a finished trade to recap…')
+        .addOptions(opts);
+
+      const row = new ActionRowBuilder().addComponents(select);
       return interaction.reply({
         content: 'Pick a trade to recap:',
         components: [row],
-        flags: MessageFlags.Ephemeral
+        flags: MessageFlags.Ephemeral,
       });
     }
 
     // ===== MODALS =====
     if (interaction.isModalSubmit()) {
       const idPart = interaction.customId.split(':').pop(); // after last :
+
       // Custom asset modal
       if (interaction.customId.startsWith('modal:asset:')) {
         await ensureDeferred(interaction);
@@ -657,21 +743,6 @@ client.on('interactionCreate', async (interaction) => {
         const asset = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
         await createSignal({ asset, ...stash }, stash.channelId || interaction.channelId);
         return safeEditReply(interaction, { content: `✅ Trade signal posted for ${asset}.` });
-      }
-
-      // NEW: Recap modal submit
-      if (interaction.customId.startsWith('modal:recap:')) {
-        await ensureDeferred(interaction);
-        const id = idPart;
-        const signal = normalizeSignal(await getSignal(id));
-        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
-
-        const reason = interaction.fields.getTextInputValue('recap_reason')?.trim() || '';
-        const confluences = interaction.fields.getTextInputValue('recap_confluences')?.trim() || '';
-        const notes = interaction.fields.getTextInputValue('recap_notes')?.trim() || '';
-
-        await postTradeRecap(signal, { reason, confluences, notes }, interaction.channelId);
-        return safeEditReply(interaction, { content: '✅ Recap posted.' });
       }
 
       // Update TP Prices
@@ -888,12 +959,49 @@ client.on('interactionCreate', async (interaction) => {
         await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
         await editSignalMessage(signal);
         await updateSummary();
-        await deleteControlThread(id); // auto-delete thread on stop events (unchanged)
+        await deleteControlThread(id); // auto-delete thread still intact
         return safeEditReply(interaction, { content: kind === 'BE' ? '✅ Stopped at breakeven.' : '✅ Stopped out.' });
+      }
+
+      // Recap modal submit
+      if (interaction.customId.startsWith('modal:recapfill:')) {
+        await ensureDeferred(interaction);
+        const id = idPart;
+        const signal = normalizeSignal(await getSignal(id));
+        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
+
+        const reason = interaction.fields.getTextInputValue('recap_reason') ?? '';
+        const confluences = interaction.fields.getTextInputValue('recap_confluences') ?? '';
+        const tpnotes = interaction.fields.getTextInputValue('recap_tp') ?? '';
+        const notes = interaction.fields.getTextInputValue('recap_notes') ?? '';
+        const chartUrl = (interaction.fields.getTextInputValue('recap_chart') || signal.chartUrl || '').trim();
+
+        const recapText = renderSingleTradeRecap(signal, { reason, confluences, tpnotes, notes });
+
+        const channel = await client.channels.fetch(interaction.channelId);
+        const payload = {
+          content: recapText + (chartUrl ? `\n\n${chartUrl}` : ''),
+          allowedMentions: { parse: [] }
+        };
+        await channel.send(payload).catch(e => console.error('send recap error:', e));
+        return safeEditReply(interaction, { content: '✅ Recap posted.' });
       }
     }
 
-    // ===== COMPONENTS (buttons + select menus) =====
+    // ===== COMPONENTS =====
+    if (interaction.isStringSelectMenu() && interaction.customId === 'recap:pick') {
+      // open details modal for the selected finished trade
+      if (interaction.user.id !== config.ownerId) {
+        return interaction.reply({ content: 'Only the owner can use these controls.', flags: MessageFlags.Ephemeral });
+      }
+      const selectedId = interaction.values?.[0];
+      if (!selectedId) return interaction.reply({ content: 'No trade selected.', flags: MessageFlags.Ephemeral });
+      const m = makeRecapDetailsModal(selectedId);
+      await interaction.showModal(m);
+      return;
+    }
+
+    // ===== BUTTONS =====
     if (interaction.isButton()) {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use these controls.', flags: MessageFlags.Ephemeral });
@@ -902,16 +1010,16 @@ client.on('interactionCreate', async (interaction) => {
       const id = parts.pop();
       const key = parts.slice(1).join(':'); // remove 'btn'
 
-      // Show modals: DO NOT defer before showModal
-      if (key === 'upd:tpprices') return interaction.showModal(makeUpdateTPPricesModal(id));
-      if (key === 'upd:plan')     return interaction.showModal(makeUpdatePlanModal(id));
-      if (key === 'upd:trade')    return interaction.showModal(makeUpdateTradeInfoModal(id));
-      if (key === 'upd:roles')    return interaction.showModal(makeUpdateRolesModal(id));
-      if (key === 'fullclose')    return interaction.showModal(makeFullCloseModal(id));
-      if (key === 'stopbe')       return interaction.showModal(makeFinalRModal(id, 'BE'));
-      if (key === 'stopped')      return interaction.showModal(makeFinalRModal(id, 'OUT'));
-      if (key === 'upd:maxr')     return interaction.showModal(makeMaxRModal(id));
-      if (key === 'upd:chart')    return interaction.showModal(makeChartModal(id));
+      // Show modals: ALWAYS await showModal to avoid "Unknown interaction"
+      if (key === 'upd:tpprices') { await interaction.showModal(makeUpdateTPPricesModal(id)); return; }
+      if (key === 'upd:plan')     { await interaction.showModal(makeUpdatePlanModal(id)); return; }
+      if (key === 'upd:trade')    { await interaction.showModal(makeUpdateTradeInfoModal(id)); return; }
+      if (key === 'upd:roles')    { await interaction.showModal(makeUpdateRolesModal(id)); return; }
+      if (key === 'fullclose')    { await interaction.showModal(makeFullCloseModal(id)); return; }
+      if (key === 'stopbe')       { await interaction.showModal(makeFinalRModal(id, 'BE')); return; }
+      if (key === 'stopped')      { await interaction.showModal(makeFinalRModal(id, 'OUT')); return; }
+      if (key === 'upd:maxr')     { await interaction.showModal(makeMaxRModal(id)); return; }
+      if (key === 'upd:chart')    { await interaction.showModal(makeChartModal(id)); return; }
 
       if (key === 'setbe') {
         await ensureDeferred(interaction);
@@ -926,6 +1034,19 @@ client.on('interactionCreate', async (interaction) => {
         await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ SL moved to breakeven.' });
+      }
+
+      // (Delete button removed from UI; handler kept as no-op safety)
+      if (key === 'del') {
+        await ensureDeferred(interaction);
+        const sig = await getSignal(id).catch(() => null);
+        if (sig) {
+          await deleteSignalMessage(sig).catch(() => {});
+          await deleteControlThread(id).catch(() => {});
+          await deleteSignal(id).catch(() => {});
+          await updateSummary().catch(() => {});
+        }
+        return safeEditReply(interaction, { content: '🗑️ Signal deleted.' });
       }
 
       if (['tp1','tp2','tp3','tp4','tp5'].includes(key)) {
@@ -955,27 +1076,14 @@ client.on('interactionCreate', async (interaction) => {
 
         const m = makeTPModal(id, key);
         if (isNum(planPct)) m.components[0].components[0].setValue(String(planPct));
-        return interaction.showModal(m);
+        await interaction.showModal(m);
+        return;
       }
 
       return interaction.reply({ content: 'Unknown action.', flags: MessageFlags.Ephemeral });
     }
-
-    // NEW: select menu handler for /recap
-    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('recap:pick:')) {
-      const selectedId = interaction.values?.[0];
-      if (!selectedId) return interaction.reply({ content: 'Nothing selected.', flags: MessageFlags.Ephemeral });
-
-      const sig = normalizeSignal(await getSignal(selectedId));
-      if (!sig) return interaction.reply({ content: 'Signal not found.', flags: MessageFlags.Ephemeral });
-
-      // Prefill modal with existing reason if any
-      const m = makeRecapModal(sig.id, { reason: sig.reason || '' });
-      return interaction.showModal(m);
-    }
-
   } catch (err) {
-    console.error('interaction error:', err);
+    console.error('interaction error:', err?.stack || err);
     try {
       if (interaction.deferred || interaction.replied) {
         await interaction.editReply({ content: '❌ Internal error.' });
@@ -1028,7 +1136,7 @@ async function createSignal(payload, channelId) {
 
   await updateSignal(signal.id, { messageId: signal.messageId, jumpUrl: signal.jumpUrl });
   await createControlThread(signal);
-  // ensure name is correct
+  // Name sync right away
   renameControlThread(signal).catch(() => {});
   await updateSummary();
 
