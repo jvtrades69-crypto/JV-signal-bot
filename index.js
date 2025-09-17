@@ -28,7 +28,7 @@ import {
   saveSignal, getSignal, getSignals, updateSignal, deleteSignal,
   getThreadId, setThreadId
 } from './store.js';
-import { renderSignalText, renderSummaryText } from './embeds.js';
+import { renderSignalText, renderSummaryText, renderSingleTradeRecapFancy } from './embeds.js';
 
 const nano = customAlphabet('1234567890abcdef', 10);
 const client = new Client({
@@ -501,47 +501,6 @@ function computeFinalR(signal) {
   if (signal.status !== STATUS.RUN_VALID && isNum(signal.finalR)) return Number(signal.finalR);
   return computeRealizedR(signal);
 }
-function renderSingleTradeRecap(signal, form) {
-  const dirWord = signal.direction === DIR.SHORT ? 'Short' : 'Long';
-  const circle  = signal.direction === DIR.SHORT ? '🔴' : '🟢';
-  const finalR  = computeFinalR(signal);
-  const title   = `**$${String(signal.asset).toUpperCase()} | Trade Recap ${finalR >= 0 ? finalR.toFixed(2) : (-finalR).toFixed(2)}R ${finalR >= 0 ? '✅' : '❌'} (${dirWord}) ${circle}**`;
-
-  const bullets = (txt) =>
-    String(txt || '')
-      .split('\n')
-      .map(t => t.trim())
-      .filter(Boolean)
-      .map(t => `- ${t}`)
-      .join('\n');
-
-  const lines = [];
-  lines.push(title, '');
-  if (form.reason) {
-    lines.push(`📍 **Trade Reason**`);
-    lines.push(bullets(form.reason), '');
-  }
-  if (form.confluences) {
-    lines.push(`📊 **Entry Confluences**`);
-    lines.push(bullets(form.confluences), '');
-  }
-  if (form.tpnotes) {
-    lines.push(`🎯 **Take Profit**`);
-    lines.push(bullets(form.tpnotes), '');
-  }
-  lines.push(`⚖️ **Results**`);
-  lines.push(`- Final: ${finalR >= 0 ? finalR.toFixed(2) : (-finalR).toFixed(2)}R ${finalR >= 0 ? '✅' : '❌'}`);
-  if (isNum(signal.maxR)) lines.push(`- Max R Reached: ${Number(signal.maxR).toFixed(2)}R`);
-  lines.push('');
-  if (form.notes) {
-    lines.push(`📝 **Notes**`);
-    lines.push(bullets(form.notes), '');
-  }
-  const jump = signal.jumpUrl || '#️⃣';
-  lines.push(`🔗 [View Original Trade](${jump})`);
-
-  return lines.join('\n');
-}
 
 function makeRecapDetailsModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id, 'recapfill')).setTitle('Trade Recap Details');
@@ -972,11 +931,11 @@ client.on('interactionCreate', async (interaction) => {
 
         const reason = interaction.fields.getTextInputValue('recap_reason') ?? '';
         const confluences = interaction.fields.getTextInputValue('recap_confluences') ?? '';
-        const tpnotes = interaction.fields.getTextInputValue('recap_tp') ?? '';
+        // const tpnotes = interaction.fields.getTextInputValue('recap_tp') ?? ''; // not needed with fancy renderer
         const notes = interaction.fields.getTextInputValue('recap_notes') ?? '';
         const chartUrl = (interaction.fields.getTextInputValue('recap_chart') || signal.chartUrl || '').trim();
 
-        const recapText = renderSingleTradeRecap(signal, { reason, confluences, tpnotes, notes });
+        const recapText = renderSingleTradeRecapFancy(signal, { reason, confluences, notes });
 
         const channel = await client.channels.fetch(interaction.channelId);
         const payload = {
