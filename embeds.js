@@ -333,6 +333,13 @@ export function renderSingleTradeRecapFancy(signal, extras = {}) {
   if (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) {
     lines.push(`- Max R Reached: ${Number(signal.maxR).toFixed(2)}R`);
   }
+  // NEW: annotate “stopped breakeven/out after TPx”
+  const afterTp = signal.latestTpHit && /^TP\d$/i.test(signal.latestTpHit) ? signal.latestTpHit.toUpperCase() : null;
+  if (signal.status === 'STOPPED_BE' && afterTp) {
+    lines.push(`- Stopped breakeven after ${afterTp}`);
+  } else if (signal.status === 'STOPPED_OUT' && afterTp) {
+    lines.push(`- Stopped out after ${afterTp}`);
+  }
   lines.push('');
 
   // Notes
