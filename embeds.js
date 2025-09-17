@@ -77,10 +77,9 @@ function computeRealized(signal) {
 
 export function buildTitle(signal) {
   const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
-  const circle = signal.direction === 'SHORT' ? '🔴' : '🟢'; // direction only
+  const circle = signal.direction === 'SHORT' ? '🔴' : '🟢';
   const base = `$${signal.asset} | ${dirWord} ${circle}`;
 
-  // Closures may override with finalR
   if (signal.status !== 'RUN_VALID' && signal.finalR != null) {
     const fr = Number(signal.finalR);
     if (signal.status === 'STOPPED_BE' && fr === 0) return `**${base} ( Breakeven )**`;
@@ -89,7 +88,6 @@ export function buildTitle(signal) {
     return `**${base} ( +0.00R )**`;
   }
 
-  // Active or calculated closures
   const { realized } = computeRealized(signal);
   if (signal.status === 'STOPPED_OUT') return `**${base} ( Loss -${Math.abs(realized).toFixed(2)}R )**`;
   if (signal.status === 'STOPPED_BE') {
@@ -98,7 +96,6 @@ export function buildTitle(signal) {
   }
   if (signal.status === 'CLOSED') return `**${base} ( Win +${realized.toFixed(2)}R )**`;
 
-  // Running — only show "so far" if we have any realized
   if ((signal.fills || []).length > 0) return `**${base} ( Win +${realized.toFixed(2)}R so far )**`;
   return `**${base}**`;
 }
@@ -106,11 +103,9 @@ export function buildTitle(signal) {
 export function renderSignalText(signal, rrChips, slMovedToBEActive) {
   const lines = [];
 
-  // Title
   lines.push(buildTitle(signal));
   lines.push('');
 
-  // Trade details
   lines.push(`📊 **Trade Details**`);
   lines.push(`- Entry: \`${fmt(signal.entry)}\``);
   lines.push(`- SL: \`${fmt(signal.sl)}\``);
@@ -141,7 +136,6 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     lines.push(String(signal.reason).trim());
   }
 
-  // Status
   lines.push('');
   lines.push(`📍 **Status**`);
   if (signal.status === 'RUN_VALID') {
@@ -171,7 +165,6 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     lines.push(`Valid for re-entry: ❌`);
   }
 
-  // Max R reached
   if (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) {
     const mr = Number(signal.maxR).toFixed(2);
     const soFar = signal.status === 'RUN_VALID' ? ' so far' : '';
@@ -184,7 +177,6 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     }
   }
 
-  // Realized + chart link
   const hasFills = Array.isArray(signal.fills) && signal.fills.length > 0;
   if (signal.status !== 'RUN_VALID' || hasFills) {
     lines.push('');
@@ -222,7 +214,6 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
       }
     }
 
-    // Clean chart link only
     if (signal.chartUrl && !signal.chartAttached) {
       lines.push('');
       lines.push(`[chart](${signal.chartUrl})`);
@@ -255,7 +246,6 @@ export function renderSummaryText(activeSignals) {
 
 /* ---------------------------
    Optional recap renderers
-   (Not required by index.js, but available if you want to import them later)
 ----------------------------*/
 export function renderTradeRecap(signal) {
   const { realized } = computeRealized(signal);
@@ -297,4 +287,78 @@ export function renderPeriodRecap(signals, header = 'Period Recap') {
   lines.push('');
   lines.push(`Total: ${signAbsR(total).text}`);
   return lines.join('\n');
+}
+
+/* ---------------------------
+   Recap renderer used by /recap
+----------------------------*/
+export function renderRecapText(signal, extras, rrChips) {
+  // compute realized if finalR not provided
+  function realizedR(sig) {
+    const fills = sig.fills || [];
+    if (!fills.length) return 0;
+    let sum = 0;
+    for (const f of fills) {
+      const pct = Number(f.pct || 0);
+      const r = rAtPrice(sig.direction, sig.entry, sig.slOriginal ?? sig.sl, f.price);
+      if (Number.isNaN(pct) || r === null) continue;
+      sum += (pct * r) / 100;
+    }
+    return Number(sum.toFixed(2));
+  }
+
+  const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
+  const circle = signal.direction === 'SHORT' ? '🔴' : '🟢';
+  const finalR = (signal.finalR != null) ? Number(signal.finalR) : realizedR(signal);
+  const finalMark = finalR >= 0 ? '✅' : '❌';
+  const title = `**$${signal.asset} | Trade Recap ${finalR.toFixed(2)}R ${finalMark} (${dirWord}) ${circle}**`;
+
+  const reasonLines = (extras?.reasonLines || []).map(l => l.startsWith('-') ? l : `- ${l}`);
+  const confLines   = (extras?.confLines   || []).map(l => l.startsWith('-') ? l : `- ${l}`);
+  const notesLines  = (extras?.notesLines  || []).map(l => l.startsWith('-') ? l : `- ${l}`);
+
+  // Build TP lines using TP prices and executed fills
+  const tpLines = [];
+  const fills = Array.isArray(signal.fills) ? signal.fills : [];
+  for (const src of ['TP1','TP2','TP3','TP4','TP5']) {
+    const tpKey = src.toLowerCase();
+    const tpPrice = signal[tpKey];
+    if (tpPrice == null || tpPrice === '') continue;
+    const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, tpPrice);
+    const rTxt = r == null ? '—' : `${Number(r).toFixed(2)}R`;
+    const executed = fills.find(f => String(f.source).toUpperCase() === src);
+    const pctTxt = executed && executed.pct != null ? ` (${Number(executed.pct)}% closed)` : '';
+    const check = executed ? ' ✅' : '';
+    tpLines.push(`- ${src} | ${rTxt}${pctTxt}${check}`);
+  }
+
+  const parts = [];
+  parts.push(title, '');
+
+  parts.push('📍 **Trade Reason**');
+  parts.push(reasonLines.length ? reasonLines.join('\n') : '- —');
+
+  parts.push('', '📊 **Entry Confluences**');
+  parts.push(confLines.length ? confLines.join('\n') : '- —');
+
+  parts.push('', '🎯 **Take Profit**');
+  parts.push(tpLines.length ? tpLines.join('\n') : '- —');
+
+  parts.push('', '⚖️ **Results**');
+  parts.push(`- Final: ${finalR.toFixed(2)}R ${finalMark}`);
+  if (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) {
+    parts.push(`- Max R Reached: ${Number(signal.maxR).toFixed(2)}R`);
+  }
+
+  parts.push('', '📝 **Notes**');
+  parts.push(notesLines.length ? notesLines.join('\n') : '- —');
+
+  const link = signal.jumpUrl || '#️⃣';
+  parts.push('', `🔗 [View Original Trade](${link})`);
+
+  if (signal.chartUrl) {
+    parts.push('', 'Chart image attached.');
+  }
+
+  return parts.join('\n');
 }
