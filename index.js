@@ -122,10 +122,21 @@ function extractRoleIds(defaultRoleId, extraRoleRaw) {
 function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
   const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
   const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
-  // On initial send we allowRoles to ping; on edits we suppress pings entirely (keeps highlight)
-  if (forEdit) return { content, allowedMentions: { parse: [] } };
-  if (!ids.length) return { content: '', allowedMentions: { parse: [] } };
-  return { content, allowedMentions: { parse: [], roles: ids } };
+
+  if (!ids.length) {
+    // no roles present: parse nothing (safe default)
+    return { content: '', allowedMentions: { parse: [] } };
+  }
+
+  // Keep highlight on both create and edit; Discord won't re-ping on edit.
+  return {
+    content,
+    allowedMentions: {
+      parse: ['roles'],
+      roles: ids,
+      repliedUser: false,
+    }
+  };
 }
 
 // ------------------------------
@@ -881,7 +892,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ SL moved to breakeven.' });
       }
 
-      // NOTE: Delete button handler intentionally left intact is NOT needed anymore since the button is removed.
+      // (Delete button removed from UI; keeping handler is harmless but unreachable)
       if (key === 'del') {
         await ensureDeferred(interaction);
         const sig = await getSignal(id).catch(() => null);
