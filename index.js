@@ -124,7 +124,31 @@ function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
   const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
   const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
   // On initial send we allowRoles to ping; on edits we suppress pings entirely (keeps highlight)
-  if (forEdit) return { content, allowedMentions: { parse: [] } };
+  // Mentions (keep highlight even after edits — no extra pings)
+function extractRoleIds(defaultRoleId, extraRoleRaw) {
+  const ids = [];
+  if (defaultRoleId) ids.push(defaultRoleId);
+  if (extraRoleRaw) {
+    const found = `${extraRoleRaw}`.match(/\d{6,}/g);
+    if (found) ids.push(...found);
+  }
+  return Array.from(new Set(ids));
+}
+
+function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
+  const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
+  const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
+
+  // On edits we still parse role mentions so they remain styled/highlighted.
+  // Discord won't re-ping on edits.
+  if (forEdit && ids.length) return { content, allowedMentions: { roles: ids } };
+
+  if (!ids.length) return { content: '', allowedMentions: { parse: [] } };
+
+  // Initial send: allow only these roles
+  return { content, allowedMentions: { roles: ids } };
+}
+
   if (!ids.length) return { content: '', allowedMentions: { parse: [] } };
   return { content, allowedMentions: { parse: [], roles: ids } };
 }
