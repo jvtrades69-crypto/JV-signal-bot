@@ -103,7 +103,7 @@ export function buildTitle(signal) {
   return `**${base}**`;
 }
 
-export function renderSignalText(signal, rrChips, _slMovedToBEActive) {
+export function renderSignalText(signal, rrChips, slMovedToBEActive) {
   const lines = [];
 
   // Title
@@ -121,9 +121,9 @@ export function renderSignalText(signal, rrChips, _slMovedToBEActive) {
     const v = signal[k];
     if (v === null || v === undefined || v === '') continue;
     const label = k.toUpperCase();
+    const pct = execOrPlan[label];
     const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, v);
     const rrTxt = (r != null) ? `${r.toFixed(2)}R` : null;
-    const pct = execOrPlan[label];
     if (pct > 0 && rrTxt) {
       lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
     } else if (pct > 0) {
@@ -149,7 +149,7 @@ export function renderSignalText(signal, rrChips, _slMovedToBEActive) {
     if (slMoved) {
       const tp = signal.latestTpHit ? `${signal.latestTpHit}` : '';
       lines.push(`Active 🟩 | SL moved to breakeven${tp ? ` after ${tp}` : ''}`);
-      lines.push(`Valid for re-entry: ❌`);
+      lines.push(`Valid for re-entry: ✅`);
     } else if (signal.latestTpHit) {
       lines.push(`Active 🟩 | ${signal.latestTpHit} hit`);
       lines.push(`Valid for re-entry: ✅`);
@@ -185,7 +185,7 @@ export function renderSignalText(signal, rrChips, _slMovedToBEActive) {
     }
   }
 
-  // Realized
+  // Realized + chart link
   const hasFills = Array.isArray(signal.fills) && signal.fills.length > 0;
   if (signal.status !== 'RUN_VALID' || hasFills) {
     lines.push('');
@@ -222,12 +222,12 @@ export function renderSignalText(signal, rrChips, _slMovedToBEActive) {
         lines.push(`${pretty} so far ( ${list} )`);
       }
     }
-  }
 
-  // Always show a clean chart link if present (no raw URL).
-  if (signal.chartUrl) {
-    lines.push('');
-    lines.push(`[chart](${signal.chartUrl})`);
+    // Clean chart link only (signal posting handles attach/link elsewhere)
+    if (signal.chartUrl && !signal.chartAttached) {
+      lines.push('');
+      lines.push(`[chart](${signal.chartUrl})`);
+    }
   }
 
   return lines.join('\n');
@@ -332,6 +332,13 @@ export function renderSingleTradeRecapFancy(signal, extras = {}) {
   lines.push(`- Final: ${signAbsR(finalR).text} ${resIcon}`);
   if (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) {
     lines.push(`- Max R Reached: ${Number(signal.maxR).toFixed(2)}R`);
+  }
+  // annotate “stopped breakeven/out after TPx”
+  const afterTp = signal.latestTpHit && /^TP\d$/i.test(signal.latestTpHit) ? signal.latestTpHit.toUpperCase() : null;
+  if (signal.status === 'STOPPED_BE' && afterTp) {
+    lines.push(`- Stopped breakeven after ${afterTp}`);
+  } else if (signal.status === 'STOPPED_OUT' && afterTp) {
+    lines.push(`- Stopped out after ${afterTp}`);
   }
   lines.push('');
 
