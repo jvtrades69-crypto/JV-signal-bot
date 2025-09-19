@@ -71,7 +71,7 @@ function computeRRChips(signal) {
   for (const key of TP_KEYS) {
     const tpVal = toNumOrNull(signal[key]);
     if (tpVal === null) continue;
-    const r = rAtPrice(signal.direction, signal.entry, signal.sl, tpVal);
+    const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, tpVal);
     if (r === null) continue;
     chips.push({ key: key.toUpperCase(), r: Number(r.toFixed(2)) });
   }
@@ -99,8 +99,8 @@ function normalizeSignal(raw) {
   // optional overrides/new fields
   if (s.finalR !== undefined && s.finalR !== null && !isNum(s.finalR)) delete s.finalR;
   if (!isNum(s.maxR)) s.maxR = null;          // optional max R reached (manual)
-  s.chartUrl = s.chartUrl || null;            // optional chart link URL
-  s.chartAttached = !!s.chartAttached;        // kept for backwards compat (we no longer attach files)
+  s.chartUrl = s.chartUrl || null;            // optional chart link or attachment URL
+  s.chartAttached = !!s.chartAttached;        // true if we attached the image on first post
   return s;
 }
 
@@ -121,11 +121,13 @@ function extractRoleIds(defaultRoleId, extraRoleRaw) {
   }
   return Array.from(new Set(ids));
 }
-function buildMentions(defaultRoleId, extraRoleRaw /* forEdit unused now */) {
+function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
   const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
   const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
+  // On edits we still parse role mentions so they remain styled/highlighted (Discord does not re-ping on edits).
+  if (forEdit && ids.length) return { content, allowedMentions: { roles: ids } };
   if (!ids.length) return { content: '', allowedMentions: { parse: [] } };
-  // Allow role parsing so it stays highlighted; Discord won't re-ping on edits.
+  // Initial send: allow only these roles (keeps highlight, avoids @everyone/@here)
   return { content, allowedMentions: { roles: ids } };
 }
 
@@ -214,13 +216,18 @@ async function postSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
   const rrChips = computeRRChips(signal);
   const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
-  const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole);
+  const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
 
-  // We no longer append the raw URL or attach files; the body already prints `[chart](url)`.
   const payload = {
+    // Rely on embeds.js to add [chart](url) when link-only; do NOT append raw URL here.
     content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
     ...(mentionLine ? { allowedMentions } : {}),
   };
+
+  // If creation had an attachment, include it inline (no link text shown by embeds.js in this mode)
+  if (signal.chartUrl && signal.chartAttached) {
+    payload.files = [signal.chartUrl];
+  }
 
   const sent = await channel.send(payload);
   return sent.id;
@@ -233,15 +240,18 @@ async function editSignalMessage(signal) {
 
   const rrChips = computeRRChips(signal);
   const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
-  const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole);
+  const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
 
   const editPayload = {
+    // Do not append chart URL here; embeds.js already renders [chart](url) when link-only.
     content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
     ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
   };
 
-  // Ensure we never keep legacy attachments
-  editPayload.attachments = [];
+  // When switching to link-only mode (chartAttached=false), remove any previous attachments
+  if (!signal.chartAttached) {
+    editPayload.attachments = []; // clears old image(s)
+  }
 
   await msg.edit(editPayload).catch(() => {});
   // keep thread name in sync (non-blocking)
@@ -293,7 +303,7 @@ async function updateSummary() {
 
       // Build active list (must exist AND original message still exists in its own channel)
       const signals = (await getSignals()).map(normalizeSignal);
-      const candidates = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
+      const candidates = signals.filter(s => s.status === STATUS.RUN_VALID); // show all active
 
       const active = [];
       for (const s of candidates) {
@@ -596,7 +606,7 @@ client.on('interactionCreate', async (interaction) => {
       const tp4_pct = interaction.options.getString('tp4_pct');
       const tp5_pct = interaction.options.getString('tp5_pct');
 
-      // Optional chart attachment or link
+      // Optional chart attachment (pasted inline)
       const chartAtt  = interaction.options.getAttachment?.('chart');
 
       if (assetSel === 'OTHER') {
@@ -616,7 +626,7 @@ client.on('interactionCreate', async (interaction) => {
           },
           channelId: interaction.channelId, // remember where to post
           chartUrl: chartAtt?.url || null,
-          chartAttached: false, // we DO NOT attach files anymore
+          chartAttached: !!chartAtt?.url,
         });
         await interaction.showModal(m); // await to avoid unknown-interaction on mobile
         return;
@@ -634,7 +644,7 @@ client.on('interactionCreate', async (interaction) => {
           TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
         },
         chartUrl: chartAtt?.url || null,
-        chartAttached: false, // link-only
+        chartAttached: !!chartAtt?.url,
       }, interaction.channelId);
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
@@ -708,7 +718,6 @@ client.on('interactionCreate', async (interaction) => {
         }
         await updateSignal(id, { ...patch });
         const updated = normalizeSignal(await getSignal(id));
-        if (isSlMovedToBE(updated)) { updated.validReentry = false; await updateSignal(id, { validReentry: false }); }
         await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ TP prices updated.' });
@@ -755,7 +764,6 @@ client.on('interactionCreate', async (interaction) => {
 
         await updateSignal(id, patch);
         const updated = normalizeSignal(await getSignal(id));
-        if (isSlMovedToBE(updated)) { updated.validReentry = false; await updateSignal(id, { validReentry: false }); }
         await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Trade info updated.' });
@@ -799,7 +807,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!url || !/^https?:\/\//i.test(url)) {
           return safeEditReply(interaction, { content: '❌ Please provide a valid http(s) URL.' });
         }
-        // Always "link only"
+        // Switch to "link only" mode and ensure old inline image is removed on edit
         await updateSignal(id, { chartUrl: url, chartAttached: false });
         await editSignalMessage(normalizeSignal(await getSignal(id)));
         await updateSummary();
@@ -867,7 +875,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const latest = signal.latestTpHit || TP_KEYS.find(k => signal[k] !== null)?.toUpperCase() || null;
         signal.status = STATUS.CLOSED;
-        signal.validReentry = false;
+        signal.validReentry = false; // closed => not valid
         signal.latestTpHit = latest;
 
         await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, latestTpHit: latest, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
@@ -886,7 +894,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
         const finalRStr = interaction.fields.getTextInputValue('final_r')?.trim();
-        const hasFinalR = finalRStr !== undefined && finalRStr !== '';
+        the const hasFinalR = finalRStr !== undefined && finalRStr !== '';
         if (hasFinalR && !isNum(finalRStr)) {
           return safeEditReply(interaction, { content: '❌ Final R must be a number (e.g., 0, -1, -0.5).' });
         }
@@ -902,12 +910,12 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         signal.status = (kind === 'BE') ? STATUS.STOPPED_BE : STATUS.STOPPED_OUT;
-        signal.validReentry = false;
+        signal.validReentry = false; // finished => not valid
 
         await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
         await editSignalMessage(signal);
         await updateSummary();
-        await deleteControlThread(id);
+        await deleteControlThread(id); // auto-delete thread still intact
         return safeEditReply(interaction, { content: kind === 'BE' ? '✅ Stopped at breakeven.' : '✅ Stopped out.' });
       }
 
@@ -927,6 +935,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const channel = await client.channels.fetch(interaction.channelId);
         const payload = {
+          // show chart as a label, not raw URL
           content: recapText + (chartUrl ? `\n\n[chart](${chartUrl})` : ''),
           allowedMentions: { parse: [] }
         };
@@ -937,6 +946,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // ===== COMPONENTS =====
     if (interaction.isStringSelectMenu() && interaction.customId === 'recap:pick') {
+      // open details modal for the selected finished trade
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use these controls.', flags: MessageFlags.Ephemeral });
       }
@@ -956,7 +966,7 @@ client.on('interactionCreate', async (interaction) => {
       const id = parts.pop();
       const key = parts.slice(1).join(':'); // remove 'btn'
 
-      // Show modals
+      // Show modals: ALWAYS await showModal to avoid "Unknown interaction"
       if (key === 'upd:tpprices') { await interaction.showModal(makeUpdateTPPricesModal(id)); return; }
       if (key === 'upd:plan')     { await interaction.showModal(makeUpdatePlanModal(id)); return; }
       if (key === 'upd:trade')    { await interaction.showModal(makeUpdateTradeInfoModal(id)); return; }
@@ -971,16 +981,18 @@ client.on('interactionCreate', async (interaction) => {
         await ensureDeferred(interaction);
         const sig0 = normalizeSignal(await getSignal(id));
         if (!sig0) return safeEditReply(interaction, { content: 'Signal not found.' });
+
         if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
 
-        // Move SL to BE (do not change slOriginal)
-        await updateSignal(id, { sl: Number(sig0.entry), validReentry: false });
+        // Move SL to BE (do not change slOriginal). Keep trade ACTIVE & valid for re-entry.
+        await updateSignal(id, { sl: Number(sig0.entry) });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ SL moved to breakeven.' });
       }
 
+      // (Delete button removed from UI; handler kept as no-op safety)
       if (key === 'del') {
         await ensureDeferred(interaction);
         const sig = await getSignal(id).catch(() => null);
@@ -1063,7 +1075,7 @@ async function createSignal(payload, channelId) {
     // new optional fields
     maxR: null,
     chartUrl: payload.chartUrl || null,
-    chartAttached: false, // we no longer attach files
+    chartAttached: !!payload.chartAttached,
     messageId: null,
     jumpUrl: null,
     channelId, // <= post and track in this channel
