@@ -1,17 +1,17 @@
 // embeds.js — Text renderers (clean formatted style)
 
-function fmt(v) {
-  if (v === null || v === undefined || v === '') return '—';
-  const n = Number(v);
-  if (Number.isNaN(n)) return String(v);
-  return addCommas(n);
-}
-
 function addCommas(num) {
   if (num === null || num === undefined || num === '') return String(num);
   const n = Number(num);
   if (Number.isNaN(n)) return String(num);
   return n.toLocaleString('en-US');
+}
+
+function fmt(v) {
+  if (v === null || v === undefined || v === '') return '—';
+  const n = Number(v);
+  if (Number.isNaN(n)) return String(v);
+  return addCommas(n);
 }
 
 export function signAbsR(r) {
@@ -24,6 +24,18 @@ export function signAbsR(r) {
 export function rrLineFromChips(rrChips) {
   if (!rrChips || !rrChips.length) return null;
   return rrChips.map(c => `${c.key} ${Number(c.r).toFixed(2)}R`).join(' | ');
+}
+
+// local realized calc (when no override)
+function rAtPrice(direction, entry, slOriginal, price) {
+  if (entry == null || slOriginal == null || price == null) return null;
+  const E = Number(entry), S = Number(slOriginal), P = Number(price);
+  if (Number.isNaN(E) || Number.isNaN(S) || Number.isNaN(P)) return null;
+  if (direction === 'LONG') {
+    const risk = E - S; if (risk <= 0) return null; return (P - E) / risk;
+  } else {
+    const risk = S - E; if (risk <= 0) return null; return (E - P) / risk;
+  }
 }
 
 // prefer executed %; else planned %
@@ -42,18 +54,6 @@ function computeTpPercents(signal) {
     acc[k] = Math.max(0, Math.min(100, Math.round(acc[k])));
   }
   return acc;
-}
-
-// local realized calc (when no override)
-function rAtPrice(direction, entry, slOriginal, price) {
-  if (entry == null || slOriginal == null || price == null) return null;
-  const E = Number(entry), S = Number(slOriginal), P = Number(price);
-  if (Number.isNaN(E) || Number.isNaN(S) || Number.isNaN(P)) return null;
-  if (direction === 'LONG') {
-    const risk = E - S; if (risk <= 0) return null; return (P - E) / risk;
-  } else {
-    const risk = S - E; if (risk <= 0) return null; return (E - P) / risk;
-  }
 }
 
 function computeRealized(signal) {
@@ -111,7 +111,7 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
   lines.push('');
 
   // Trade details
-  lines.push(`📊 **Trade Details**`);
+  lines.push('📊 **Trade Details**');
   lines.push(`- Entry: \`${fmt(signal.entry)}\``);
   lines.push(`- SL: \`${fmt(signal.sl)}\``);
 
@@ -137,25 +137,25 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
 
   if (signal.reason && String(signal.reason).trim().length) {
     lines.push('');
-    lines.push(`📝 **Reasoning**`);
+    lines.push('📝 **Reasoning**');
     lines.push(String(signal.reason).trim());
   }
 
   // Status
   lines.push('');
-  lines.push(`📍 **Status**`);
+  lines.push('📍 **Status**');
   if (signal.status === 'RUN_VALID') {
     const slMoved = (signal.entry != null && signal.sl != null && Number(signal.entry) === Number(signal.sl));
     if (slMoved) {
       const tp = signal.latestTpHit ? `${signal.latestTpHit}` : '';
       lines.push(`Active 🟩 | SL moved to breakeven${tp ? ` after ${tp}` : ''}`);
-      lines.push(`Valid for re-entry: ✅`);
+      lines.push('Valid for re-entry: ✅'); // always valid when active
     } else if (signal.latestTpHit) {
       lines.push(`Active 🟩 | ${signal.latestTpHit} hit`);
-      lines.push(`Valid for re-entry: ✅`);
+      lines.push('Valid for re-entry: ✅');
     } else {
-      lines.push(`Active 🟩`);
-      lines.push(`Valid for re-entry: ✅`);
+      lines.push('Active 🟩');
+      lines.push('Valid for re-entry: ✅');
     }
   } else {
     if (signal.status === 'CLOSED') {
@@ -165,11 +165,11 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
       const tp = signal.latestTpHit ? ` after ${signal.latestTpHit}` : '';
       lines.push(`Inactive 🟥 | Stopped breakeven${tp}`);
     } else if (signal.status === 'STOPPED_OUT') {
-      lines.push(`Inactive 🟥 | Stopped out`);
+      lines.push('Inactive 🟥 | Stopped out');
     } else {
-      lines.push(`Inactive 🟥`);
+      lines.push('Inactive 🟥');
     }
-    lines.push(`Valid for re-entry: ❌`);
+    lines.push('Valid for re-entry: ❌');
   }
 
   // Max R reached
@@ -177,19 +177,19 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     const mr = Number(signal.maxR).toFixed(2);
     const soFar = signal.status === 'RUN_VALID' ? ' so far' : '';
     lines.push('');
-    lines.push(`📈 **Max R reached**`);
+    lines.push('📈 **Max R reached**');
     lines.push(`${mr}R${soFar}`);
     const anyTpHit = !!(signal.tpHits && Object.values(signal.tpHits).some(Boolean));
     if (signal.status === 'RUN_VALID' && !anyTpHit) {
-      lines.push(`Awaiting TP1…`);
+      lines.push('Awaiting TP1…');
     }
   }
 
-  // Realized + chart link
+  // Realized
   const hasFills = Array.isArray(signal.fills) && signal.fills.length > 0;
   if (signal.status !== 'RUN_VALID' || hasFills) {
     lines.push('');
-    lines.push(`💰 **Realized**`);
+    lines.push('💰 **Realized**');
     if (signal.status !== 'RUN_VALID' && signal.finalR != null) {
       const { text } = signAbsR(Number(signal.finalR));
       if (signal.status === 'CLOSED') {
@@ -222,12 +222,12 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
         lines.push(`${pretty} so far ( ${list} )`);
       }
     }
+  }
 
-    // Clean chart link only (signal posting handles attach/link elsewhere)
-    if (signal.chartUrl && !signal.chartAttached) {
-      lines.push('');
-      lines.push(`[chart](${signal.chartUrl})`);
-    }
+  // Always show a clean chart link when link-only mode is used
+  if (signal.chartUrl && !signal.chartAttached) {
+    lines.push('');
+    lines.push(`[chart](${signal.chartUrl})`);
   }
 
   return lines.join('\n');
@@ -236,13 +236,13 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
 export function renderSummaryText(activeSignals) {
   const title = `**JV Current Active Trades** 📊`;
   if (!activeSignals || !activeSignals.length) {
-    return `${title}\n\n• There are currently no ongoing trades valid for entry – stay posted for future trades.`;
+    return `${title}\n\n• There are currently no ongoing trades valid for entry – stay posted for future trades!`;
   }
   const lines = [title, ''];
   activeSignals.forEach((s, i) => {
     const dirWord = s.direction === 'SHORT' ? 'Short' : 'Long';
     const circle = s.direction === 'SHORT' ? '🔴' : '🟢';
-    lines.push(`${i+1}️⃣ $${s.asset} | ${dirWord} ${circle}`);
+    lines.push(`${i + 1}⃣ $${s.asset} | ${dirWord} ${circle}`);
     lines.push(`- Entry: \`${fmt(s.entry)}\``);
     lines.push(`- SL: \`${fmt(s.sl)}\``);
     lines.push(`- Status: Active 🟩`);
@@ -291,7 +291,7 @@ export function renderSingleTradeRecapFancy(signal, extras = {}) {
   // Trade Reason
   const reasonText = (extras.reason || signal.reason || '').trim();
   if (reasonText) {
-    lines.push(`📍 **Trade Reason**`);
+    lines.push('📍 **Trade Reason**');
     for (const ln of reasonText.split('\n').map(s => s.trim()).filter(Boolean)) {
       lines.push(`- ${ln}`);
     }
@@ -301,7 +301,7 @@ export function renderSingleTradeRecapFancy(signal, extras = {}) {
   // Entry Confluences
   const conf = (extras.confluences || '').trim();
   if (conf) {
-    lines.push(`📊 **Entry Confluences**`);
+    lines.push('📊 **Entry Confluences**');
     for (const ln of conf.split('\n').map(s => s.trim()).filter(Boolean)) {
       lines.push(`- ${ln}`);
     }
@@ -314,7 +314,7 @@ export function renderSingleTradeRecapFancy(signal, extras = {}) {
   tpKeys.forEach((k, idx) => {
     const v = signal[k];
     if (v == null || v === '') return;
-    const label = `TP${idx+1}`;
+    const label = `TP${idx + 1}`;
     const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, v);
     const rTxt = r != null ? `${r.toFixed(2)}R` : '';
     const pct = tpClosedPct(signal, label);
@@ -322,18 +322,17 @@ export function renderSingleTradeRecapFancy(signal, extras = {}) {
     tpLines.push(`- ${label} | ${rTxt}${pct ? ` (${pct}% closed)` : ''}${hit}`);
   });
   if (tpLines.length) {
-    lines.push(`🎯 **Take Profit**`);
+    lines.push('🎯 **Take Profit**');
     lines.push(...tpLines);
     lines.push('');
   }
 
   // Results
-  lines.push(`⚖️ **Results**`);
+  lines.push('⚖️ **Results**');
   lines.push(`- Final: ${signAbsR(finalR).text} ${resIcon}`);
   if (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) {
     lines.push(`- Max R Reached: ${Number(signal.maxR).toFixed(2)}R`);
   }
-  // annotate “stopped breakeven/out after TPx”
   const afterTp = signal.latestTpHit && /^TP\d$/i.test(signal.latestTpHit) ? signal.latestTpHit.toUpperCase() : null;
   if (signal.status === 'STOPPED_BE' && afterTp) {
     lines.push(`- Stopped breakeven after ${afterTp}`);
@@ -345,7 +344,7 @@ export function renderSingleTradeRecapFancy(signal, extras = {}) {
   // Notes
   const notes = (extras.notes || '').trim();
   if (notes) {
-    lines.push(`📝 **Notes**`);
+    lines.push('📝 **Notes**');
     for (const ln of notes.split('\n').map(s => s.trim()).filter(Boolean)) {
       lines.push(`- ${ln}`);
     }
