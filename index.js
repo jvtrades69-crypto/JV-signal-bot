@@ -71,7 +71,7 @@ function computeRRChips(signal) {
   for (const key of TP_KEYS) {
     const tpVal = toNumOrNull(signal[key]);
     if (tpVal === null) continue;
-    const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, tpVal);
+    const r = rAtPrice(signal.direction, signal.entry, signal.sl, tpVal);
     if (r === null) continue;
     chips.push({ key: key.toUpperCase(), r: Number(r.toFixed(2)) });
   }
@@ -95,7 +95,9 @@ function normalizeSignal(raw) {
     s.plan[K] = isNum(v) ? Number(v) : null;
   }
   // track one-time TP hits
-  s.tpHits = s.tpHits && typeof s.tpHits === 'object' ? s.tpHits : { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false };
+  s.tpHits = s.tpHits && typeof s.tpHits === 'object'
+    ? s.tpHits
+    : { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false };
   // optional overrides/new fields
   if (s.finalR !== undefined && s.finalR !== null && !isNum(s.finalR)) delete s.finalR;
   if (!isNum(s.maxR)) s.maxR = null;          // optional max R reached (manual)
@@ -116,7 +118,7 @@ function extractRoleIds(defaultRoleId, extraRoleRaw) {
   const ids = [];
   if (defaultRoleId) ids.push(defaultRoleId);
   if (extraRoleRaw) {
-    const found = `${extraRoleRaw}`.match(/\d{6,}/g);
+    const found = String(extraRoleRaw).match(/\d{6,}/g);
     if (found) ids.push(...found);
   }
   return Array.from(new Set(ids));
@@ -219,12 +221,12 @@ async function postSignalMessage(signal) {
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
 
   const payload = {
-    // Rely on embeds.js to add [chart](url) when link-only; do NOT append raw URL here.
+    // Do NOT append raw chart URL here — embeds.js prints `[chart](...)` itself.
     content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
     ...(mentionLine ? { allowedMentions } : {}),
   };
 
-  // If creation had an attachment, include it inline (no link text shown by embeds.js in this mode)
+  // If creation had an attachment, include it inline
   if (signal.chartUrl && signal.chartAttached) {
     payload.files = [signal.chartUrl];
   }
@@ -243,12 +245,12 @@ async function editSignalMessage(signal) {
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
 
   const editPayload = {
-    // Do not append chart URL here; embeds.js already renders [chart](url) when link-only.
+    // Do NOT append raw chart URL here — embeds.js prints `[chart](...)` itself.
     content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
     ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
   };
 
-  // When switching to link-only mode (chartAttached=false), remove any previous attachments
+  // When replacing via control panel (chartAttached=false), remove any previous attachments
   if (!signal.chartAttached) {
     editPayload.attachments = []; // clears old image(s)
   }
@@ -374,6 +376,7 @@ function controlRows(signalId) {
     new ButtonBuilder().setCustomId(btn(signalId,'stopbe')).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(btn(signalId,'stopped')).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
   );
+  // row4 (DELETE button removed as requested)
   const row4 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'setbe')).setLabel('🟨 Set SL → BE').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:maxr')).setLabel('📈 Set Max R').setStyle(ButtonStyle.Secondary),
@@ -502,6 +505,7 @@ function computeFinalR(signal) {
   if (signal.status !== STATUS.RUN_VALID && isNum(signal.finalR)) return Number(signal.finalR);
   return computeRealizedR(signal);
 }
+
 function makeRecapDetailsModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id, 'recapfill')).setTitle('Trade Recap Details');
   m.addComponents(new ActionRowBuilder().addComponents(
@@ -718,6 +722,7 @@ client.on('interactionCreate', async (interaction) => {
         }
         await updateSignal(id, { ...patch });
         const updated = normalizeSignal(await getSignal(id));
+        // keep trade active/valid even if SL moved to BE
         await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ TP prices updated.' });
@@ -764,6 +769,7 @@ client.on('interactionCreate', async (interaction) => {
 
         await updateSignal(id, patch);
         const updated = normalizeSignal(await getSignal(id));
+        // keep trade active/valid even if SL moved to BE
         await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Trade info updated.' });
@@ -828,7 +834,7 @@ client.on('interactionCreate', async (interaction) => {
         if (signal.tpHits?.[tpUpper]) return safeEditReply(interaction, { content: `${tpUpper} already recorded.` });
 
         const pctRaw = interaction.fields.getTextInputValue('tp_pct')?.trim();
-        const hasPct = pctRaw !== undefined && pctRaw !== null && pctRaw !== '';
+        const hasPct = pctRaw !== undefined && pctRaw !== '';
         const pct = hasPct ? Number(pctRaw) : null;
         if (hasPct && (isNaN(pct) || pct < 0 || pct > 100)) {
           return safeEditReply(interaction, { content: '❌ Close % must be between 0 and 100 (or leave blank to skip).' });
@@ -878,7 +884,13 @@ client.on('interactionCreate', async (interaction) => {
         signal.validReentry = false; // closed => not valid
         signal.latestTpHit = latest;
 
-        await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, latestTpHit: latest, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
+        await updateSignal(id, {
+          fills: signal.fills,
+          status: signal.status,
+          validReentry: false,
+          latestTpHit: latest,
+          ...(hasFinalR ? { finalR: signal.finalR } : {})
+        });
         await editSignalMessage(signal);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Fully closed.' });
@@ -894,7 +906,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
         const finalRStr = interaction.fields.getTextInputValue('final_r')?.trim();
-        the const hasFinalR = finalRStr !== undefined && finalRStr !== '';
+        const hasFinalR = finalRStr !== undefined && finalRStr !== '';
         if (hasFinalR && !isNum(finalRStr)) {
           return safeEditReply(interaction, { content: '❌ Final R must be a number (e.g., 0, -1, -0.5).' });
         }
@@ -912,7 +924,12 @@ client.on('interactionCreate', async (interaction) => {
         signal.status = (kind === 'BE') ? STATUS.STOPPED_BE : STATUS.STOPPED_OUT;
         signal.validReentry = false; // finished => not valid
 
-        await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
+        await updateSignal(id, {
+          fills: signal.fills,
+          status: signal.status,
+          validReentry: false,
+          ...(hasFinalR ? { finalR: signal.finalR } : {})
+        });
         await editSignalMessage(signal);
         await updateSummary();
         await deleteControlThread(id); // auto-delete thread still intact
@@ -935,8 +952,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const channel = await client.channels.fetch(interaction.channelId);
         const payload = {
-          // show chart as a label, not raw URL
-          content: recapText + (chartUrl ? `\n\n[chart](${chartUrl})` : ''),
+          content: recapText + (chartUrl ? `\n\n${chartUrl}` : ''),
           allowedMentions: { parse: [] }
         };
         await channel.send(payload).catch(e => console.error('send recap error:', e));
