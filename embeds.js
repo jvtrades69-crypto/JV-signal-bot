@@ -3,25 +3,25 @@
 function fmt(v) {
   if (v === null || v === undefined || v === '') return '—';
   const n = Number(v);
-  if (Number.isNaN(n)) return String(v);
+  if (Number.isNaN(n)) return v;
   return addCommas(n);
 }
 
 function addCommas(num) {
-  if (num === null || num === undefined || num === '') return String(num);
+  if (num === null || num === undefined || num === '') return num;
   const n = Number(num);
-  if (Number.isNaN(n)) return String(num);
+  if (isNaN(n)) return num;
   return n.toLocaleString('en-US');
 }
 
-export function signAbsR(r) {
+function signAbsR(r) {
   const x = Number(r || 0);
   const abs = Math.abs(x).toFixed(2);
   const sign = x > 0 ? '+' : x < 0 ? '-' : '';
   return { text: `${sign}${abs}R`, abs, sign };
 }
 
-export function rrLineFromChips(rrChips) {
+function rrLineFromChips(rrChips) {
   if (!rrChips || !rrChips.length) return null;
   return rrChips.map(c => `${c.key} ${Number(c.r).toFixed(2)}R`).join(' | ');
 }
@@ -122,8 +122,8 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     if (v === null || v === undefined || v === '') continue;
     const label = k.toUpperCase();
     const pct = execOrPlan[label];
-    const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, v);
-    const rrTxt = (r != null) ? `${r.toFixed(2)}R` : null;
+    const chip = rrChips.find(c => c.key === label);
+    const rrTxt = chip ? `${chip.r.toFixed(2)}R` : null;
     if (pct > 0 && rrTxt) {
       lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
     } else if (pct > 0) {
@@ -145,17 +145,17 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
   lines.push('');
   lines.push(`📍 **Status**`);
   if (signal.status === 'RUN_VALID') {
-    const slMoved = (signal.entry != null && signal.sl != null && Number(signal.entry) === Number(signal.sl));
-    if (slMoved) {
+    if (slMovedToBEActive) {
       const tp = signal.latestTpHit ? `${signal.latestTpHit}` : '';
       lines.push(`Active 🟩 | SL moved to breakeven${tp ? ` after ${tp}` : ''}`);
+      lines.push(`Valid for re-entry: ❌`);
     } else if (signal.latestTpHit) {
       lines.push(`Active 🟩 | ${signal.latestTpHit} hit`);
+      lines.push(`Valid for re-entry: ✅`);
     } else {
       lines.push(`Active 🟩`);
+      lines.push(`Valid for re-entry: ✅`);
     }
-    // ✅/❌ now follows the stored flag (so SL→BE can flip it off in index.js)
-    lines.push(`Valid for re-entry: ${signal.validReentry ? '✅' : '❌'}`);
   } else {
     if (signal.status === 'CLOSED') {
       const tp = signal.latestTpHit ? ` after ${signal.latestTpHit}` : '';
@@ -223,12 +223,6 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     }
   }
 
-  // 👇 Always show the chart link in "link mode" (even if no Realized section printed)
-  if (signal.chartUrl && !signal.chartAttached) {
-    lines.push('');
-    lines.push(`[chart](${signal.chartUrl})`);
-  }
-
   return lines.join('\n');
 }
 
@@ -251,110 +245,4 @@ export function renderSummaryText(activeSignals) {
     lines.push('');
   });
   return lines.join('\n').trimEnd();
-}
-
-/* ---------------------------
-   Fancy single-trade recap renderer (used by /recap)
-----------------------------*/
-function tpClosedPct(signal, tpUpper) {
-  let pct = 0;
-  for (const f of signal.fills || []) {
-    if (String(f.source || '').toUpperCase() === tpUpper) {
-      pct += Number(f.pct || 0);
-    }
-  }
-  // Fallback: planned % if not executed
-  if (pct <= 0 && signal.plan && signal.plan[tpUpper] != null) {
-    pct = Number(signal.plan[tpUpper]) || 0;
-  }
-  return Math.max(0, Math.min(100, Math.round(pct)));
-}
-
-export function renderSingleTradeRecapFancy(signal, extras = {}) {
-  const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
-  const circle = signal.direction === 'SHORT' ? '🔴' : '🟢';
-
-  const realizedObj = computeRealized(signal);
-  const finalR =
-    (signal.status !== 'RUN_VALID' && signal.finalR != null)
-      ? Number(signal.finalR)
-      : realizedObj.realized;
-
-  const resIcon = finalR > 0 ? '✅' : finalR < 0 ? '❌' : '➖';
-  const titleR = signAbsR(finalR).text;
-
-  const lines = [];
-  lines.push(`**$${String(signal.asset).toUpperCase()} | Trade Recap ${titleR} ${resIcon} (${dirWord}) ${circle}**`);
-  lines.push('');
-
-  // Trade Reason
-  const reasonText = (extras.reason || signal.reason || '').trim();
-  if (reasonText) {
-    lines.push(`📍 **Trade Reason**`);
-    for (const ln of reasonText.split('\n').map(s => s.trim()).filter(Boolean)) {
-      lines.push(`- ${ln}`);
-    }
-    lines.push('');
-  }
-
-  // Entry Confluences
-  const conf = (extras.confluences || '').trim();
-  if (conf) {
-    lines.push(`📊 **Entry Confluences**`);
-    for (const ln of conf.split('\n').map(s => s.trim()).filter(Boolean)) {
-      lines.push(`- ${ln}`);
-    }
-    lines.push('');
-  }
-
-  // Take Profit
-  const tpKeys = ['tp1','tp2','tp3','tp4','tp5'];
-  const tpLines = [];
-  tpKeys.forEach((k, idx) => {
-    const v = signal[k];
-    if (v == null || v === '') return;
-    const label = `TP${idx+1}`;
-    const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, v);
-    const rTxt = r != null ? `${r.toFixed(2)}R` : '';
-    const pct = tpClosedPct(signal, label);
-    const hit = signal.tpHits?.[label] ? ' ✅' : '';
-    tpLines.push(`- ${label} | ${rTxt}${pct ? ` (${pct}% closed)` : ''}${hit}`);
-  });
-  if (tpLines.length) {
-    lines.push(`🎯 **Take Profit**`);
-    lines.push(...tpLines);
-    lines.push('');
-  }
-
-  // Results
-  lines.push(`⚖️ **Results**`);
-  lines.push(`- Final: ${signAbsR(finalR).text} ${resIcon}`);
-  if (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) {
-    lines.push(`- Max R Reached: ${Number(signal.maxR).toFixed(2)}R`);
-  }
-  // annotate “stopped breakeven/out after TPx”
-  const afterTp = signal.latestTpHit && /^TP\d$/i.test(signal.latestTpHit) ? signal.latestTpHit.toUpperCase() : null;
-  if (signal.status === 'STOPPED_BE' && afterTp) {
-    lines.push(`- Stopped breakeven after ${afterTp}`);
-  } else if (signal.status === 'STOPPED_OUT' && afterTp) {
-    lines.push(`- Stopped out after ${afterTp}`);
-  }
-  lines.push('');
-
-  // Notes
-  const notes = (extras.notes || '').trim();
-  if (notes) {
-    lines.push(`📝 **Notes**`);
-    for (const ln of notes.split('\n').map(s => s.trim()).filter(Boolean)) {
-      lines.push(`- ${ln}`);
-    }
-    lines.push('');
-  }
-
-  // Original link
-  if (signal.jumpUrl) {
-    lines.push(`🔗 [View Original Trade](${signal.jumpUrl})`);
-  }
-
-  return lines.join('\n');
 }
