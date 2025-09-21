@@ -149,14 +149,13 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     if (slMoved) {
       const tp = signal.latestTpHit ? `${signal.latestTpHit}` : '';
       lines.push(`Active 🟩 | SL moved to breakeven${tp ? ` after ${tp}` : ''}`);
-      lines.push(`Valid for re-entry: ✅`);
     } else if (signal.latestTpHit) {
       lines.push(`Active 🟩 | ${signal.latestTpHit} hit`);
-      lines.push(`Valid for re-entry: ✅`);
     } else {
       lines.push(`Active 🟩`);
-      lines.push(`Valid for re-entry: ✅`);
     }
+    // ✅/❌ now follows the stored flag (so SL→BE can flip it off in index.js)
+    lines.push(`Valid for re-entry: ${signal.validReentry ? '✅' : '❌'}`);
   } else {
     if (signal.status === 'CLOSED') {
       const tp = signal.latestTpHit ? ` after ${signal.latestTpHit}` : '';
@@ -185,7 +184,7 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     }
   }
 
-  // Realized + chart link
+  // Realized
   const hasFills = Array.isArray(signal.fills) && signal.fills.length > 0;
   if (signal.status !== 'RUN_VALID' || hasFills) {
     lines.push('');
@@ -222,12 +221,12 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
         lines.push(`${pretty} so far ( ${list} )`);
       }
     }
+  }
 
-    // Clean chart link only (signal posting handles attach/link elsewhere)
-    if (signal.chartUrl && !signal.chartAttached) {
-      lines.push('');
-      lines.push(`[chart](${signal.chartUrl})`);
-    }
+  // 👇 Always show the chart link in "link mode" (even if no Realized section printed)
+  if (signal.chartUrl && !signal.chartAttached) {
+    lines.push('');
+    lines.push(`[chart](${signal.chartUrl})`);
   }
 
   return lines.join('\n');
