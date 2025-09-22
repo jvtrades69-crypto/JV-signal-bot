@@ -27,7 +27,7 @@ import {
   saveSignal, getSignal, getSignals, updateSignal, deleteSignal,
   getThreadId, setThreadId
 } from './store.js';
-import { renderSignalText, renderSummaryText } from './embeds.js';
+import { renderSignalText, renderSummaryText, renderRecapText } from './embeds.js';
 
 const nano = customAlphabet('1234567890abcdef', 10);
 const client = new Client({
@@ -122,21 +122,10 @@ function extractRoleIds(defaultRoleId, extraRoleRaw) {
 function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
   const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
   const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
-
-  if (!ids.length) {
-    // no roles present: parse nothing (safe default)
-    return { content: '', allowedMentions: { parse: [] } };
-  }
-
-  // Keep highlight on both create and edit; Discord won't re-ping on edit.
-  return {
-    content,
-    allowedMentions: {
-      parse: ['roles'],
-      roles: ids,
-      repliedUser: false,
-    }
-  };
+  // On initial send we allowRoles to ping; on edits we suppress pings entirely (keeps highlight)
+  if (forEdit) return { content, allowedMentions: { parse: [] } };
+  if (!ids.length) return { content: '', allowedMentions: { parse: [] } };
+  return { content, allowedMentions: { parse: [], roles: ids } };
 }
 
 // ------------------------------
@@ -166,7 +155,7 @@ async function safeEditReply(interaction, payload) {
 }
 
 // ------------------------------
-// Thread title helpers (NEW - minimal & safe)
+// Thread title helpers (for auto-renaming)
 // ------------------------------
 function computeRealizedR(signal) {
   const fills = Array.isArray(signal.fills) ? signal.fills : [];
@@ -260,7 +249,7 @@ async function editSignalMessage(signal) {
   }
 
   await msg.edit(editPayload).catch(() => {});
-  // NEW: keep thread name in sync (non-blocking)
+  // keep thread name in sync (non-blocking)
   renameControlThread(signal).catch(() => {});
   return true;
 }
@@ -380,7 +369,7 @@ function controlRows(signalId) {
     new ButtonBuilder().setCustomId(btn(signalId,'stopbe')).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(btn(signalId,'stopped')).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
   );
-  // row4 (DELETE button removed as requested)
+  // row4 (DELETE button removed per your request)
   const row4 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'setbe')).setLabel('🟨 Set SL → BE').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:maxr')).setLabel('📈 Set Max R').setStyle(ButtonStyle.Secondary),
@@ -498,6 +487,21 @@ function makeChartModal(id) {
   return m;
 }
 
+// === NEW: Recap modal ===
+function makeRecapModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'recap')).setTitle('Post Trade Recap');
+  m.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('recap_reason').setLabel('Trade Reason (bullets)').setStyle(TextInputStyle.Paragraph).setRequired(false)
+  ));
+  m.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('recap_confs').setLabel('Entry Confluences (bullets)').setStyle(TextInputStyle.Paragraph).setRequired(false)
+  ));
+  m.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('recap_notes').setLabel('Notes (optional)').setStyle(TextInputStyle.Paragraph).setRequired(false)
+  ));
+  return m;
+}
+
 // ------------------------------
 // Bot lifecycle
 // ------------------------------
@@ -548,6 +552,25 @@ function tryClaimInteraction(interaction) {
   claimed.add(id);
   setTimeout(() => claimed.delete(id), CLAIM_TTL_MS);
   return true;
+}
+
+// Helper: pick most recent signal (prefers current channel)
+async function pickMostRecentSignal(channelId) {
+  const all = (await getSignals()).map(normalizeSignal).filter(s => s.messageId);
+  const inChan = all.filter(s => s.channelId === channelId);
+  const list = inChan.length ? inChan : all;
+  if (!list.length) return null;
+  // sort by Discord snowflake (string) descending
+  list.sort((a,b) => (BigInt(b.messageId) - BigInt(a.messageId)));
+  // ensure the message still exists
+  for (const s of list) {
+    try {
+      const ch = await client.channels.fetch(s.channelId);
+      await ch.messages.fetch(s.messageId);
+      return s;
+    } catch {}
+  }
+  return null;
 }
 
 // ------------------------------
@@ -624,9 +647,29 @@ client.on('interactionCreate', async (interaction) => {
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
 
+    // === NEW: /recap (single trade recap) ===
+    if (interaction.isChatInputCommand() && interaction.commandName === 'recap') {
+      if (interaction.user.id !== config.ownerId) {
+        return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
+      }
+      // If an explicit signal id was passed, try to use it. Otherwise pick most recent in channel.
+      const explicitId = interaction.options.getString?.('id') || null;
+      let signal = null;
+      if (explicitId) signal = normalizeSignal(await getSignal(explicitId).catch(() => null));
+      if (!signal) signal = await pickMostRecentSignal(interaction.channelId);
+
+      if (!signal) {
+        return interaction.reply({ content: '❌ No recent trade found to recap in this channel.', flags: MessageFlags.Ephemeral });
+      }
+
+      // Show modal to capture free-text parts (do NOT defer before showModal)
+      return interaction.showModal(makeRecapModal(signal.id));
+    }
+
     // ===== MODALS =====
     if (interaction.isModalSubmit()) {
       const idPart = interaction.customId.split(':').pop(); // after last :
+
       // Custom asset modal
       if (interaction.customId.startsWith('modal:asset:')) {
         await ensureDeferred(interaction);
@@ -636,6 +679,40 @@ client.on('interactionCreate', async (interaction) => {
         const asset = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
         await createSignal({ asset, ...stash }, stash.channelId || interaction.channelId);
         return safeEditReply(interaction, { content: `✅ Trade signal posted for ${asset}.` });
+      }
+
+      // NEW: Recap modal submit
+      if (interaction.customId.startsWith('modal:recap:')) {
+        await ensureDeferred(interaction);
+        const id = idPart;
+        const signal = normalizeSignal(await getSignal(id));
+        if (!signal) return safeEditReply(interaction, { content: '❌ Trade not found for recap.' });
+
+        const reason = (interaction.fields.getTextInputValue('recap_reason') || '').trim();
+        const confs  = (interaction.fields.getTextInputValue('recap_confs')  || '').trim();
+        const notes  = (interaction.fields.getTextInputValue('recap_notes')  || '').trim();
+
+        // Build recap message text
+        const rrChips = computeRRChips(signal);
+        const recapText = renderRecapText(signal, {
+          reasonLines: reason ? reason.split('\n').map(s => s.trim()).filter(Boolean) : [],
+          confLines:   confs  ? confs.split('\n').map(s => s.trim()).filter(Boolean)  : [],
+          notesLines:  notes  ? notes.split('\n').map(s => s.trim()).filter(Boolean)  : [],
+        }, rrChips);
+
+        // Post recap in the channel where the command was run
+        const channel = await client.channels.fetch(interaction.channelId);
+        const payload = {
+          content: recapText,
+          allowedMentions: { parse: [] }
+        };
+        if (signal.chartUrl) {
+          // Attach chart image if available
+          payload.files = [signal.chartUrl];
+        }
+        await channel.send(payload);
+
+        return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
       }
 
       // Update TP Prices
@@ -892,7 +969,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ SL moved to breakeven.' });
       }
 
-      // (Delete button removed from UI; keeping handler is harmless but unreachable)
+      // Delete button handler kept for safety but button isn't rendered anymore
       if (key === 'del') {
         await ensureDeferred(interaction);
         const sig = await getSignal(id).catch(() => null);
