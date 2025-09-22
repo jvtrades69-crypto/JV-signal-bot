@@ -1,7 +1,13 @@
 // index.js — JV Signal Bot (stable)
-// - Single message per signal: full text + big image (when provided)
-// - Control panel (TP1–TP5 + updates + Close/BE/Out + Delete)
+// - Plain text messages (uses renders from embeds.js)
+// - TP plans + auto-exec
+// - Control panel (TP1–TP5 + 4 update modals + Close/BE/Out)
 // - Summary in currentTradesChannelId (exactly 1 message, debounced)
+// - Signals post in the channel where /signal is run (per-signal channelId)
+// - Ignores “ghost” signals whose original message was manually deleted
+// - Dedupe guard for interactions (no double posts)
+// - Safe acks (prevents “not sent or deferred” / “unknown interaction”)
+// - Global error guards
 
 import {
   Client,
@@ -33,7 +39,7 @@ process.on('unhandledRejection', (err) => console.error('unhandledRejection:', e
 process.on('uncaughtException',  (err) => console.error('uncaughtException:', err));
 
 // ------------------------------
-// Util & helpers
+// Utility & core signal helpers
 // ------------------------------
 const isNum = (v) => v !== undefined && v !== null && v !== '' && !isNaN(Number(v));
 const toNumOrNull = (v) => (isNum(v) ? Number(v) : null);
@@ -47,7 +53,6 @@ const STATUS = {
 };
 const TP_KEYS = ['tp1', 'tp2', 'tp3', 'tp4', 'tp5'];
 
-// RR calc
 function rAtPrice(direction, entry, slOriginal, price) {
   if (!isNum(entry) || !isNum(slOriginal) || !isNum(price)) return null;
   const E = Number(entry), S = Number(slOriginal), P = Number(price);
@@ -60,7 +65,6 @@ function rAtPrice(direction, entry, slOriginal, price) {
   }
 }
 
-// RR chips (for text only)
 function computeRRChips(signal) {
   const chips = [];
   for (const key of TP_KEYS) {
@@ -89,13 +93,13 @@ function normalizeSignal(raw) {
     const v = s.plan[K];
     s.plan[K] = isNum(v) ? Number(v) : null;
   }
-  s.tpHits = s.tpHits && typeof s.tpHits === 'object'
-    ? s.tpHits : { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false };
+  // track one-time TP hits
+  s.tpHits = s.tpHits && typeof s.tpHits === 'object' ? s.tpHits : { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false };
+  // optional overrides/new fields
   if (s.finalR !== undefined && s.finalR !== null && !isNum(s.finalR)) delete s.finalR;
-  if (!isNum(s.maxR)) s.maxR = null;
-
-  s.chartUrl = s.chartUrl || null;     // remote URL (TradingView, direct image, or Discord CDN)
-  s.chartAttached = !!s.chartAttached; // when true, we will attach image (big preview)
+  if (!isNum(s.maxR)) s.maxR = null;          // optional max R reached (manual)
+  s.chartUrl = s.chartUrl || null;            // optional chart link or attachment URL
+  s.chartAttached = !!s.chartAttached;        // true if we attached the image on first post
   return s;
 }
 
@@ -104,7 +108,9 @@ function isSlMovedToBE(signal) {
   return s.status === STATUS.RUN_VALID && isNum(s.entry) && isNum(s.sl) && Number(s.entry) === Number(s.sl);
 }
 
+// ------------------------------
 // Mentions
+// ------------------------------
 function extractRoleIds(defaultRoleId, extraRoleRaw) {
   const ids = [];
   if (defaultRoleId) ids.push(defaultRoleId);
@@ -116,20 +122,26 @@ function extractRoleIds(defaultRoleId, extraRoleRaw) {
 function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
   const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
   const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
-  if (forEdit) return { content, allowedMentions: { parse: [] } };
-  if (!ids.length) return { content: '', allowedMentions: { parse: [] } };
-  return { content, allowedMentions: { parse: [], roles: ids } };
+
+  if (!ids.length) {
+    // no roles present: parse nothing (safe default)
+    return { content: '', allowedMentions: { parse: [] } };
+  }
+
+  // Keep highlight on both create and edit; Discord won't re-ping on edit.
+  return {
+    content,
+    allowedMentions: {
+      parse: ['roles'],
+      roles: ids,
+      repliedUser: false,
+    }
+  };
 }
 
-// Convert TradingView short links to direct PNG (for big image)
-function normalizeChartUrl(url) {
-  if (!url) return null;
-  const m = url.trim().match(/^https?:\/\/(?:www\.)?tradingview\.com\/x\/([A-Za-z0-9]+)\/?$/i);
-  if (m) return `https://www.tradingview.com/x/${m[1]}.png`;
-  return url;
-}
-
-// Ack helpers
+// ------------------------------
+// Ack helpers (prevent “not sent or deferred”)
+// ------------------------------
 async function ensureDeferred(interaction) {
   try {
     if (!interaction.deferred && !interaction.replied) {
@@ -154,7 +166,57 @@ async function safeEditReply(interaction, payload) {
 }
 
 // ------------------------------
-// Posting / Editing messages
+// Thread title helpers (NEW - minimal & safe)
+// ------------------------------
+function computeRealizedR(signal) {
+  const fills = Array.isArray(signal.fills) ? signal.fills : [];
+  if (!fills.length) return 0;
+  let sum = 0;
+  for (const f of fills) {
+    const pct = Number(f.pct || 0);
+    const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, f.price);
+    if (isNaN(pct) || r === null) continue;
+    sum += (pct * r) / 100;
+  }
+  return Number(sum.toFixed(2));
+}
+
+function rToTitlePiece(r) {
+  const x = Number(r || 0);
+  if (!isFinite(x) || x === 0) return '';
+  return ` ${x > 0 ? '+' : ''}${x.toFixed(2)}`;
+}
+
+function computeThreadName(signal) {
+  const base = `${String(signal.asset).toUpperCase()} ${signal.direction === DIR.SHORT ? 'short' : 'long'}`;
+  if (signal.status === STATUS.STOPPED_OUT) return `${base} stopped out`;
+  if (signal.status === STATUS.STOPPED_BE)  return `${base} breakeven`;
+  if (signal.status === STATUS.CLOSED) {
+    const r = isNum(signal.finalR) ? Number(signal.finalR) : computeRealizedR(signal);
+    return `${base}${rToTitlePiece(r)}`;
+  }
+  // RUN_VALID
+  const r = computeRealizedR(signal);
+  if (r !== 0) return `${base}${rToTitlePiece(r)}`;
+  if (isNum(signal.maxR) && Number(signal.maxR) !== 0) return `${base}${rToTitlePiece(Number(signal.maxR))}`;
+  return base;
+}
+
+async function renameControlThread(signal) {
+  try {
+    const tid = await getThreadId(signal.id);
+    if (!tid) return;
+    const thread = await client.channels.fetch(tid).catch(() => null);
+    if (!thread || !thread.isThread?.()) return;
+    const desired = computeThreadName(signal);
+    if (thread.name !== desired) {
+      await thread.setName(desired).catch(() => {});
+    }
+  } catch {}
+}
+
+// ------------------------------
+// Posting / Editing messages (use per-signal channelId)
 // ------------------------------
 async function postSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
@@ -163,14 +225,14 @@ async function postSignalMessage(signal) {
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
 
   const payload = {
-    content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+    // Show the link if we *didn't* attach the image inline
+    content: `${text}${signal.chartUrl && !signal.chartAttached ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
     ...(mentionLine ? { allowedMentions } : {}),
   };
 
-  // Attach big image (if present)
-  if (signal.chartUrl) {
-    const url = signal.chartAttached ? signal.chartUrl : normalizeChartUrl(signal.chartUrl);
-    if (url) payload.files = [url];
+  // Option A: if creation had an attachment, include it inline
+  if (signal.chartUrl && signal.chartAttached) {
+    payload.files = [signal.chartUrl];
   }
 
   const sent = await channel.send(payload);
@@ -187,20 +249,19 @@ async function editSignalMessage(signal) {
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
 
   const editPayload = {
-    content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+    // Always show the link on updates (Option B). It appears above the mentions.
+    content: `${text}${signal.chartUrl ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
     ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
   };
 
-  // Replace attachment with a big image when we have a chart URL
-  if (signal.chartUrl) {
-    editPayload.files = [normalizeChartUrl(signal.chartUrl)];
-    editPayload.attachments = []; // clear old ones first
-  } else {
-    // if no chart is set anymore, clear existing attachments
-    editPayload.attachments = [];
+  // Option B: when replacing via control panel (chartAttached=false), remove any previous attachments
+  if (!signal.chartAttached) {
+    editPayload.attachments = []; // clears old image(s)
   }
 
   await msg.edit(editPayload).catch(() => {});
+  // NEW: keep thread name in sync (non-blocking)
+  renameControlThread(signal).catch(() => {});
   return true;
 }
 
@@ -211,7 +272,7 @@ async function deleteSignalMessage(signal) {
 }
 
 // ------------------------------
-// Summary (debounced)
+// Summary (edit-in-place or hard purge; debounced)
 // ------------------------------
 let _summaryTimer = null;
 let _summaryBusy = false;
@@ -246,7 +307,7 @@ async function updateSummary() {
     try {
       const summaryChannel = await client.channels.fetch(config.currentTradesChannelId);
 
-      // Build active list (must exist AND original message still exists)
+      // Build active list (must exist AND original message still exists in its own channel)
       const signals = (await getSignals()).map(normalizeSignal);
       const candidates = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
 
@@ -267,7 +328,7 @@ async function updateSummary() {
         ? `**JV Current Active Trades** 📊\n\n• There are currently no ongoing trades valid for entry – stay posted for future trades!`
         : renderSummaryText(active);
 
-      // Edit the latest bot message if present
+      // Try to edit an existing bot message first
       const recent = await summaryChannel.messages.fetch({ limit: 10 }).catch(() => null);
       let existing = null;
       if (recent && recent.size) {
@@ -276,6 +337,7 @@ async function updateSummary() {
 
       if (existing) {
         await existing.edit({ content, allowedMentions: { parse: [] } }).catch(() => {});
+        // delete other bot-authored messages as safety
         for (const m of recent.values()) {
           if (m.id !== existing.id && m.author?.id === client.user.id) {
             try { await m.delete(); } catch {}
@@ -318,13 +380,36 @@ function controlRows(signalId) {
     new ButtonBuilder().setCustomId(btn(signalId,'stopbe')).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(btn(signalId,'stopped')).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
   );
+  // row4 (DELETE button removed as requested)
   const row4 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'setbe')).setLabel('🟨 Set SL → BE').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:maxr')).setLabel('📈 Set Max R').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'upd:chart')).setLabel('🖼️ Set/Replace Chart').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'del')).setLabel('❌ Delete').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'upd:chart')).setLabel('🖼️ Set/Replace Chart Link').setStyle(ButtonStyle.Secondary),
   );
   return [row1, row2, row3, row4];
+}
+
+async function createControlThread(signal) {
+  const channel = await client.channels.fetch(signal.channelId); // per-signal channel
+  const initialName = computeThreadName(signal); // e.g., "BTC long"
+  const thread = await channel.threads.create({
+    name: initialName,
+    type: ChannelType.PrivateThread,
+    invitable: false
+  });
+  await thread.members.add(config.ownerId).catch(() => {});
+  await setThreadId(signal.id, thread.id);
+  await thread.send({ content: 'Owner Control Panel', components: controlRows(signal.id) }).catch(() => {});
+  return thread.id;
+}
+
+async function deleteControlThread(signalId) {
+  const tid = await getThreadId(signalId);
+  if (!tid) return;
+  const thread = await client.channels.fetch(tid).catch(() => null);
+  if (thread && thread.isThread()) {
+    await thread.delete().catch(() => {});
+  }
 }
 
 // ------------------------------
@@ -407,8 +492,8 @@ function makeMaxRModal(id) {
   return m;
 }
 function makeChartModal(id) {
-  const m = new ModalBuilder().setCustomId(modal(id,'chart')).setTitle('Set / Replace Chart');
-  const url = new TextInputBuilder().setCustomId('chart_url').setLabel('Image or TradingView link').setStyle(TextInputStyle.Short).setRequired(true);
+  const m = new ModalBuilder().setCustomId(modal(id,'chart')).setTitle('Set / Replace Chart Link');
+  const url = new TextInputBuilder().setCustomId('chart_url').setLabel('Image URL (https://...)').setStyle(TextInputStyle.Short).setRequired(true);
   m.addComponents(new ActionRowBuilder().addComponents(url));
   return m;
 }
@@ -424,7 +509,7 @@ client.once('ready', async () => {
 // Manual delete watcher (any channel)
 client.on('messageDelete', async (message) => {
   try {
-    if (!message) return;
+    if (!message) return; // we’ll match by messageId below
     const sigs = await getSignals();
     const found = sigs.find(s => s.messageId === message.id);
     if (!found) return;
@@ -470,6 +555,7 @@ function tryClaimInteraction(interaction) {
 // ------------------------------
 client.on('interactionCreate', async (interaction) => {
   try {
+    // ensure we don't process the same interaction twice
     if (!tryClaimInteraction(interaction)) return;
 
     // /signal
@@ -496,10 +582,33 @@ client.on('interactionCreate', async (interaction) => {
       const tp4_pct = interaction.options.getString('tp4_pct');
       const tp5_pct = interaction.options.getString('tp5_pct');
 
-      const chartAtt  = interaction.options.getAttachment?.('chart'); // optional
+      // Optional chart attachment (pasted inline)
+      const chartAtt  = interaction.options.getAttachment?.('chart');
+
+      if (assetSel === 'OTHER') {
+        const pid = nano();
+        const m = new ModalBuilder().setCustomId(modal(pid,'asset')).setTitle('Enter custom asset');
+        const input = new TextInputBuilder().setCustomId('asset_value').setLabel('Asset (e.g., PEPE, XRP)').setStyle(TextInputStyle.Short).setRequired(true);
+        m.addComponents(new ActionRowBuilder().addComponents(input));
+        // stash payload in memory by pid
+        pendingSignals.set(pid, {
+          direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole,
+          plan: {
+            TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
+            TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
+            TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
+            TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
+            TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
+          },
+          channelId: interaction.channelId, // remember where to post
+          chartUrl: chartAtt?.url || null,
+          chartAttached: !!chartAtt?.url,
+        });
+        return interaction.showModal(m); // do NOT defer before showModal
+      }
 
       await createSignal({
-        asset: assetSel === 'OTHER' ? 'OTHER' : assetSel,
+        asset: assetSel,
         direction, entry, sl, tp1, tp2, tp3, tp4, tp5,
         reason, extraRole,
         plan: {
@@ -512,13 +621,22 @@ client.on('interactionCreate', async (interaction) => {
         chartUrl: chartAtt?.url || null,
         chartAttached: !!chartAtt?.url,
       }, interaction.channelId);
-
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
 
     // ===== MODALS =====
     if (interaction.isModalSubmit()) {
       const idPart = interaction.customId.split(':').pop(); // after last :
+      // Custom asset modal
+      if (interaction.customId.startsWith('modal:asset:')) {
+        await ensureDeferred(interaction);
+        const stash = pendingSignals.get(idPart);
+        pendingSignals.delete(idPart);
+        if (!stash) return safeEditReply(interaction, { content: '❌ Session expired. Try /signal again.' });
+        const asset = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
+        await createSignal({ asset, ...stash }, stash.channelId || interaction.channelId);
+        return safeEditReply(interaction, { content: `✅ Trade signal posted for ${asset}.` });
+      }
 
       // Update TP Prices
       if (interaction.customId.startsWith('modal:tpprices:')) {
@@ -567,11 +685,11 @@ client.on('interactionCreate', async (interaction) => {
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
         const patch = {};
-        const entry  = interaction.fields.getTextInputValue('upd_entry')?.trim();
-        const sl     = interaction.fields.getTextInputValue('upd_sl')?.trim();
-        const asset  = interaction.fields.getTextInputValue('upd_asset')?.trim();
-        const dir    = interaction.fields.getTextInputValue('upd_dir')?.trim()?.toUpperCase();
-        const reason = interaction.fields.getTextInputValue('upd_reason')?.trim();
+        const entry     = interaction.fields.getTextInputValue('upd_entry')?.trim();
+        const sl        = interaction.fields.getTextInputValue('upd_sl')?.trim();
+        const asset     = interaction.fields.getTextInputValue('upd_asset')?.trim();
+        const dir       = interaction.fields.getTextInputValue('upd_dir')?.trim()?.toUpperCase();
+        const reason    = interaction.fields.getTextInputValue('upd_reason')?.trim();
 
         if (entry) patch.entry = entry;
         if (sl)    patch.sl = sl;
@@ -615,21 +733,21 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Max R updated.' });
       }
 
-      // Set/Replace Chart (attach big image; supports TradingView short links)
+      // Set/Replace Chart Link
       if (interaction.customId.startsWith('modal:chart:')) {
         await ensureDeferred(interaction);
         const id = idPart;
         const signal = await getSignal(id);
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
-        const rawUrl = (interaction.fields.getTextInputValue('chart_url') || '').trim();
-        if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) {
+        const url = interaction.fields.getTextInputValue('chart_url')?.trim();
+        if (!url || !/^https?:\/\//i.test(url)) {
           return safeEditReply(interaction, { content: '❌ Please provide a valid http(s) URL.' });
         }
-        const normalized = normalizeChartUrl(rawUrl);
-        await updateSignal(id, { chartUrl: normalized, chartAttached: true }); // attach as image
+        // Switch to "link only" mode and ensure old inline image is removed on edit
+        await updateSignal(id, { chartUrl: url, chartAttached: false });
         await editSignalMessage(normalizeSignal(await getSignal(id)));
         await updateSummary();
-        return safeEditReply(interaction, { content: '✅ Chart updated.' });
+        return safeEditReply(interaction, { content: '✅ Chart link updated.' });
       }
 
       // TP modal submit
@@ -720,7 +838,8 @@ client.on('interactionCreate', async (interaction) => {
         if (hasFinalR) {
           signal.finalR = Number(finalRStr);
         } else {
-          const price = Number(kind === 'BE' ? signal.entry : (signal.slOriginal ?? signal.sl));
+          let price = null;
+          price = Number(kind === 'BE' ? signal.entry : (signal.slOriginal ?? signal.sl));
           const remaining = 100 - (signal.fills || []).reduce((a, f) => a + Number(f.pct || 0), 0);
           if (remaining > 0 && isNum(price)) {
             signal.fills.push({ pct: remaining, price, source: kind === 'BE' ? 'STOP_BE' : 'STOP_OUT' });
@@ -733,7 +852,7 @@ client.on('interactionCreate', async (interaction) => {
         await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
         await editSignalMessage(signal);
         await updateSummary();
-        await deleteControlThread(id);
+        await deleteControlThread(id); // keep existing behavior: auto-delete thread
         return safeEditReply(interaction, { content: kind === 'BE' ? '✅ Stopped at breakeven.' : '✅ Stopped out.' });
       }
     }
@@ -747,7 +866,7 @@ client.on('interactionCreate', async (interaction) => {
       const id = parts.pop();
       const key = parts.slice(1).join(':'); // remove 'btn'
 
-      // Modals
+      // Show modals: DO NOT defer before showModal
       if (key === 'upd:tpprices') return interaction.showModal(makeUpdateTPPricesModal(id));
       if (key === 'upd:plan')     return interaction.showModal(makeUpdatePlanModal(id));
       if (key === 'upd:trade')    return interaction.showModal(makeUpdateTradeInfoModal(id));
@@ -762,8 +881,10 @@ client.on('interactionCreate', async (interaction) => {
         await ensureDeferred(interaction);
         const sig0 = normalizeSignal(await getSignal(id));
         if (!sig0) return safeEditReply(interaction, { content: 'Signal not found.' });
+
         if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
 
+        // Move SL to BE (do not change slOriginal)
         await updateSignal(id, { sl: Number(sig0.entry), validReentry: false });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
@@ -771,6 +892,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ SL moved to breakeven.' });
       }
 
+      // (Delete button removed from UI; keeping handler is harmless but unreachable)
       if (key === 'del') {
         await ensureDeferred(interaction);
         const sig = await getSignal(id).catch(() => null);
@@ -849,12 +971,13 @@ async function createSignal(payload, channelId) {
     fills: [],
     tpHits: { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false },
     finalR: null,
+    // new optional fields
     maxR: null,
     chartUrl: payload.chartUrl || null,
-    chartAttached: !!payload.chartAttached, // if provided with /signal, we already have a CDN image
+    chartAttached: !!payload.chartAttached,
     messageId: null,
     jumpUrl: null,
-    channelId,
+    channelId, // <= post and track in this channel
   });
 
   await saveSignal(signal);
@@ -867,14 +990,16 @@ async function createSignal(payload, channelId) {
   signal.jumpUrl = msg.url;
 
   await updateSignal(signal.id, { messageId: signal.messageId, jumpUrl: signal.jumpUrl });
-  await createControlThread(signal);
+  const threadId = await createControlThread(signal);
+  // Try to ensure name is correct right away (non-blocking)
+  renameControlThread(signal).catch(() => {});
   await updateSummary();
 
   return signal;
 }
 
 // ------------------------------
-// Ghost prune
+// One-time ghost prune (storage hygiene)
 // ------------------------------
 async function pruneGhostSignals() {
   try {
