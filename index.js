@@ -93,13 +93,11 @@ function normalizeSignal(raw) {
     const v = s.plan[K];
     s.plan[K] = isNum(v) ? Number(v) : null;
   }
-  // track one-time TP hits
   s.tpHits = s.tpHits && typeof s.tpHits === 'object' ? s.tpHits : { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false };
-  // optional overrides/new fields
   if (s.finalR !== undefined && s.finalR !== null && !isNum(s.finalR)) delete s.finalR;
-  if (!isNum(s.maxR)) s.maxR = null;          // optional max R reached (manual)
-  s.chartUrl = s.chartUrl || null;            // optional chart link or attachment URL
-  s.chartAttached = !!s.chartAttached;        // true if we attached the image on first post
+  if (!isNum(s.maxR)) s.maxR = null;
+  s.chartUrl = s.chartUrl || null;       // kept for storage, but never shown
+  s.chartAttached = !!s.chartAttached;   // ignored for display
   return s;
 }
 
@@ -119,7 +117,6 @@ function extractRoleIds(defaultRoleId, extraRoleRaw) {
 function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
   const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
   const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
-  // On initial send we allowRoles to ping; on edits we suppress pings entirely
   if (forEdit) return { content, allowedMentions: { parse: [] } };
   if (!ids.length) return { content: '', allowedMentions: { parse: [] } };
   return { content, allowedMentions: { parse: [], roles: ids } };
@@ -152,7 +149,7 @@ async function safeEditReply(interaction, payload) {
 }
 
 // ------------------------------
-// Posting / Editing messages (use per-signal channelId)
+// Posting / Editing messages (embed text only; no links, no images)
 // ------------------------------
 async function postSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
@@ -161,16 +158,11 @@ async function postSignalMessage(signal) {
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
 
   const payload = {
-    // Show the link if we *didn't* attach the image inline
-    content: `${text}${signal.chartUrl && !signal.chartAttached ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+    content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
     ...(mentionLine ? { allowedMentions } : {}),
   };
 
-  // Option A: if creation had an attachment, include it inline
-  if (signal.chartUrl && signal.chartAttached) {
-    payload.files = [signal.chartUrl];
-  }
-
+  // Explicitly do NOT attach images (even if provided)
   const sent = await channel.send(payload);
   return sent.id;
 }
@@ -185,15 +177,10 @@ async function editSignalMessage(signal) {
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
 
   const editPayload = {
-    // Always show the link on updates (Option B). It appears above the mentions.
-    content: `${text}${signal.chartUrl ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
-    ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
+    content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+    ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } }),
+    attachments: [], // always clear any previous attachments to prevent double images
   };
-
-  // Option B: when replacing via control panel (chartAttached=false), remove any previous attachments
-  if (!signal.chartAttached) {
-    editPayload.attachments = []; // clears old image(s)
-  }
 
   await msg.edit(editPayload).catch(() => {});
   return true;
@@ -271,7 +258,6 @@ async function updateSummary() {
 
       if (existing) {
         await existing.edit({ content, allowedMentions: { parse: [] } }).catch(() => {});
-        // delete other bot-authored messages as safety
         for (const m of recent.values()) {
           if (m.id !== existing.id && m.author?.id === client.user.id) {
             try { await m.delete(); } catch {}
@@ -330,7 +316,7 @@ async function createControlThread(signal) {
     type: ChannelType.PrivateThread,
     invitable: false
   });
-  await thread.members.add(config.ownerId).catch(() => {}); // prevent permissions error from crashing
+  await thread.members.add(config.ownerId).catch(() => {});
   await setThreadId(signal.id, thread.id);
   await thread.send({ content: 'Owner Control Panel', components: controlRows(signal.id) });
   return thread.id;
@@ -448,7 +434,7 @@ client.once('ready', async () => {
 // Manual delete watcher (any channel)
 client.on('messageDelete', async (message) => {
   try {
-    if (!message) return; // we’ll match by messageId below
+    if (!message) return;
     const sigs = await getSignals();
     const found = sigs.find(s => s.messageId === message.id);
     if (!found) return;
@@ -494,7 +480,6 @@ function tryClaimInteraction(interaction) {
 // ------------------------------
 client.on('interactionCreate', async (interaction) => {
   try {
-    // ensure we don't process the same interaction twice
     if (!tryClaimInteraction(interaction)) return;
 
     // /signal
@@ -521,15 +506,13 @@ client.on('interactionCreate', async (interaction) => {
       const tp4_pct = interaction.options.getString('tp4_pct');
       const tp5_pct = interaction.options.getString('tp5_pct');
 
-      // Optional chart attachment (pasted inline)
-      const chartAtt  = interaction.options.getAttachment?.('chart');
+      const chartAtt  = interaction.options.getAttachment?.('chart'); // ignored for display
 
       if (assetSel === 'OTHER') {
         const pid = nano();
         const m = new ModalBuilder().setCustomId(modal(pid,'asset')).setTitle('Enter custom asset');
         const input = new TextInputBuilder().setCustomId('asset_value').setLabel('Asset (e.g., PEPE, XRP)').setStyle(TextInputStyle.Short).setRequired(true);
         m.addComponents(new ActionRowBuilder().addComponents(input));
-        // stash payload in memory by pid
         pendingSignals.set(pid, {
           direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole,
           plan: {
@@ -539,11 +522,11 @@ client.on('interactionCreate', async (interaction) => {
             TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
             TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
           },
-          channelId: interaction.channelId, // remember where to post
+          channelId: interaction.channelId,
           chartUrl: chartAtt?.url || null,
           chartAttached: !!chartAtt?.url,
         });
-        return interaction.showModal(m); // do NOT defer before showModal
+        return interaction.showModal(m);
       }
 
       await createSignal({
@@ -565,8 +548,8 @@ client.on('interactionCreate', async (interaction) => {
 
     // ===== MODALS =====
     if (interaction.isModalSubmit()) {
-      const idPart = interaction.customId.split(':').pop(); // after last :
-      // Custom asset modal
+      const idPart = interaction.customId.split(':').pop();
+
       if (interaction.customId.startsWith('modal:asset:')) {
         await ensureDeferred(interaction);
         const stash = pendingSignals.get(idPart);
@@ -577,7 +560,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: `✅ Trade signal posted for ${asset}.` });
       }
 
-      // Update TP Prices
       if (interaction.customId.startsWith('modal:tpprices:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -597,7 +579,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ TP prices updated.' });
       }
 
-      // Update Plan
       if (interaction.customId.startsWith('modal:plan:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -616,7 +597,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ TP % plan updated.' });
       }
 
-      // Update Trade
       if (interaction.customId.startsWith('modal:trade:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -644,7 +624,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Trade info updated.' });
       }
 
-      // Update Roles
       if (interaction.customId.startsWith('modal:roles:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -658,7 +637,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Role mentions updated.' });
       }
 
-      // Set Max R
       if (interaction.customId.startsWith('modal:maxr:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -672,7 +650,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Max R updated.' });
       }
 
-      // Set/Replace Chart Link
       if (interaction.customId.startsWith('modal:chart:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -682,18 +659,17 @@ client.on('interactionCreate', async (interaction) => {
         if (!url || !/^https?:\/\//i.test(url)) {
           return safeEditReply(interaction, { content: '❌ Please provide a valid http(s) URL.' });
         }
-        // Switch to "link only" mode and ensure old inline image is removed on edit
+        // Still store it, but we never show links or images in posts/edits
         await updateSignal(id, { chartUrl: url, chartAttached: false });
         await editSignalMessage(normalizeSignal(await getSignal(id)));
         await updateSummary();
-        return safeEditReply(interaction, { content: '✅ Chart link updated.' });
+        return safeEditReply(interaction, { content: '✅ Chart link saved (not displayed).' });
       }
 
-      // TP modal submit
       if (interaction.customId.startsWith('modal:tp:')) {
         await ensureDeferred(interaction);
         const parts = interaction.customId.split(':'); // modal, tp, tpX, id
-        const tpKey = parts[2]; // tp1..tp5
+        const tpKey = parts[2];
         const id = parts[3];
 
         let signal = normalizeSignal(await getSignal(id));
@@ -722,7 +698,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${hasPct && pct > 0 ? ` (${pct}%).` : '.'}` });
       }
 
-      // Fully close + FinalR
       if (interaction.customId.startsWith('modal:full:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -805,7 +780,6 @@ client.on('interactionCreate', async (interaction) => {
       const id = parts.pop();
       const key = parts.slice(1).join(':'); // remove 'btn'
 
-      // Show modals: DO NOT defer before showModal
       if (key === 'upd:tpprices') return interaction.showModal(makeUpdateTPPricesModal(id));
       if (key === 'upd:plan')     return interaction.showModal(makeUpdatePlanModal(id));
       if (key === 'upd:trade')    return interaction.showModal(makeUpdateTradeInfoModal(id));
@@ -823,7 +797,6 @@ client.on('interactionCreate', async (interaction) => {
 
         if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
 
-        // Move SL to BE (do not change slOriginal)
         await updateSignal(id, { sl: Number(sig0.entry), validReentry: false });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
@@ -908,13 +881,12 @@ async function createSignal(payload, channelId) {
     fills: [],
     tpHits: { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false },
     finalR: null,
-    // new optional fields
     maxR: null,
-    chartUrl: payload.chartUrl || null,
+    chartUrl: payload.chartUrl || null,   // stored only
     chartAttached: !!payload.chartAttached,
     messageId: null,
     jumpUrl: null,
-    channelId, // <= post and track in this channel
+    channelId,
   });
 
   await saveSignal(signal);
