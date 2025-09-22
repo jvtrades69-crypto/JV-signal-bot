@@ -103,9 +103,11 @@ export function buildTitle(signal) {
 export function renderSignalText(signal, rrChips, slMovedToBEActive) {
   const lines = [];
 
+  // Title
   lines.push(buildTitle(signal));
   lines.push('');
 
+  // Trade details
   lines.push(`📊 **Trade Details**`);
   lines.push(`- Entry: \`${fmt(signal.entry)}\``);
   lines.push(`- SL: \`${fmt(signal.sl)}\``);
@@ -136,6 +138,7 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     lines.push(String(signal.reason).trim());
   }
 
+  // Status
   lines.push('');
   lines.push(`📍 **Status**`);
   if (signal.status === 'RUN_VALID') {
@@ -165,6 +168,7 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     lines.push(`Valid for re-entry: ❌`);
   }
 
+  // Max R reached
   if (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) {
     const mr = Number(signal.maxR).toFixed(2);
     const soFar = signal.status === 'RUN_VALID' ? ' so far' : '';
@@ -177,6 +181,7 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     }
   }
 
+  // Realized (no chart/link text at all)
   const hasFills = Array.isArray(signal.fills) && signal.fills.length > 0;
   if (signal.status !== 'RUN_VALID' || hasFills) {
     lines.push('');
@@ -213,8 +218,6 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
         lines.push(`${pretty} so far ( ${list} )`);
       }
     }
-
-    // NOTE: chart link removed — no label, no URL
   }
 
   return lines.join('\n');
