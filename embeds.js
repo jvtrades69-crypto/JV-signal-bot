@@ -14,14 +14,14 @@ function addCommas(num) {
   return n.toLocaleString('en-US');
 }
 
-function signAbsR(r) {
+export function signAbsR(r) {
   const x = Number(r || 0);
   const abs = Math.abs(x).toFixed(2);
   const sign = x > 0 ? '+' : x < 0 ? '-' : '';
   return { text: `${sign}${abs}R`, abs, sign };
 }
 
-function rrLineFromChips(rrChips) {
+export function rrLineFromChips(rrChips) {
   if (!rrChips || !rrChips.length) return null;
   return rrChips.map(c => `${c.key} ${Number(c.r).toFixed(2)}R`).join(' | ');
 }
@@ -77,8 +77,8 @@ function computeRealized(signal) {
 
 export function buildTitle(signal) {
   const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
-  theCircle = signal.direction === 'SHORT' ? '🔴' : '🟢';
-  const base = `$${signal.asset} | ${dirWord} ${theCircle}`;
+  const circle = signal.direction === 'SHORT' ? '🔴' : '🟢'; // fixed var name
+  const base = `$${signal.asset} | ${dirWord} ${circle}`;
 
   // Closures may override with finalR
   if (signal.status !== 'RUN_VALID' && signal.finalR != null) {
@@ -122,7 +122,7 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     if (v === null || v === undefined || v === '') continue;
     const label = k.toUpperCase();
     const pct = execOrPlan[label];
-    const chip = rrChips.find(c => c.key === label);
+    const chip = (rrChips || []).find(c => c.key === label);
     const rrTxt = chip ? `${chip.r.toFixed(2)}R` : null;
     if (pct > 0 && rrTxt) {
       lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
@@ -184,13 +184,13 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     }
   }
 
-  // Realized
+  // Realized (no chart/link output at all)
   const hasFills = Array.isArray(signal.fills) && signal.fills.length > 0;
   if (signal.status !== 'RUN_VALID' || hasFills) {
     lines.push('');
     lines.push(`💰 **Realized**`);
-    const { text } = signAbsR(Number(signal.finalR));
     if (signal.status !== 'RUN_VALID' && signal.finalR != null) {
+      const { text } = signAbsR(Number(signal.finalR));
       if (signal.status === 'CLOSED') {
         const after = signal.latestTpHit ? ` after ${signal.latestTpHit}` : '';
         lines.push(`${text} ( fully closed${after} )`);
@@ -239,7 +239,9 @@ export function renderSummaryText(activeSignals) {
     lines.push(`- Entry: \`${fmt(s.entry)}\``);
     lines.push(`- SL: \`${fmt(s.sl)}\``);
     lines.push(`- Status: Active 🟩`);
-    if (s.jumpUrl) lines.push(`[View Full Signal](${s.jumpUrl})`);
+    if (s.jumpUrl) {
+      lines.push(`[View Full Signal](${s.jumpUrl})`);
+    }
     lines.push('');
   });
   return lines.join('\n').trimEnd();
