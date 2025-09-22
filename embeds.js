@@ -77,10 +77,9 @@ function computeRealized(signal) {
 
 export function buildTitle(signal) {
   const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
-  const circle = signal.direction === 'SHORT' ? '🔴' : '🟢'; // direction only
+  const circle = signal.direction === 'SHORT' ? '🔴' : '🟢';
   const base = `$${signal.asset} | ${dirWord} ${circle}`;
 
-  // Closures may override with finalR
   if (signal.status !== 'RUN_VALID' && signal.finalR != null) {
     const fr = Number(signal.finalR);
     if (signal.status === 'STOPPED_BE' && fr === 0) return `**${base} ( Breakeven )**`;
@@ -89,7 +88,6 @@ export function buildTitle(signal) {
     return `**${base} ( +0.00R )**`;
   }
 
-  // Active or calculated closures
   const { realized } = computeRealized(signal);
   if (signal.status === 'STOPPED_OUT') return `**${base} ( Loss -${Math.abs(realized).toFixed(2)}R )**`;
   if (signal.status === 'STOPPED_BE') {
@@ -98,7 +96,6 @@ export function buildTitle(signal) {
   }
   if (signal.status === 'CLOSED') return `**${base} ( Win +${realized.toFixed(2)}R )**`;
 
-  // Running — only show "so far" if we have any realized
   if ((signal.fills || []).length > 0) return `**${base} ( Win +${realized.toFixed(2)}R so far )**`;
   return `**${base}**`;
 }
@@ -106,11 +103,9 @@ export function buildTitle(signal) {
 export function renderSignalText(signal, rrChips, slMovedToBEActive) {
   const lines = [];
 
-  // Title
   lines.push(buildTitle(signal));
   lines.push('');
 
-  // Trade details
   lines.push(`📊 **Trade Details**`);
   lines.push(`- Entry: \`${fmt(signal.entry)}\``);
   lines.push(`- SL: \`${fmt(signal.sl)}\``);
@@ -122,7 +117,7 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     if (v === null || v === undefined || v === '') continue;
     const label = k.toUpperCase();
     const pct = execOrPlan[label];
-    const chip = Array.isArray(rrChips) ? rrChips.find(c => c.key === label) : null; // guard
+    const chip = Array.isArray(rrChips) ? rrChips.find(c => c.key === label) : null;
     const rrTxt = chip ? `${chip.r.toFixed(2)}R` : null;
     if (pct > 0 && rrTxt) {
       lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
@@ -141,7 +136,6 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     lines.push(String(signal.reason).trim());
   }
 
-  // Status
   lines.push('');
   lines.push(`📍 **Status**`);
   if (signal.status === 'RUN_VALID') {
@@ -171,7 +165,6 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     lines.push(`Valid for re-entry: ❌`);
   }
 
-  // Max R reached
   if (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) {
     const mr = Number(signal.maxR).toFixed(2);
     const soFar = signal.status === 'RUN_VALID' ? ' so far' : '';
@@ -184,7 +177,6 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     }
   }
 
-  // Realized + (optional) chart link
   const hasFills = Array.isArray(signal.fills) && signal.fills.length > 0;
   if (signal.status !== 'RUN_VALID' || hasFills) {
     lines.push('');
@@ -222,11 +214,7 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
       }
     }
 
-    // Clean chart link only (left intact, as in your file)
-    if (signal.chartUrl && !signal.chartAttached) {
-      lines.push('');
-      lines.push(`[chart](${signal.chartUrl})`);
-    }
+    // NOTE: chart link removed — no label, no URL
   }
 
   return lines.join('\n');
