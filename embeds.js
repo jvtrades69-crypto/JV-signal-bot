@@ -77,9 +77,10 @@ function computeRealized(signal) {
 
 export function buildTitle(signal) {
   const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
-  const circle = signal.direction === 'SHORT' ? '🔴' : '🟢';
-  const base = `$${signal.asset} | ${dirWord} ${circle}`;
+  theCircle = signal.direction === 'SHORT' ? '🔴' : '🟢';
+  const base = `$${signal.asset} | ${dirWord} ${theCircle}`;
 
+  // Closures may override with finalR
   if (signal.status !== 'RUN_VALID' && signal.finalR != null) {
     const fr = Number(signal.finalR);
     if (signal.status === 'STOPPED_BE' && fr === 0) return `**${base} ( Breakeven )**`;
@@ -88,6 +89,7 @@ export function buildTitle(signal) {
     return `**${base} ( +0.00R )**`;
   }
 
+  // Active or calculated closures
   const { realized } = computeRealized(signal);
   if (signal.status === 'STOPPED_OUT') return `**${base} ( Loss -${Math.abs(realized).toFixed(2)}R )**`;
   if (signal.status === 'STOPPED_BE') {
@@ -96,6 +98,7 @@ export function buildTitle(signal) {
   }
   if (signal.status === 'CLOSED') return `**${base} ( Win +${realized.toFixed(2)}R )**`;
 
+  // Running — only show "so far" if we have any realized
   if ((signal.fills || []).length > 0) return `**${base} ( Win +${realized.toFixed(2)}R so far )**`;
   return `**${base}**`;
 }
@@ -119,7 +122,7 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     if (v === null || v === undefined || v === '') continue;
     const label = k.toUpperCase();
     const pct = execOrPlan[label];
-    const chip = Array.isArray(rrChips) ? rrChips.find(c => c.key === label) : null;
+    const chip = rrChips.find(c => c.key === label);
     const rrTxt = chip ? `${chip.r.toFixed(2)}R` : null;
     if (pct > 0 && rrTxt) {
       lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
@@ -181,13 +184,13 @@ export function renderSignalText(signal, rrChips, slMovedToBEActive) {
     }
   }
 
-  // Realized (no chart/link text at all)
+  // Realized
   const hasFills = Array.isArray(signal.fills) && signal.fills.length > 0;
   if (signal.status !== 'RUN_VALID' || hasFills) {
     lines.push('');
     lines.push(`💰 **Realized**`);
+    const { text } = signAbsR(Number(signal.finalR));
     if (signal.status !== 'RUN_VALID' && signal.finalR != null) {
-      const { text } = signAbsR(Number(signal.finalR));
       if (signal.status === 'CLOSED') {
         const after = signal.latestTpHit ? ` after ${signal.latestTpHit}` : '';
         lines.push(`${text} ( fully closed${after} )`);
@@ -236,9 +239,7 @@ export function renderSummaryText(activeSignals) {
     lines.push(`- Entry: \`${fmt(s.entry)}\``);
     lines.push(`- SL: \`${fmt(s.sl)}\``);
     lines.push(`- Status: Active 🟩`);
-    if (s.jumpUrl) {
-      lines.push(`[View Full Signal](${s.jumpUrl})`);
-    }
+    if (s.jumpUrl) lines.push(`[View Full Signal](${s.jumpUrl})`);
     lines.push('');
   });
   return lines.join('\n').trimEnd();
