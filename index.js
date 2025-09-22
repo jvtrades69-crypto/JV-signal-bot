@@ -20,7 +20,6 @@ import {
   TextInputBuilder,
   TextInputStyle,
   MessageFlags,
-  StringSelectMenuBuilder,
 } from 'discord.js';
 import { customAlphabet } from 'nanoid';
 import config from './config.js';
@@ -28,7 +27,7 @@ import {
   saveSignal, getSignal, getSignals, updateSignal, deleteSignal,
   getThreadId, setThreadId
 } from './store.js';
-import { renderSignalText, renderSummaryText, renderSingleTradeRecapFancy } from './embeds.js';
+import { renderSignalText, renderSummaryText } from './embeds.js';
 
 const nano = customAlphabet('1234567890abcdef', 10);
 const client = new Client({
@@ -98,9 +97,9 @@ function normalizeSignal(raw) {
   s.tpHits = s.tpHits && typeof s.tpHits === 'object' ? s.tpHits : { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false };
   // optional overrides/new fields
   if (s.finalR !== undefined && s.finalR !== null && !isNum(s.finalR)) delete s.finalR;
-  if (!isNum(s.maxR)) s.maxR = null;
-  s.chartUrl = s.chartUrl || null;      // kept in model, but never posted
-  s.chartAttached = !!s.chartAttached;  // kept in model, but never posted
+  if (!isNum(s.maxR)) s.maxR = null;          // optional max R reached (manual)
+  s.chartUrl = s.chartUrl || null;            // optional chart link or attachment URL
+  s.chartAttached = !!s.chartAttached;        // true if we attached the image on first post
   return s;
 }
 
@@ -109,9 +108,6 @@ function isSlMovedToBE(signal) {
   return s.status === STATUS.RUN_VALID && isNum(s.entry) && isNum(s.sl) && Number(s.entry) === Number(s.sl);
 }
 
-// ------------------------------
-// Mentions
-// ------------------------------
 function extractRoleIds(defaultRoleId, extraRoleRaw) {
   const ids = [];
   if (defaultRoleId) ids.push(defaultRoleId);
@@ -123,7 +119,7 @@ function extractRoleIds(defaultRoleId, extraRoleRaw) {
 function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
   const ids = extractRoleIds(defaultRoleId, extraRoleRaw);
   const content = ids.length ? ids.map(id => `<@&${id}>`).join(' ') : '';
-  // Initial allow only these roles; on edits suppress pinging (keeps content unchanged elsewhere)
+  // On initial send we allowRoles to ping; on edits we suppress pings entirely
   if (forEdit) return { content, allowedMentions: { parse: [] } };
   if (!ids.length) return { content: '', allowedMentions: { parse: [] } };
   return { content, allowedMentions: { parse: [], roles: ids } };
@@ -153,6 +149,60 @@ async function safeEditReply(interaction, payload) {
     } catch {}
     throw e;
   }
+}
+
+// ------------------------------
+// Posting / Editing messages (use per-signal channelId)
+// ------------------------------
+async function postSignalMessage(signal) {
+  const channel = await client.channels.fetch(signal.channelId);
+  const rrChips = computeRRChips(signal);
+  const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
+  const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
+
+  const payload = {
+    // Show the link if we *didn't* attach the image inline
+    content: `${text}${signal.chartUrl && !signal.chartAttached ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+    ...(mentionLine ? { allowedMentions } : {}),
+  };
+
+  // Option A: if creation had an attachment, include it inline
+  if (signal.chartUrl && signal.chartAttached) {
+    payload.files = [signal.chartUrl];
+  }
+
+  const sent = await channel.send(payload);
+  return sent.id;
+}
+
+async function editSignalMessage(signal) {
+  const channel = await client.channels.fetch(signal.channelId);
+  const msg = await channel.messages.fetch(signal.messageId).catch(() => null);
+  if (!msg) return false;
+
+  const rrChips = computeRRChips(signal);
+  const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
+  const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
+
+  const editPayload = {
+    // Always show the link on updates (Option B). It appears above the mentions.
+    content: `${text}${signal.chartUrl ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+    ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
+  };
+
+  // Option B: when replacing via control panel (chartAttached=false), remove any previous attachments
+  if (!signal.chartAttached) {
+    editPayload.attachments = []; // clears old image(s)
+  }
+
+  await msg.edit(editPayload).catch(() => {});
+  return true;
+}
+
+async function deleteSignalMessage(signal) {
+  const channel = await client.channels.fetch(signal.channelId);
+  const msg = await channel.messages.fetch(signal.messageId).catch(() => null);
+  if (msg) await msg.delete().catch(() => {});
 }
 
 // ------------------------------
@@ -280,7 +330,7 @@ async function createControlThread(signal) {
     type: ChannelType.PrivateThread,
     invitable: false
   });
-  await thread.members.add(config.ownerId);
+  await thread.members.add(config.ownerId).catch(() => {}); // prevent permissions error from crashing
   await setThreadId(signal.id, thread.id);
   await thread.send({ content: 'Owner Control Panel', components: controlRows(signal.id) });
   return thread.id;
@@ -295,39 +345,95 @@ async function deleteControlThread(signalId) {
   }
 }
 
-// ---------- Recap helpers (picker + modal + render) ----------
-function statusTag(s) {
-  if (s.status === STATUS.CLOSED) return 'Closed';
-  if (s.status === STATUS.STOPPED_BE) return 'Stopped BE';
-  if (s.status === STATUS.STOPPED_OUT) return 'Stopped Out';
-  return 'Active';
+// ------------------------------
+// Modals
+// ------------------------------
+function makeTPModal(id, tpKey, defaultPct = null) {
+  const m = new ModalBuilder()
+    .setCustomId(modal(id, `tp:${tpKey}`))
+    .setTitle(`${tpKey.toUpperCase()} Hit`);
+
+  const pct = new TextInputBuilder()
+    .setCustomId('tp_pct')
+    .setLabel('Close % (0 - 100; leave blank to skip)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false);
+
+  if (isNum(defaultPct)) pct.setValue(String(defaultPct));
+
+  m.addComponents(new ActionRowBuilder().addComponents(pct));
+  return m;
 }
-function computeFinalR(signal) {
-  const isFinished = signal.status === STATUS.CLOSED || signal.status === STATUS.STOPPED_BE || signal.status === STATUS.STOPPED_OUT;
-  if (isFinished && isNum(signal.finalR)) return Number(signal.finalR);
-  // fallback to realized from fills
-  const fills = Array.isArray(signal.fills) ? signal.fills : [];
-  if (!fills.length) return 0;
-  let sum = 0;
-  for (const f of fills) {
-    const pct = Number(f.pct || 0);
-    const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, f.price);
-    if (isNaN(pct) || r === null) continue;
-    sum += (pct * r) / 100;
+function makeUpdateTPPricesModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'tpprices')).setTitle('Update TP Prices (TP1–TP5)');
+  for (const [cid, label] of [['upd_tp1','TP1'],['upd_tp2','TP2'],['upd_tp3','TP3'],['upd_tp4','TP4'],['upd_tp5','TP5']]) {
+    m.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId(cid).setLabel(label).setStyle(TextInputStyle.Short).setRequired(false)
+    ));
   }
-  return Number(sum.toFixed(2));
+  return m;
 }
-function makeRecapDetailsModal(id) {
-  const m = new ModalBuilder().setCustomId(modal(id, 'recapfill')).setTitle('Trade Recap Details');
-  m.addComponents(new ActionRowBuilder().addComponents(
-    new TextInputBuilder().setCustomId('recap_reason').setLabel('Trade Reason (bulleted, 1 per line)').setStyle(TextInputStyle.Paragraph).setRequired(false)
-  ));
-  m.addComponents(new ActionRowBuilder().addComponents(
-    new TextInputBuilder().setCustomId('recap_confluences').setLabel('Entry Confluences (bulleted)').setStyle(TextInputStyle.Paragraph).setRequired(false)
-  ));
-  m.addComponents(new ActionRowBuilder().addComponents(
-    new TextInputBuilder().setCustomId('recap_notes').setLabel('Notes (optional)').setStyle(TextInputStyle.Paragraph).setRequired(false)
-  ));
+function makeUpdatePlanModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'plan')).setTitle('Update TP % Plan (0–100)');
+  for (const t of ['tp1','tp2','tp3','tp4','tp5']) {
+    m.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId(`plan_${t}`).setLabel(`${t.toUpperCase()} planned %`).setStyle(TextInputStyle.Short).setRequired(false)
+    ));
+  }
+  return m;
+}
+function makeUpdateTradeInfoModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'trade')).setTitle('Update Trade Info');
+  const fields = [
+    ['upd_entry', 'Entry', TextInputStyle.Short],
+    ['upd_sl', 'SL', TextInputStyle.Short],
+    ['upd_asset', 'Asset (e.g., BTC, ETH, SOL)', TextInputStyle.Short],
+    ['upd_dir', 'Direction (LONG/SHORT)', TextInputStyle.Short],
+    ['upd_reason', 'Reason (optional)', TextInputStyle.Paragraph],
+  ];
+  for (const [cid, label, style] of fields) {
+    m.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId(cid).setLabel(label).setStyle(style).setRequired(false)
+    ));
+  }
+  return m;
+}
+function makeUpdateRolesModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'roles')).setTitle('Update Role Mention(s)');
+  const input = new TextInputBuilder()
+    .setCustomId('roles_input')
+    .setLabel('Enter one or more roles (IDs or @mentions)')
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false);
+  m.addComponents(new ActionRowBuilder().addComponents(input));
+  return m;
+}
+function makeFullCloseModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'full')).setTitle('Fully Close Position');
+  const price = new TextInputBuilder().setCustomId('close_price').setLabel('Close Price').setStyle(TextInputStyle.Short).setRequired(true);
+  const pct = new TextInputBuilder().setCustomId('close_pct').setLabel('Close % (default = remaining)').setStyle(TextInputStyle.Short).setRequired(false);
+  const finalR = new TextInputBuilder().setCustomId('final_r').setLabel('Final R (optional)').setPlaceholder('e.g., 0, -0.5, -1 — overrides calc').setStyle(TextInputStyle.Short).setRequired(false);
+  m.addComponents(new ActionRowBuilder().addComponents(price));
+  m.addComponents(new ActionRowBuilder().addComponents(pct));
+  m.addComponents(new ActionRowBuilder().addComponents(finalR));
+  return m;
+}
+function makeFinalRModal(id, kind) {
+  const m = new ModalBuilder().setCustomId(modal(id, `finalr:${kind}`)).setTitle(kind === 'BE' ? 'Stopped Breakeven' : 'Stopped Out');
+  const r = new TextInputBuilder().setCustomId('final_r').setLabel('Final R (optional)').setPlaceholder('e.g., 0, -0.5, -1 — overrides calc').setStyle(TextInputStyle.Short).setRequired(false);
+  m.addComponents(new ActionRowBuilder().addComponents(r));
+  return m;
+}
+function makeMaxRModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'maxr')).setTitle('Set Max R Reached');
+  const r = new TextInputBuilder().setCustomId('max_r').setLabel('Max R reached (number, no + sign)').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('e.g., 1.5');
+  m.addComponents(new ActionRowBuilder().addComponents(r));
+  return m;
+}
+function makeChartModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'chart')).setTitle('Set / Replace Chart Link');
+  const url = new TextInputBuilder().setCustomId('chart_url').setLabel('Image URL (https://...)').setStyle(TextInputStyle.Short).setRequired(true);
+  m.addComponents(new ActionRowBuilder().addComponents(url));
   return m;
 }
 
@@ -384,50 +490,6 @@ function tryClaimInteraction(interaction) {
 }
 
 // ------------------------------
-// Posting / Editing messages (per-signal channelId)
-// ------------------------------
-async function postSignalMessage(signal) {
-  const channel = await client.channels.fetch(signal.channelId);
-  const rrChips = computeRRChips(signal);
-  const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
-  const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
-
-  const payload = {
-    // NO chart links or attachments — embed text only
-    content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
-    ...(mentionLine ? { allowedMentions } : {}),
-  };
-
-  const sent = await channel.send(payload);
-  return sent.id;
-}
-
-async function editSignalMessage(signal) {
-  const channel = await client.channels.fetch(signal.channelId);
-  const msg = await channel.messages.fetch(signal.messageId).catch(() => null);
-  if (!msg) return false;
-
-  const rrChips = computeRRChips(signal);
-  const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
-  const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
-
-  const editPayload = {
-    // NO chart links or attachments — embed text only
-    content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
-    ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
-  };
-
-  await msg.edit(editPayload).catch(() => {});
-  return true;
-}
-
-async function deleteSignalMessage(signal) {
-  const channel = await client.channels.fetch(signal.channelId);
-  const msg = await channel.messages.fetch(signal.messageId).catch(() => null);
-  if (msg) await msg.delete().catch(() => {});
-}
-
-// ------------------------------
 // Interaction router
 // ------------------------------
 client.on('interactionCreate', async (interaction) => {
@@ -435,7 +497,7 @@ client.on('interactionCreate', async (interaction) => {
     // ensure we don't process the same interaction twice
     if (!tryClaimInteraction(interaction)) return;
 
-    // ===== SLASH: /signal =====
+    // /signal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
@@ -459,7 +521,7 @@ client.on('interactionCreate', async (interaction) => {
       const tp4_pct = interaction.options.getString('tp4_pct');
       const tp5_pct = interaction.options.getString('tp5_pct');
 
-      // Optional chart attachment field is ignored for posting (no images/links posted)
+      // Optional chart attachment (pasted inline)
       const chartAtt  = interaction.options.getAttachment?.('chart');
 
       if (assetSel === 'OTHER') {
@@ -495,56 +557,15 @@ client.on('interactionCreate', async (interaction) => {
           TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
           TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
         },
-        chartUrl: chartAtt?.url || null,     // stored but not posted
-        chartAttached: !!chartAtt?.url,      // stored but not posted
+        chartUrl: chartAtt?.url || null,
+        chartAttached: !!chartAtt?.url,
       }, interaction.channelId);
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
-    }
-
-    // ===== SLASH: /recap (picker flow; no IDs) =====
-    if (interaction.isChatInputCommand() && interaction.commandName === 'recap') {
-      if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
-      }
-
-      const all = (await getSignals()).map(normalizeSignal);
-      const finished = all
-        .filter(s => s.status === STATUS.CLOSED || s.status === STATUS.STOPPED_BE || s.status === STATUS.STOPPED_OUT)
-        .slice(-25) // Discord select max 25
-        .reverse();
-
-      if (!finished.length) {
-        return interaction.reply({ content: 'No finished trades yet (Closed / BE / Stopped Out).', flags: MessageFlags.Ephemeral });
-      }
-
-      const opts = finished.map(s => {
-        const r = computeFinalR(s);
-        const tag = statusTag(s);
-        const label = `$${String(s.asset).toUpperCase()} ${s.direction === DIR.SHORT ? 'Short' : 'Long'} • ${tag} • ${r >= 0 ? '+' : ''}${r.toFixed(2)}R`;
-        return {
-          label,
-          value: s.id,
-          description: `Entry ${s.entry ?? '—'} | SL ${s.sl ?? '—'}`
-        };
-      });
-
-      const select = new StringSelectMenuBuilder()
-        .setCustomId('recap:pick')
-        .setPlaceholder('Select a finished trade to recap…')
-        .addOptions(opts);
-
-      const row = new ActionRowBuilder().addComponents(select);
-      return interaction.reply({
-        content: 'Pick a trade to recap:',
-        components: [row],
-        flags: MessageFlags.Ephemeral,
-      });
     }
 
     // ===== MODALS =====
     if (interaction.isModalSubmit()) {
       const idPart = interaction.customId.split(':').pop(); // after last :
-
       // Custom asset modal
       if (interaction.customId.startsWith('modal:asset:')) {
         await ensureDeferred(interaction);
@@ -651,7 +672,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Max R updated.' });
       }
 
-      // Set/Replace Chart Link (stored only; never posted)
+      // Set/Replace Chart Link
       if (interaction.customId.startsWith('modal:chart:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -661,11 +682,11 @@ client.on('interactionCreate', async (interaction) => {
         if (!url || !/^https?:\/\//i.test(url)) {
           return safeEditReply(interaction, { content: '❌ Please provide a valid http(s) URL.' });
         }
+        // Switch to "link only" mode and ensure old inline image is removed on edit
         await updateSignal(id, { chartUrl: url, chartAttached: false });
-        // We still edit the message to refresh the text (even though link isn’t posted)
         await editSignalMessage(normalizeSignal(await getSignal(id)));
         await updateSummary();
-        return safeEditReply(interaction, { content: '✅ Chart link saved (not displayed).' });
+        return safeEditReply(interaction, { content: '✅ Chart link updated.' });
       }
 
       // TP modal submit
@@ -773,41 +794,6 @@ client.on('interactionCreate', async (interaction) => {
         await deleteControlThread(id);
         return safeEditReply(interaction, { content: kind === 'BE' ? '✅ Stopped at breakeven.' : '✅ Stopped out.' });
       }
-
-      // Recap modal submit
-      if (interaction.customId.startsWith('modal:recapfill:')) {
-        await ensureDeferred(interaction);
-        const id = idPart;
-        const signal = normalizeSignal(await getSignal(id));
-        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
-
-        const reason = interaction.fields.getTextInputValue('recap_reason') ?? '';
-        const confluences = interaction.fields.getTextInputValue('recap_confluences') ?? '';
-        const notes = interaction.fields.getTextInputValue('recap_notes') ?? '';
-
-        const recapText = renderSingleTradeRecapFancy(signal, { reason, confluences, notes });
-
-        const channel = await client.channels.fetch(interaction.channelId);
-        const payload = {
-          content: recapText, // no chart links
-          allowedMentions: { parse: [] }
-        };
-        await channel.send(payload).catch(e => console.error('send recap error:', e));
-        return safeEditReply(interaction, { content: '✅ Recap posted.' });
-      }
-    }
-
-    // ===== COMPONENTS =====
-    if (interaction.isStringSelectMenu() && interaction.customId === 'recap:pick') {
-      // open details modal for the selected finished trade
-      if (interaction.user.id !== config.ownerId) {
-        return interaction.reply({ content: 'Only the owner can use these controls.', flags: MessageFlags.Ephemeral });
-      }
-      const selectedId = interaction.values?.[0];
-      if (!selectedId) return interaction.reply({ content: 'No trade selected.', flags: MessageFlags.Ephemeral });
-      const m = makeRecapDetailsModal(selectedId);
-      await interaction.showModal(m);
-      return;
     }
 
     // ===== BUTTONS =====
@@ -882,8 +868,7 @@ client.on('interactionCreate', async (interaction) => {
           return safeEditReply(interaction, { content: `✅ ${tpUpper} executed (${planPct}%).` });
         }
 
-        const m = makeTPModal(id, key);
-        if (isNum(planPct)) m.components[0].components[0].setValue(String(planPct));
+        const m = makeTPModal(id, key, isNum(planPct) ? Number(planPct) : null);
         return interaction.showModal(m);
       }
 
@@ -923,7 +908,7 @@ async function createSignal(payload, channelId) {
     fills: [],
     tpHits: { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false },
     finalR: null,
-    // optional fields kept but NOT posted
+    // new optional fields
     maxR: null,
     chartUrl: payload.chartUrl || null,
     chartAttached: !!payload.chartAttached,
