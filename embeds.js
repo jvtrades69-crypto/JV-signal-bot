@@ -1,4 +1,5 @@
 // embeds.js — text renderers
+// + Added in this version: renderMonthlyRecap(signals, year, monthIdx)
 
 function addCommas(num) {
   if (num === null || num === undefined || num === '') return String(num);
@@ -74,15 +75,6 @@ function buildTitle(signal) {
   const circle = signal.direction === 'SHORT' ? '🔴' : '🟢';
   const base = `**$${String(signal.asset).toUpperCase()} | ${dirWord} ${circle}**`;
 
-  // If finished & finalR present, show that
-  if (signal.status !== 'RUN_VALID' && signal.finalR != null) {
-    const fr = Number(signal.finalR);
-    if (signal.status === 'STOPPED_BE' && fr === 0) return `**$${String(signal.asset).toUpperCase()} | ${dirWord} ${circle} ( Breakeven )**`;
-    if (fr > 0) return `**$${String(signal.asset).toUpperCase()} | ${dirWord} ${circle} ( Win +${fr.toFixed(2)}R )**`;
-    if (fr < 0) return `**$${String(signal.asset).toUpperCase()} | ${dirWord} ${circle} ( Loss ${Math.abs(fr).toFixed(2)}R )**`;
-    return `${base} ( +0.00R )`;
-  }
-
   const { realized } = computeRealized(signal);
   if (signal.status === 'STOPPED_OUT') return `${base} ( Loss -${Math.abs(realized).toFixed(2)}R )`;
   if (signal.status === 'STOPPED_BE') {
@@ -132,7 +124,6 @@ export function renderSignalText(signal) {
   lines.push('📍 **Status**');
   if (signal.status === 'RUN_VALID') {
     const slMoved = (signal.entry != null && signal.sl != null && Number(signal.entry) === Number(signal.sl));
-    // Build hits list from recorded TP hits; show executed % per TP if any fills exist for that TP
     const order = ['TP1','TP2','TP3','TP4','TP5'];
     const hitList = order.filter(k => signal.tpHits && signal.tpHits[k]);
     const perTpExec = Object.fromEntries(order.map(k => [k, 0]));
@@ -149,10 +140,6 @@ export function renderSignalText(signal) {
     const reentry = signal.validReentry ? '✅' : '❌';
     const after = slMoved ? (signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : '') : '';
     lines.push(`Valid for re-entry: ${reentry}${slMoved ? ' | SL moved to breakeven' + after : ''}`);
-  } else {
-      lines.push(`Active 🟩`);
-      lines.push(`Valid for re-entry: ✅`);
-    }
   } else {
     if (signal.status === 'CLOSED') {
       const tp = signal.latestTpHit ? ` after ${signal.latestTpHit}` : '';
@@ -218,7 +205,7 @@ export function renderSignalText(signal) {
     }
   }
 
-  // Chart link (masked text). We never print the raw URL here.
+  // Chart link (masked text)
   if (signal.chartUrl && !signal.chartAttached) {
     lines.push('');
     lines.push(`[View chart](${signal.chartUrl})`);
@@ -247,12 +234,11 @@ export function renderSummaryText(activeSignals) {
   return lines.join('\n').trimEnd();
 }
 
-// /recap text used by index.js
+// /recap text used by index.js (single-trade)
 export function renderRecapText(signal, extras = {}, rrChips = []) {
   const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
   const circle = signal.direction === 'SHORT' ? '🔴' : '🟢';
 
-  // pick finalR if closed/BE/OUT, else realized so far
   const { realized } = computeRealized(signal);
   const final =
     signal.status !== 'RUN_VALID' && signal.finalR != null
@@ -303,4 +289,38 @@ export function renderRecapText(signal, extras = {}, rrChips = []) {
   }
 
   return lines.join('\n');
+}
+
+// NEW: Monthly recap renderer
+export function renderMonthlyRecap(signals, year, monthIdx) {
+  const monthName = new Date(Date.UTC(year, monthIdx, 1))
+    .toLocaleString('en-US', { month: 'long' });
+  const title = `📊 **Monthly Trade Recap — ${monthName} ${year}**`;
+
+  if (!signals.length) return `${title}\nNo trades this month.`;
+
+  let wins = 0, losses = 0, be = 0, net = 0;
+  const rChip = (r) => {
+    const v = Number(r || 0);
+    const emo = v > 0 ? '✅' : v < 0 ? '❌' : '➖';
+    const sign = v > 0 ? '+' : v < 0 ? '' : '';
+    return `${sign}${v.toFixed(2)}R ${emo}`;
+  };
+
+  const lines = [];
+  for (const s of signals) {
+    // Prefer finalR if present; otherwise use realized so far as fallback
+    const { realized } = computeRealized(s);
+    const r = s.finalR != null ? Number(s.finalR) : realized;
+    net += r;
+    if (r > 0) wins++; else if (r < 0) losses++; else be++;
+    const dir = s.direction === 'SHORT' ? 'Short 🔴' : 'Long 🟢';
+    lines.push(`**$${s.asset} | ${rChip(r)} (${dir})**`);
+  }
+
+  const header =
+    `**Total trades:** ${signals.length} | Wins: ${wins} | Losses: ${losses} | BE: ${be}\n` +
+    `**Net Result:** ${rChip(net)}`;
+
+  return [title, header, '', ...lines].join('\n');
 }
