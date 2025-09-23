@@ -1,7 +1,8 @@
 // embeds.js — text renderers
-// - Shows "Active 🟩 | Trade running" when no TP hits yet
-// - Shows "SL moved to breakeven" ONLY if beMovedAfter is set (explicit action)
-// - Includes renderMonthlyRecap(signals, year, monthIdx)
+// - "Active 🟩 | Trade running" when no TP hits yet
+// - "SL moved to breakeven" shows if you pressed the button (beSet=true)
+//   and adds "after TPx" once the FIRST TP after that is captured.
+// - Monthly recap included.
 
 function addCommas(num) {
   if (num === null || num === undefined || num === '') return String(num);
@@ -125,7 +126,6 @@ export function renderSignalText(signal) {
   lines.push('');
   lines.push('📍 **Status**');
   if (signal.status === 'RUN_VALID') {
-    // Build hits list; show executed % per TP if any fills exist for that TP
     const order = ['TP1','TP2','TP3','TP4','TP5'];
     const hitList = order.filter(k => signal.tpHits && signal.tpHits[k]);
     const perTpExec = Object.fromEntries(order.map(k => [k, 0]));
@@ -141,10 +141,11 @@ export function renderSignalText(signal) {
     lines.push(activeLine);
 
     const reentry = signal.validReentry ? '✅' : '❌';
-    // IMPORTANT: show BE only if explicitly set via control; i.e., beMovedAfter is present
-    const slMoved = Boolean(signal.beMovedAfter);
-    const after = slMoved ? ` after ${signal.beMovedAfter}` : '';
-    lines.push(`Valid for re-entry: ${reentry}${slMoved ? ' | SL moved to breakeven' + after : ''}`);
+
+    // Show BE if you pressed it; add "after TPx" once captured
+    const showBE = Boolean(signal.beSet) || Boolean(signal.beMovedAfter);
+    const afterTxt = (signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : '');
+    lines.push(`Valid for re-entry: ${reentry}${showBE ? ' | SL moved to breakeven' + afterTxt : ''}`);
   } else {
     if (signal.status === 'CLOSED') {
       const tp = signal.latestTpHit ? ` after ${signal.latestTpHit}` : '';
@@ -171,7 +172,7 @@ export function renderSignalText(signal) {
     if (signal.status === 'RUN_VALID' && !anyTpHit) lines.push('Awaiting TP1…');
   }
 
-  // Realized (only if finished or we have fills)
+  // Realized
   const hasFills = Array.isArray(signal.fills) && signal.fills.length > 0;
   if (signal.status !== 'RUN_VALID' || hasFills) {
     lines.push('');
@@ -219,7 +220,7 @@ export function renderSignalText(signal) {
   return lines.join('\n');
 }
 
-// Summary list for the “Current Active Trades” message
+// Summary list
 export function renderSummaryText(activeSignals) {
   const title = '**JV Current Active Trades** 📊';
   if (!activeSignals || !activeSignals.length) {
@@ -239,7 +240,7 @@ export function renderSummaryText(activeSignals) {
   return lines.join('\n').trimEnd();
 }
 
-// /recap text used by index.js (single-trade)
+// Single-trade recap
 export function renderRecapText(signal, extras = {}, rrChips = []) {
   const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
   const circle = signal.direction === 'SHORT' ? '🔴' : '🟢';
