@@ -1,6 +1,6 @@
 // embeds.js — text renderers
 // - Shows "Active 🟩 | Trade running" when no TP hits yet
-// - Uses beMovedAfter (if present) to anchor SL→BE note
+// - Shows "SL moved to breakeven" ONLY if beMovedAfter is set (explicit action)
 // - Includes renderMonthlyRecap(signals, year, monthIdx)
 
 function addCommas(num) {
@@ -125,7 +125,7 @@ export function renderSignalText(signal) {
   lines.push('');
   lines.push('📍 **Status**');
   if (signal.status === 'RUN_VALID') {
-    const slMoved = (signal.entry != null && signal.sl != null && Number(signal.entry) === Number(signal.sl));
+    // Build hits list; show executed % per TP if any fills exist for that TP
     const order = ['TP1','TP2','TP3','TP4','TP5'];
     const hitList = order.filter(k => signal.tpHits && signal.tpHits[k]);
     const perTpExec = Object.fromEntries(order.map(k => [k, 0]));
@@ -141,7 +141,9 @@ export function renderSignalText(signal) {
     lines.push(activeLine);
 
     const reentry = signal.validReentry ? '✅' : '❌';
-    const after = slMoved ? (signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : '') : '';
+    // IMPORTANT: show BE only if explicitly set via control; i.e., beMovedAfter is present
+    const slMoved = Boolean(signal.beMovedAfter);
+    const after = slMoved ? ` after ${signal.beMovedAfter}` : '';
     lines.push(`Valid for re-entry: ${reentry}${slMoved ? ' | SL moved to breakeven' + after : ''}`);
   } else {
     if (signal.status === 'CLOSED') {
@@ -294,7 +296,7 @@ export function renderRecapText(signal, extras = {}, rrChips = []) {
   return lines.join('\n');
 }
 
-// NEW: Monthly recap renderer
+// Monthly recap renderer
 export function renderMonthlyRecap(signals, year, monthIdx) {
   const monthName = new Date(Date.UTC(year, monthIdx, 1))
     .toLocaleString('en-US', { month: 'long' });
