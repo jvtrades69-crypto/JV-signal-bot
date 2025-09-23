@@ -10,9 +10,9 @@
 // - Global error guards
 //
 // + Added in this version:
-//   • createdAt timestamp on signal creation
+//   • createdAt timestamp on signal creation (for monthly)
 //   • /recap period=monthly aggregation
-//   • Persist beMovedAfter on “Set SL → BE” (anchored to the TP state at that moment)
+//   • Persist beMovedAfter on “Set SL → BE” (anchor once)
 
 import {
   Client,
@@ -98,16 +98,14 @@ function normalizeSignal(raw) {
     const v = s.plan[K];
     s.plan[K] = isNum(v) ? Number(v) : null;
   }
-  // track one-time TP hits
   s.tpHits = s.tpHits && typeof s.tpHits === 'object' ? s.tpHits : { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false };
-  // optional overrides/new fields
   if (s.finalR !== undefined && s.finalR !== null && !isNum(s.finalR)) delete s.finalR;
-  if (!isNum(s.maxR)) s.maxR = null;          // optional max R reached (manual)
-  s.chartUrl = s.chartUrl || null;            // optional chart link or attachment URL
-  s.chartAttached = !!s.chartAttached;        // true if we attached the image on first post
-  // NEW: persisted fields
-  s.beMovedAfter = s.beMovedAfter || null;    // remember which TP it was after when SL->BE was set
-  s.createdAt = isNum(s.createdAt) ? Number(s.createdAt) : s.createdAt || null;
+  if (!isNum(s.maxR)) s.maxR = null;
+  s.chartUrl = s.chartUrl || null;
+  s.chartAttached = !!s.chartAttached;
+  // NEW persisted fields
+  s.beMovedAfter = s.beMovedAfter || null;        // set only when pressing Set SL → BE
+  s.createdAt = isNum(s.createdAt) ? Number(s.createdAt) : s.createdAt || null; // for monthly
   return s;
 }
 
@@ -117,7 +115,7 @@ function isSlMovedToBE(signal) {
 }
 
 // ------------------------------
-// Mentions (keep highlight even after edits — no extra pings)
+// Mentions
 // ------------------------------
 function extractRoleIds(defaultRoleId, extraRoleRaw) {
   const ids = [];
@@ -137,7 +135,7 @@ function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
 }
 
 // ------------------------------
-// Ack helpers (prevent “not sent or deferred”)
+// Ack helpers
 // ------------------------------
 async function ensureDeferred(interaction) {
   try {
@@ -163,7 +161,7 @@ async function safeEditReply(interaction, payload) {
 }
 
 // ------------------------------
-// Thread title helpers (for auto-renaming)
+// Thread title helpers
 // ------------------------------
 function computeRealizedR(signal) {
   const fills = Array.isArray(signal.fills) ? signal.fills : [];
@@ -192,7 +190,6 @@ function computeThreadName(signal) {
     const r = isNum(signal.finalR) ? Number(signal.finalR) : computeRealizedR(signal);
     return `${base}${rToTitlePiece(r)}`;
   }
-  // RUN_VALID
   const r = computeRealizedR(signal);
   if (r !== 0) return `${base}${rToTitlePiece(r)}`;
   if (isNum(signal.maxR) && Number(signal.maxR) !== 0) return `${base}${rToTitlePiece(Number(signal.maxR))}`;
@@ -213,7 +210,7 @@ async function renameControlThread(signal) {
 }
 
 // ------------------------------
-// Posting / Editing messages (use per-signal channelId)
+// Posting / Editing messages
 // ------------------------------
 async function postSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
@@ -265,7 +262,7 @@ async function deleteSignalMessage(signal) {
 }
 
 // ------------------------------
-// Summary (edit-in-place or hard purge; debounced)
+// Summary (debounced)
 // ------------------------------
 let _summaryTimer = null;
 let _summaryBusy = false;
@@ -510,7 +507,6 @@ client.once('ready', async () => {
   await pruneGhostSignals().catch(() => {});
 });
 
-// Manual delete watcher (any channel)
 client.on('messageDelete', async (message) => {
   try {
     if (!message) return;
@@ -554,7 +550,6 @@ function tryClaimInteraction(interaction) {
   return true;
 }
 
-// Helper: pick most recent signal (prefers current channel)
 async function pickMostRecentSignal(channelId) {
   const all = (await getSignals()).map(normalizeSignal).filter(s => s.messageId);
   const inChan = all.filter(s => s.channelId === channelId);
@@ -648,7 +643,6 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
       }
 
-      // NEW: monthly aggregation if period=monthly
       const period = interaction.options.getString?.('period') || null;
       if (period === 'monthly') {
         const signals = (await getSignals()).map(normalizeSignal);
@@ -664,7 +658,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: text, allowedMentions: { parse: [] } });
       }
 
-      // Otherwise: single-trade recap flow (existing behavior)
+      // Single-trade recap flow
       const explicitId = interaction.options.getString?.('id') || null;
       let signal = null;
       if (explicitId) signal = normalizeSignal(await getSignal(explicitId).catch(() => null));
@@ -715,10 +709,8 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
       }
 
-      // (other modals unchanged)... TP prices / plan / trade / roles / maxR / chart / TP hit / full close / final R
-      // ------- the rest of your modal handlers remain exactly as in your original file -------
+      // --- remaining modal handlers unchanged (TP prices / plan / trade / roles / maxR / chart / TP hit / full close / final R) ---
 
-      // Update TP Prices
       if (interaction.customId.startsWith('modal:tpprices:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -954,7 +946,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!sig0) return safeEditReply(interaction, { content: 'Signal not found.' });
         if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
 
-        // Determine the TP state AT THE MOMENT of setting BE; store once.
+        // capture TP state at the moment (do this ONCE)
         const lastHit =
           sig0.latestTpHit ||
           (['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || null);
@@ -1033,7 +1025,7 @@ const pendingSignals = new Map();
 async function createSignal(payload, channelId) {
   const signal = normalizeSignal({
     id: nano(),
-    createdAt: Date.now(), // NEW: stamp created time for monthly bucketing
+    createdAt: Date.now(), // NEW
     asset: String(payload.asset || '').toUpperCase(),
     direction: (payload.direction || 'LONG').toUpperCase() === 'SHORT' ? DIR.SHORT : DIR.LONG,
     entry: payload.entry,
@@ -1074,7 +1066,7 @@ async function createSignal(payload, channelId) {
 }
 
 // ------------------------------
-// One-time ghost prune (storage hygiene)
+// One-time ghost prune
 // ------------------------------
 async function pruneGhostSignals() {
   try {
