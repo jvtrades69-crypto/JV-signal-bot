@@ -55,7 +55,14 @@ const signalCmd = new SlashCommandBuilder()
 /* /recap */
 const recapCmd = new SlashCommandBuilder()
   .setName('recap')
-  .setDescription('Show recap of recent trades.');
+  .setDescription('Show recap of recent trades.')
+  // NEW: add period option (monthly)
+  .addStringOption(opt =>
+    opt.setName('period')
+      .setDescription('Recap period')
+      .setRequired(false)
+      .addChoices({ name: 'Monthly', value: 'monthly' })
+  );
 
 const commands = [pingCmd, signalCmd, recapCmd].map(c => c.toJSON());
 
