@@ -12,7 +12,7 @@
 // + Added in this version:
 //   • createdAt timestamp on signal creation (for monthly)
 //   • /recap period=monthly aggregation
-//   • Persist beMovedAfter on “Set SL → BE” (anchor once)
+//   • Persist beMovedAfter on “Set SL → BE” (anchor once; 'MANUAL' if no TP hit yet)
 
 import {
   Client,
@@ -39,7 +39,7 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
 });
 
-// ---- global error catcher so bot doesn’t crash ----
+// ---- global error catcher ----
 process.on('unhandledRejection', (err) => console.error('unhandledRejection:', err));
 process.on('uncaughtException',  (err) => console.error('uncaughtException:', err));
 
@@ -104,7 +104,7 @@ function normalizeSignal(raw) {
   s.chartUrl = s.chartUrl || null;
   s.chartAttached = !!s.chartAttached;
   // NEW persisted fields
-  s.beMovedAfter = s.beMovedAfter || null;        // set only when pressing Set SL → BE
+  s.beMovedAfter = s.beMovedAfter || null;        // 'TPx' or 'MANUAL' after Set SL → BE
   s.createdAt = isNum(s.createdAt) ? Number(s.createdAt) : s.createdAt || null; // for monthly
   return s;
 }
@@ -484,7 +484,7 @@ function makeChartModal(id) {
   return m;
 }
 
-// === NEW: Recap modal ===
+// === Recap modal ===
 function makeRecapModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'recap')).setTitle('Post Trade Recap');
   m.addComponents(new ActionRowBuilder().addComponents(
@@ -550,6 +550,7 @@ function tryClaimInteraction(interaction) {
   return true;
 }
 
+// Pick most recent signal (prefers current channel)
 async function pickMostRecentSignal(channelId) {
   const all = (await getSignals()).map(normalizeSignal).filter(s => s.messageId);
   const inChan = all.filter(s => s.channelId === channelId);
@@ -709,8 +710,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
       }
 
-      // --- remaining modal handlers unchanged (TP prices / plan / trade / roles / maxR / chart / TP hit / full close / final R) ---
-
+      // Remaining modal handlers unchanged (TP prices / plan / trade / roles / maxR / chart / TP hit / full close / final R)
       if (interaction.customId.startsWith('modal:tpprices:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -946,13 +946,13 @@ client.on('interactionCreate', async (interaction) => {
         if (!sig0) return safeEditReply(interaction, { content: 'Signal not found.' });
         if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
 
-        // capture TP state at the moment (do this ONCE)
+        // capture TP state at the moment (use 'MANUAL' when no TP was hit yet); persist ONCE
         const lastHit =
           sig0.latestTpHit ||
-          (['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || null);
+          (['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || 'MANUAL');
 
         const patch = { sl: Number(sig0.entry), validReentry: false };
-        if (!sig0.beMovedAfter) patch.beMovedAfter = lastHit; // anchor once; never overwrite
+        if (!sig0.beMovedAfter) patch.beMovedAfter = lastHit;
 
         await updateSignal(id, patch);
         const updated = normalizeSignal(await getSignal(id));
