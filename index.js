@@ -1,18 +1,10 @@
 // index.js — JV Signal Bot (stable)
-// - Plain text messages (uses renders from embeds.js)
-// - TP plans + auto-exec
-// - Control panel (TP1–TP5 + 4 update modals + Close/BE/Out)
-// - Summary in currentTradesChannelId (exactly 1 message, debounced)
-// - Signals post in the channel where /signal is run (per-signal channelId)
-// - Ignores “ghost” signals whose original message was manually deleted
-// - Dedupe guard for interactions (no double posts)
-// - Safe acks (prevents “not sent or deferred” / “unknown interaction”)
-// - Global error guards
-//
-// + Added in this version:
-//   • createdAt timestamp on signal creation (for monthly)
-//   • /recap period=monthly aggregation
-//   • Persist beMovedAfter on “Set SL → BE” (anchor once; 'MANUAL' if no TP hit yet)
+// + createdAt (for monthly), monthly recap
+// + SL→BE persistence: beSet (bool) + beMovedAfter ('TPx' | null)
+//   - Pressing Set BE sets beSet=true immediately (shows "SL moved to breakeven")
+//   - If a TP was already hit, beMovedAfter is set right away
+//   - If no TP yet, the FIRST TP hit after pressing will set beMovedAfter
+//   - We never upgrade beyond the first TP captured
 
 import {
   Client,
@@ -103,9 +95,12 @@ function normalizeSignal(raw) {
   if (!isNum(s.maxR)) s.maxR = null;
   s.chartUrl = s.chartUrl || null;
   s.chartAttached = !!s.chartAttached;
-  // NEW persisted fields
-  s.beMovedAfter = s.beMovedAfter || null;        // 'TPx' or 'MANUAL' after Set SL → BE
-  s.createdAt = isNum(s.createdAt) ? Number(s.createdAt) : s.createdAt || null; // for monthly
+
+  // NEW persisted fields (backward compatible)
+  s.beSet = Boolean(s.beSet);                 // pressed SL→BE at least once
+  s.beMovedAfter = s.beMovedAfter || null;    // 'TPx' or null until first TP after beSet
+  s.createdAt = isNum(s.createdAt) ? Number(s.createdAt) : s.createdAt || null;
+
   return s;
 }
 
@@ -399,7 +394,7 @@ async function deleteControlThread(signalId) {
 }
 
 // ------------------------------
-// Modals
+// Modals (same as before)...
 // ------------------------------
 function makeTPModal(id, tpKey) {
   const m = new ModalBuilder().setCustomId(modal(id, `tp:${tpKey}`)).setTitle(`${tpKey.toUpperCase()} Hit`);
@@ -710,7 +705,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
       }
 
-      // Remaining modal handlers unchanged (TP prices / plan / trade / roles / maxR / chart / TP hit / full close / final R)
+      // Remaining modal handlers (TP prices / plan / trade / roles / maxR / chart / TP hit / full close / final R)
       if (interaction.customId.startsWith('modal:tpprices:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -819,7 +814,7 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.customId.startsWith('modal:tp:')) {
         await ensureDeferred(interaction);
         const parts = interaction.customId.split(':');
-        const tpKey = parts[2];
+        const tpKey = parts[2];           // tp1..tp5
         const id = parts[3];
 
         let signal = normalizeSignal(await getSignal(id));
@@ -834,15 +829,29 @@ client.on('interactionCreate', async (interaction) => {
         if (hasPct && (isNaN(pct) || pct < 0 || pct > 100)) {
           return safeEditReply(interaction, { content: '❌ Close % must be between 0 and 100 (or leave blank to skip).' });
         }
+
         const tpPrice = signal[tpKey];
         if (hasPct && pct > 0 && isNum(tpPrice)) {
           const already = (signal.fills || []).some(f => String(f.source).toUpperCase() === tpUpper);
           if (!already) signal.fills.push({ pct: Number(pct), price: Number(tpPrice), source: tpUpper });
         }
+
+        // mark TP hit
         signal.latestTpHit = tpUpper;
         signal.tpHits[tpUpper] = true;
 
-        await updateSignal(id, { fills: signal.fills, latestTpHit: signal.latestTpHit, tpHits: signal.tpHits });
+        // NEW: if BE was set earlier and we haven't captured "after TPx" yet, capture NOW (first TP after beSet)
+        if (signal.beSet && !signal.beMovedAfter) {
+          signal.beMovedAfter = tpUpper;
+        }
+
+        await updateSignal(id, {
+          fills: signal.fills,
+          latestTpHit: signal.latestTpHit,
+          tpHits: signal.tpHits,
+          ...(signal.beSet && !signal.beMovedAfter ? { beMovedAfter: signal.beMovedAfter } : {})
+        });
+
         await editSignalMessage(signal);
         await updateSummary();
         return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${hasPct && pct > 0 ? ` (${pct}%).` : '.'}` });
@@ -946,13 +955,13 @@ client.on('interactionCreate', async (interaction) => {
         if (!sig0) return safeEditReply(interaction, { content: 'Signal not found.' });
         if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
 
-        // capture TP state at the moment (use 'MANUAL' when no TP was hit yet); persist ONCE
+        // capture TP state NOW (if any); otherwise leave beMovedAfter null for future first TP
         const lastHit =
           sig0.latestTpHit ||
-          (['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || 'MANUAL');
+          (['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || null);
 
-        const patch = { sl: Number(sig0.entry), validReentry: false };
-        if (!sig0.beMovedAfter) patch.beMovedAfter = lastHit;
+        const patch = { sl: Number(sig0.entry), validReentry: false, beSet: true };
+        if (!sig0.beMovedAfter && lastHit) patch.beMovedAfter = lastHit;
 
         await updateSignal(id, patch);
         const updated = normalizeSignal(await getSignal(id));
@@ -991,7 +1000,14 @@ client.on('interactionCreate', async (interaction) => {
           sig.latestTpHit = tpUpper;
           sig.tpHits[tpUpper] = true;
 
-          await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits });
+          // If BE was set earlier and not labeled yet, label it now with this first TP
+          const extra = {};
+          if (sig.beSet && !sig.beMovedAfter) {
+            sig.beMovedAfter = tpUpper;
+            extra.beMovedAfter = tpUpper;
+          }
+
+          await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits, ...extra });
           await editSignalMessage(sig);
           await updateSummary();
           await ensureDeferred(interaction);
@@ -1046,6 +1062,8 @@ async function createSignal(payload, channelId) {
     messageId: null,
     jumpUrl: null,
     channelId,
+    beSet: false,
+    beMovedAfter: null,
   });
 
   await saveSignal(signal);
