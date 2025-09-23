@@ -1,4 +1,4 @@
-// index.js — JV Signal Bot (stable)
+// index.js — JV Signal Bot (stable, full drop‑in with chart/link fixes)
 // - Plain text messages (uses renders from embeds.js)
 // - TP plans + auto-exec
 // - Control panel (TP1–TP5 + 4 update modals + Close/BE/Out)
@@ -205,7 +205,9 @@ async function renameControlThread(signal) {
 }
 
 // ------------------------------
-// Posting / Editing messages (use per-signal channelId)
+// Posting / Editing messages (per-signal channelId)
+// IMPORTANT: we NEVER append the raw chart URL. embeds.js prints a masked [View chart](…)
+// Also: when removing a previously attached image, we delete & re-post to avoid ghost/double images.
 // ------------------------------
 async function postSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
@@ -214,12 +216,12 @@ async function postSignalMessage(signal) {
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
 
   const payload = {
-    // Show the link if we *didn't* attach the image inline
-    content: `${text}${signal.chartUrl && !signal.chartAttached ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+    content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+    flags: [MessageFlags.SuppressEmbeds],
     ...(mentionLine ? { allowedMentions } : {}),
   };
 
-  // Option A: if creation had an attachment, include it inline
+  // Inline attach only if chartAttached=true
   if (signal.chartUrl && signal.chartAttached) {
     payload.files = [signal.chartUrl];
   }
@@ -237,19 +239,34 @@ async function editSignalMessage(signal) {
   const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
 
-  const editPayload = {
-    // Always show the link on updates (Option B). It appears above the mentions.
-    content: `${text}${signal.chartUrl ? `\n\n${signal.chartUrl}` : ''}${mentionLine ? `\n\n${mentionLine}` : ''}`,
-    ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
-  };
+  const hadAttachment = msg.attachments?.size > 0;
+  const wantsAttachment = !!(signal.chartUrl && signal.chartAttached);
 
-  // Option B: when replacing via control panel (chartAttached=false), remove any previous attachments
-  if (!signal.chartAttached) {
-    editPayload.attachments = []; // clears old image(s)
+  // If we need to strip an old attachment (or switch attach<->no-attach), delete & re-post to avoid ghost images
+  if ((hadAttachment && !wantsAttachment) || (!hadAttachment && wantsAttachment)) {
+    await msg.delete().catch(() => {});
+    const payload = {
+      content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+      flags: [MessageFlags.SuppressEmbeds],
+      allowedMentions: { parse: [] },
+    };
+    if (wantsAttachment) payload.files = [signal.chartUrl];
+    const fresh = await channel.send(payload).catch(() => null);
+    if (fresh) {
+      signal.messageId = fresh.id;
+      signal.jumpUrl = fresh.url;
+      await updateSignal(signal.id, { messageId: signal.messageId, jumpUrl: signal.jumpUrl });
+    }
+    renameControlThread(signal).catch(() => {});
+    return true;
   }
 
-  await msg.edit(editPayload).catch(() => {});
-  // keep thread name in sync (non-blocking)
+  // Otherwise plain edit
+  await msg.edit({
+    content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+    flags: [MessageFlags.SuppressEmbeds],
+    allowedMentions: { parse: [] },
+  }).catch(() => {});
   renameControlThread(signal).catch(() => {});
   return true;
 }
@@ -704,10 +721,11 @@ client.on('interactionCreate', async (interaction) => {
         const channel = await client.channels.fetch(interaction.channelId);
         const payload = {
           content: recapText,
+          flags: [MessageFlags.SuppressEmbeds],
           allowedMentions: { parse: [] }
         };
-        if (signal.chartUrl) {
-          // Attach chart image if available
+        if (signal.chartUrl && signal.chartAttached) {
+          // Only attach if the signal currently uses an inline attachment
           payload.files = [signal.chartUrl];
         }
         await channel.send(payload);
@@ -1067,7 +1085,7 @@ async function createSignal(payload, channelId) {
   signal.jumpUrl = msg.url;
 
   await updateSignal(signal.id, { messageId: signal.messageId, jumpUrl: signal.jumpUrl });
-  const threadId = await createControlThread(signal);
+  await createControlThread(signal);
   // Try to ensure name is correct right away (non-blocking)
   renameControlThread(signal).catch(() => {});
   await updateSummary();
