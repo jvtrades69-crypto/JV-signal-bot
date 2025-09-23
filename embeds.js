@@ -132,14 +132,24 @@ export function renderSignalText(signal) {
   lines.push('📍 **Status**');
   if (signal.status === 'RUN_VALID') {
     const slMoved = (signal.entry != null && signal.sl != null && Number(signal.entry) === Number(signal.sl));
-    if (slMoved) {
-      const tp = signal.latestTpHit ? `${signal.latestTpHit}` : '';
-      lines.push(`Active 🟩 | SL moved to breakeven${tp ? ` after ${tp}` : ''}`);
-      lines.push(`Valid for re-entry: ❌`);
-    } else if (signal.latestTpHit) {
-      lines.push(`Active 🟩 | ${signal.latestTpHit} hit`);
-      lines.push(`Valid for re-entry: ✅`);
+    // Build hits list from recorded TP hits; show executed % per TP if any fills exist for that TP
+    const order = ['TP1','TP2','TP3','TP4','TP5'];
+    const hitList = order.filter(k => signal.tpHits && signal.tpHits[k]);
+    const perTpExec = Object.fromEntries(order.map(k => [k, 0]));
+    for (const f of (signal.fills || [])) {
+      const src = String(f.source || '').toUpperCase();
+      if (perTpExec[src] !== undefined) perTpExec[src] += Number(f.pct || 0);
+    }
+    const parts = hitList.map(k => perTpExec[k] > 0 ? `${k} hit (${Math.round(perTpExec[k])}% closed)` : `${k} hit`);
+    if (parts.length) {
+      lines.push(`Active 🟩 | ${parts.join(' , ')}`);
     } else {
+      lines.push('Active 🟩');
+    }
+    const reentry = signal.validReentry ? '✅' : '❌';
+    const after = slMoved ? (signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : '') : '';
+    lines.push(`Valid for re-entry: ${reentry}${slMoved ? ' | SL moved to breakeven' + after : ''}`);
+  } else {
       lines.push(`Active 🟩`);
       lines.push(`Valid for re-entry: ✅`);
     }
