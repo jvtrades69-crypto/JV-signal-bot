@@ -1,5 +1,7 @@
 // embeds.js — text renderers
-// + Added in this version: renderMonthlyRecap(signals, year, monthIdx)
+// - Shows "Active 🟩 | Trade running" when no TP hits yet
+// - Uses beMovedAfter (if present) to anchor SL→BE note
+// - Includes renderMonthlyRecap(signals, year, monthIdx)
 
 function addCommas(num) {
   if (num === null || num === undefined || num === '') return String(num);
@@ -26,7 +28,7 @@ export function signAbsR(r) {
 function rAtPrice(direction, entry, slOriginal, price) {
   if (entry == null || slOriginal == null || price == null) return null;
   const E = Number(entry), S = Number(slOriginal), P = Number(price);
-  if ([E,S,P].some(Number.isNaN)) return null;
+  if ([E, S, P].some(Number.isNaN)) return null;
   if (direction === 'LONG') {
     const risk = E - S; if (risk <= 0) return null; return (P - E) / risk;
   } else {
@@ -132,11 +134,12 @@ export function renderSignalText(signal) {
       if (perTpExec[src] !== undefined) perTpExec[src] += Number(f.pct || 0);
     }
     const parts = hitList.map(k => perTpExec[k] > 0 ? `${k} hit (${Math.round(perTpExec[k])}% closed)` : `${k} hit`);
-    if (parts.length) {
-      lines.push(`Active 🟩 | ${parts.join(' , ')}`);
-    } else {
-      lines.push('Active 🟩');
-    }
+
+    const activeLine = parts.length
+      ? `Active 🟩 | ${parts.join(' , ')}`
+      : 'Active 🟩 | Trade running';
+    lines.push(activeLine);
+
     const reentry = signal.validReentry ? '✅' : '❌';
     const after = slMoved ? (signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : '') : '';
     lines.push(`Valid for re-entry: ${reentry}${slMoved ? ' | SL moved to breakeven' + after : ''}`);
@@ -148,11 +151,11 @@ export function renderSignalText(signal) {
       const tp = signal.latestTpHit ? ` after ${signal.latestTpHit}` : '';
       lines.push(`Inactive 🟥 | Stopped breakeven${tp}`);
     } else if (signal.status === 'STOPPED_OUT') {
-      lines.push(`Inactive 🟥 | Stopped out`);
+      lines.push('Inactive 🟥 | Stopped out');
     } else {
-      lines.push(`Inactive 🟥`);
+      lines.push('Inactive 🟥');
     }
-    lines.push(`Valid for re-entry: ❌`);
+    lines.push('Valid for re-entry: ❌');
   }
 
   // Max R
@@ -177,7 +180,7 @@ export function renderSignalText(signal) {
         const after = signal.latestTpHit ? ` after ${signal.latestTpHit}` : '';
         lines.push(`${text} ( fully closed${after} )`);
       } else if (signal.status === 'STOPPED_BE') {
-        if (Number(signal.finalR) === 0) lines.push(`0.00R ( stopped breakeven )`);
+        if (Number(signal.finalR) === 0) lines.push('0.00R ( stopped breakeven )');
         else {
           const after = signal.latestTpHit ? ` after ${signal.latestTpHit}` : '';
           lines.push(`${text} ( stopped breakeven${after} )`);
@@ -196,7 +199,7 @@ export function renderSignalText(signal) {
         lines.push(`${pretty} ( fully closed${after} )`);
       } else if (signal.status === 'STOPPED_BE') {
         if (signal.latestTpHit) lines.push(`${pretty} ( stopped breakeven after ${signal.latestTpHit} )`);
-        else lines.push(`0.00R ( stopped breakeven )`);
+        else lines.push('0.00R ( stopped breakeven )');
       } else if (signal.status === 'STOPPED_OUT') {
         lines.push(`${pretty} ( stopped out )`);
       } else if (list) {
@@ -309,7 +312,6 @@ export function renderMonthlyRecap(signals, year, monthIdx) {
 
   const lines = [];
   for (const s of signals) {
-    // Prefer finalR if present; otherwise use realized so far as fallback
     const { realized } = computeRealized(s);
     const r = s.finalR != null ? Number(s.finalR) : realized;
     net += r;
