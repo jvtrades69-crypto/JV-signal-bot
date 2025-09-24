@@ -16,6 +16,7 @@ import {
   TextInputBuilder,
   TextInputStyle,
   MessageFlags,
+  StringSelectMenuBuilder, // NEW: for the 5-trade picker
 } from 'discord.js';
 import { customAlphabet } from 'nanoid';
 import config from './config.js';
@@ -349,14 +350,13 @@ client.on('interactionCreate', async (interaction) => {
     const all = (await getSignals()).map(normalizeSignal);
     // Most recent first by messageId if present, else createdAt
     all.sort((a, b) => {
-  if (a.messageId && b.messageId) {
-    const A = BigInt(a.messageId), B = BigInt(b.messageId);
-    if (A === B) return 0;
-    return (B > A) ? 1 : -1;
-  }
-  return Number(b.createdAt || 0) - Number(a.createdAt || 0);
-});
-
+      if (a.messageId && b.messageId) {
+        const A = BigInt(a.messageId), B = BigInt(b.messageId);
+        if (A === B) return 0;
+        return (B > A) ? 1 : -1;
+      }
+      return Number(b.createdAt || 0) - Number(a.createdAt || 0);
+    });
 
     const q = String(focused.value || '').toLowerCase();
     const opts = [];
@@ -589,15 +589,15 @@ async function pickMostRecentSignal(channelId) {
   const list = inChan.length ? inChan : all;
   if (!list.length) return null;
   list.sort((a, b) => {
-  const aId = a.messageId, bId = b.messageId;
-  if (aId && bId) {
-    const A = BigInt(aId), B = BigInt(bId);
-    if (A === B) return 0;
-    return (B > A) ? 1 : -1; // newest first
-  }
-  // fallback by createdAt if needed
-  return Number(b.createdAt || 0) - Number(a.createdAt || 0);
-});
+    const aId = a.messageId, bId = b.messageId;
+    if (aId && bId) {
+      const A = BigInt(aId), B = BigInt(bId);
+      if (A === B) return 0;
+      return (B > A) ? 1 : -1; // newest first
+    }
+    // fallback by createdAt if needed
+    return Number(b.createdAt || 0) - Number(a.createdAt || 0);
+  });
 
   for (const s of list) {
     try {
@@ -615,6 +615,15 @@ async function pickMostRecentSignal(channelId) {
 client.on('interactionCreate', async (interaction) => {
   try {
     if (!tryClaimInteraction(interaction)) return;
+
+    // --- recap picker selection -> open recap modal ---
+    if (interaction.isStringSelectMenu && interaction.isStringSelectMenu() && interaction.customId === 'recap:pick') {
+      const id = interaction.values?.[0];
+      if (!id) {
+        return interaction.reply({ content: '❌ Invalid selection.', flags: MessageFlags.Ephemeral });
+      }
+      return interaction.showModal(makeRecapModal(id));
+    }
 
     // /signal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
@@ -686,7 +695,10 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
       }
 
-      const period = interaction.options.getString?.('period') || null;
+      const period   = interaction.options.getString?.('period') || null;
+      const chosenId = interaction.options.getString?.('id')     || null;
+
+      // Monthly recap
       if (period === 'monthly') {
         const signals = (await getSignals()).map(normalizeSignal);
         const now = new Date();
@@ -701,16 +713,41 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: text, allowedMentions: { parse: [] } });
       }
 
-      // Single-trade recap flow
-      const explicitId = interaction.options.getString?.('id') || null;
-      let signal = null;
-      if (explicitId) signal = normalizeSignal(await getSignal(explicitId).catch(() => null));
-      if (!signal) signal = await pickMostRecentSignal(interaction.channelId);
-
-      if (!signal) {
-        return interaction.reply({ content: '❌ No recent trade found to recap in this channel.', flags: MessageFlags.Ephemeral });
+      // If id provided -> open modal directly
+      if (chosenId) {
+        return interaction.showModal(makeRecapModal(chosenId));
       }
-      return interaction.showModal(makeRecapModal(signal.id));
+
+      // Otherwise show 5 most recent trades picker
+      const all = (await getSignals()).map(normalizeSignal);
+      all.sort((a, b) => {
+        if (a.messageId && b.messageId) {
+          const A = BigInt(a.messageId), B = BigInt(b.messageId);
+          if (A === B) return 0;
+          return (B > A) ? 1 : -1;
+        }
+        return Number(b.createdAt || 0) - Number(a.createdAt || 0);
+      });
+      const items = all.slice(0, 5);
+      if (!items.length) {
+        return interaction.reply({ content: '❌ No trades found to recap.', flags: MessageFlags.Ephemeral });
+      }
+
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId('recap:pick')
+        .setPlaceholder('Select a trade to recap')
+        .addOptions(items.map(s => ({
+          label: `$${s.asset} ${s.direction === 'SHORT' ? 'Short' : 'Long'} • ${s.status}`,
+          description: `id:${s.id}`,
+          value: s.id,
+        })));
+
+      const row = new ActionRowBuilder().addComponents(menu);
+      return interaction.reply({
+        content: 'Pick a trade to recap:',
+        components: [row],
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
     // ===== MODALS =====
@@ -940,42 +977,6 @@ client.on('interactionCreate', async (interaction) => {
         await editSignalMessage(signal);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Fully closed.' });
-      }
-
-      if (interaction.customId.startsWith('modal:finalr:')) {
-        await ensureDeferred(interaction);
-        const parts = interaction.customId.split(':');
-        const kind = parts[2];
-        const id = parts[3];
-
-        let signal = normalizeSignal(await getSignal(id));
-        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
-
-        const finalRStr = interaction.fields.getTextInputValue('final_r')?.trim();
-        const hasFinalR = finalRStr !== undefined && finalRStr !== '';
-        if (hasFinalR && !isNum(finalRStr)) {
-          return safeEditReply(interaction, { content: '❌ Final R must be a number (e.g., 0, -1, -0.5).' });
-        }
-
-        if (hasFinalR) {
-          signal.finalR = Number(finalRStr);
-        } else {
-          let price = null;
-          price = Number(kind === 'BE' ? signal.entry : (signal.slOriginal ?? signal.sl));
-          const remaining = 100 - (signal.fills || []).reduce((a, f) => a + Number(f.pct || 0), 0);
-          if (remaining > 0 && isNum(price)) {
-            signal.fills.push({ pct: remaining, price, source: kind === 'BE' ? 'STOP_BE' : 'STOP_OUT' });
-          }
-        }
-
-        signal.status = (kind === 'BE') ? STATUS.STOPPED_BE : STATUS.STOPPED_OUT;
-        signal.validReentry = false;
-
-        await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
-        await editSignalMessage(signal);
-        await updateSummary();
-        await deleteControlThread(id);
-        return safeEditReply(interaction, { content: kind === 'BE' ? '✅ Stopped at breakeven.' : '✅ Stopped out.' });
       }
     }
 
