@@ -349,9 +349,14 @@ client.on('interactionCreate', async (interaction) => {
     const all = (await getSignals()).map(normalizeSignal);
     // Most recent first by messageId if present, else createdAt
     all.sort((a, b) => {
-      if (a.messageId && b.messageId) return (BigInt(b.messageId) - BigInt(a.messageId));
-      return (Number(b.createdAt || 0) - Number(a.createdAt || 0));
-    });
+  if (a.messageId && b.messageId) {
+    const A = BigInt(a.messageId), B = BigInt(b.messageId);
+    if (A === B) return 0;
+    return (B > A) ? 1 : -1;
+  }
+  return Number(b.createdAt || 0) - Number(a.createdAt || 0);
+});
+
 
     const q = String(focused.value || '').toLowerCase();
     const opts = [];
@@ -583,7 +588,17 @@ async function pickMostRecentSignal(channelId) {
   const inChan = all.filter(s => s.channelId === channelId);
   const list = inChan.length ? inChan : all;
   if (!list.length) return null;
-  list.sort((a,b) => (BigInt(b.messageId) - BigInt(a.messageId)));
+  list.sort((a, b) => {
+  const aId = a.messageId, bId = b.messageId;
+  if (aId && bId) {
+    const A = BigInt(aId), B = BigInt(bId);
+    if (A === B) return 0;
+    return (B > A) ? 1 : -1; // newest first
+  }
+  // fallback by createdAt if needed
+  return Number(b.createdAt || 0) - Number(a.createdAt || 0);
+});
+
   for (const s of list) {
     try {
       const ch = await client.channels.fetch(s.channelId);
