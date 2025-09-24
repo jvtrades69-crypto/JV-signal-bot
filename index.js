@@ -956,11 +956,10 @@ client.on('interactionCreate', async (interaction) => {
         if (!sig0) return safeEditReply(interaction, { content: 'Signal not found.' });
         if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
 
-        // Only TP1 is considered for "after"
-        const hasTP1 = Boolean(sig0.tpHits?.TP1);
-        const patch = { sl: Number(sig0.entry), validReentry: false, beSet: true };
-        if (!sig0.beMovedAfter && hasTP1) patch.beMovedAfter = 'TP1';
-
+        // If any TP already hit, label with the HIGHEST hit (TP5..TP1). Else leave null.
+const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || null;
+const patch = { sl: Number(sig0.entry), validReentry: false, beSet: true };
+if (!sig0.beMovedAfter && highestHit) patch.beMovedAfter = highestHit;
         await updateSignal(id, patch);
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
