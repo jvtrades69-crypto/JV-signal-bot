@@ -244,7 +244,11 @@ export function renderSummaryText(activeSignals) {
 }
 
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 // Single-trade recap — FORMATTED like your screenshot
+=======
+// Single-trade recap — FORMATTED like your examples, with overrides
+>>>>>>> Stashed changes
 =======
 // Single-trade recap — FORMATTED like your examples, with overrides
 >>>>>>> Stashed changes
@@ -252,6 +256,7 @@ export function renderRecapText(signal, extras = {}, rrChips = []) {
   const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
   const circle  = signal.direction === 'SHORT' ? '🔴' : '🟢';
 
+<<<<<<< Updated upstream
 <<<<<<< Updated upstream
   // Final R (closed/BE/OUT -> finalR; else realized)
   const { realized } = computeRealized(signal);
@@ -359,6 +364,110 @@ export function renderRecapText(signal, extras = {}, rrChips = []) {
     reasonLines.forEach(ln => lines.push(`- ${ln}`));
 >>>>>>> Stashed changes
     lines.push('');
+=======
+  // Parse overrides & TP captions from extras.notesLines
+  const reasonLines = extras.reasonLines || [];
+  const confLines   = extras.confLines   || [];
+  let   notesLines  = extras.notesLines  || [];
+
+  let overrideFinal = null;
+  let overridePeak  = null;
+  const tpCaptions  = {}; // { TP1: 'text', ... }
+
+  const parsedNotes = [];
+  for (const raw of notesLines) {
+    const line = String(raw).trim();
+
+    // final/max/peak override: "final: 1.00", "max: 2.4", "peak: 2.4"
+    const mFinal = line.match(/^final\s*:\s*([+-]?\d+(\.\d+)?)/i);
+    const mPeak  = line.match(/^(peak|max)\s*:\s*([+-]?\d+(\.\d+)?)/i);
+    const mTP    = line.match(/^TP([1-5])\s*:\s*(.+)$/i);
+
+    if (mFinal) { overrideFinal = Number(mFinal[1]); continue; }
+    if (mPeak)  { overridePeak  = Number(mPeak[2]);  continue; }
+    if (mTP)    { tpCaptions[`TP${mTP[1]}`] = mTP[2].trim(); continue; }
+
+    parsedNotes.push(line);
+  }
+  notesLines = parsedNotes;
+
+  // Final R
+  const { realized } = computeRealized(signal);
+  const computedFinal = (signal.status !== 'RUN_VALID' && signal.finalR != null)
+    ? Number(signal.finalR)
+    : realized;
+  const final = (overrideFinal != null && !Number.isNaN(overrideFinal)) ? overrideFinal : computedFinal;
+
+  const finalChip = signAbsR(final).text;
+  const finalMark = final > 0 ? '✅' : final < 0 ? '❌' : '➖';
+
+  // TP list (only ones actually hit)
+  const tpPerc  = computeTpPercents(signal);
+  const tpHits  = signal.tpHits || {};
+  const tpLines = [];
+  for (let i = 1; i <= 5; i++) {
+    const key = `TP${i}`, k = `tp${i}`;
+    if (!tpHits[key]) continue;
+    const v = signal[k];
+    const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, v);
+    const pct = tpPerc[key] > 0 ? ` (${tpPerc[key]}% closed)` : '';
+    const caption = tpCaptions[key] ? ` | ${tpCaptions[key]}` : '';
+    tpLines.push(`${key} | ${r != null ? `${r.toFixed(2)}R` : '—'}${pct} ✅${caption}`);
+  }
+
+  // Peak/Max R
+  const storedMax = (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) ? Number(signal.maxR) : 0;
+  const peakR = (overridePeak != null && !Number.isNaN(overridePeak)) ? overridePeak : storedMax;
+
+  const lines = [];
+
+  // Title
+  lines.push(`**$${String(signal.asset).toUpperCase()} | Trade Recap ${finalChip} ${finalMark} (${dirWord}) ${circle}**`);
+  lines.push('');
+
+  // Trade Reason
+  if (reasonLines.length) {
+    lines.push('📍 **Trade Reason**');
+    reasonLines.forEach(ln => lines.push(`- ${ln}`));
+    lines.push('');
+  }
+
+  // Entry Confluences
+  if (confLines.length) {
+    lines.push('📊 **Entry Confluences**');
+    confLines.forEach(ln => lines.push(`- ${ln}`));
+    lines.push('');
+  }
+
+  // Take Profit
+  lines.push('🎯 **Take Profit**');
+  if (tpLines.length) {
+    // match exact example style (bullet with bold TP lines)
+    tpLines.forEach(t => lines.push(`- ${t}`));
+  } else {
+    if (signal.status === 'STOPPED_OUT')      lines.push('- **None** (Stopped Out ❌ before TP1)');
+    else if (signal.status === 'STOPPED_BE')  lines.push('- **None** (Breakeven 🟨 before TP1)');
+    else                                      lines.push('- **None yet**');
+  }
+  lines.push('');
+
+  // Results
+  lines.push('⚖️ **Results**');
+  lines.push(`- Final: ${finalChip} ${finalMark}`);
+  lines.push(`- Peak R: ${Number(peakR).toFixed(2)}R`);
+  lines.push('');
+
+  // Post-Mortem / Notes
+  if (notesLines.length) {
+    lines.push('🧠 **Post-Mortem (What I learned)**');
+    notesLines.forEach(ln => lines.push(`- ${ln}`));
+    lines.push('');
+  }
+
+  // Link
+  if (signal.jumpUrl) {
+    lines.push(`🔗 [View Original Trade](${signal.jumpUrl})`);
+>>>>>>> Stashed changes
   }
 
   // Entry Confluences
