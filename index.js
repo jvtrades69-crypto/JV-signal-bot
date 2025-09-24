@@ -2,7 +2,7 @@
 // + createdAt (for monthly), monthly recap
 // + SL→BE persistence: beSet (bool) + beMovedAfter ('TPx' | null)
 //   - Pressing Set BE sets beSet=true immediately (shows "SL moved to breakeven")
-//   - If a TP was already hit, beMovedAfter is set right away
+//   - If a TP was already hit, beMovedAfter is set right away (to that TP)
 //   - If no TP yet, the FIRST TP hit after pressing will set beMovedAfter
 //   - We never upgrade beyond the first TP captured
 
@@ -394,7 +394,7 @@ async function deleteControlThread(signalId) {
 }
 
 // ------------------------------
-// Modals (same as before)...
+// Modals
 // ------------------------------
 function makeTPModal(id, tpKey) {
   const m = new ModalBuilder().setCustomId(modal(id, `tp:${tpKey}`)).setTitle(`${tpKey.toUpperCase()} Hit`);
@@ -840,7 +840,7 @@ client.on('interactionCreate', async (interaction) => {
         signal.latestTpHit = tpUpper;
         signal.tpHits[tpUpper] = true;
 
-        // NEW: if BE was set earlier and we haven't captured "after TPx" yet, capture NOW (first TP after beSet)
+        // If BE was set earlier and we haven't captured "after TPx" yet, capture NOW (first TP after beSet)
         if (signal.beSet && !signal.beMovedAfter) {
           signal.beMovedAfter = tpUpper;
         }
