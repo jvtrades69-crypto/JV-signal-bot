@@ -240,59 +240,86 @@ export function renderSummaryText(activeSignals) {
   return lines.join('\n').trimEnd();
 }
 
-// Single-trade recap
+// Single-trade recap — FORMATTED like your screenshot
 export function renderRecapText(signal, extras = {}, rrChips = []) {
   const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
-  const circle = signal.direction === 'SHORT' ? '🔴' : '🟢';
+  const circle  = signal.direction === 'SHORT' ? '🔴' : '🟢';
 
+  // Final R (closed/BE/OUT -> finalR; else realized)
   const { realized } = computeRealized(signal);
-  const final =
-    signal.status !== 'RUN_VALID' && signal.finalR != null
-      ? Number(signal.finalR)
-      : realized;
+  const final = (signal.status !== 'RUN_VALID' && signal.finalR != null)
+    ? Number(signal.finalR)
+    : realized;
 
-  const lines = [];
-  lines.push(`**$${String(signal.asset).toUpperCase()} | Trade Recap ${signAbsR(final).text} (${dirWord}) ${circle}**`);
-  lines.push('');
-  lines.push('📊 **Basics**');
-  lines.push(`- Entry: \`${fmt(signal.entry)}\``);
-  lines.push(`- SL: \`${fmt(signal.sl)}\``);
+  const finalChip = signAbsR(final).text;
+  const finalMark = final > 0 ? '✅' : final < 0 ? '❌' : '➖';
 
-  const tpKeys = ['tp1','tp2','tp3','tp4','tp5'];
-  tpKeys.forEach((k, idx) => {
+  // TP list (only ones actually hit)
+  const tpPerc  = computeTpPercents(signal);
+  const tpHits  = signal.tpHits || {};
+  const tpLines = [];
+  for (let i = 1; i <= 5; i++) {
+    const key = `TP${i}`, k = `tp${i}`;
+    if (!tpHits[key]) continue;
     const v = signal[k];
-    if (v == null || v === '') return;
-    const label = `TP${idx + 1}`;
     const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, v);
-    lines.push(`- ${label}: \`${fmt(v)}\`${r != null ? ` (${r.toFixed(2)}R)` : ''}`);
-  });
-  if (rrChips?.length) {
-    lines.push(`- R/R map: ${rrChips.map(c => `${c.key} ${Number(c.r).toFixed(2)}R`).join(' | ')}`);
+    const pct = tpPerc[key] > 0 ? ` (${tpPerc[key]}% closed)` : '';
+    tpLines.push(`• ${key} | ${r != null ? `${r.toFixed(2)}R` : '—'}${pct} ✅`);
   }
+
+  // Peak/Max R
+  const peakR = (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) ? Number(signal.maxR) : 0;
 
   const reasonLines = extras.reasonLines || [];
+  const confLines   = extras.confLines   || [];
+  const notesLines  = extras.notesLines  || [];
+
+  const lines = [];
+
+  // Title
+  lines.push(`**$${String(signal.asset).toUpperCase()} | Trade Recap ${finalChip} ${finalMark} (${dirWord}) ${circle}**`);
+  lines.push('');
+
+  // Trade Reason
   if (reasonLines.length) {
-    lines.push('');
     lines.push('📍 **Trade Reason**');
-    reasonLines.forEach(ln => lines.push(`- ${ln}`));
-  }
-  const confLines = extras.confLines || [];
-  if (confLines.length) {
+    reasonLines.forEach(ln => lines.push(`• ${ln}`));
     lines.push('');
-    lines.push('🔎 **Entry Confluences**');
-    confLines.forEach(ln => lines.push(`- ${ln}`));
-  }
-  const notesLines = extras.notesLines || [];
-  if (notesLines.length) {
-    lines.push('');
-    lines.push('📝 **Notes**');
-    notesLines.forEach(ln => lines.push(`- ${ln}`));
   }
 
-  if (signal.jumpUrl) {
+  // Entry Confluences
+  if (confLines.length) {
+    lines.push('📊 **Entry Confluences**');
+    confLines.forEach(ln => lines.push(`• ${ln}`));
     lines.push('');
-    lines.push(`🔗 [View Original Trade](${signal.jumpUrl})`);
   }
+
+  // Take Profit
+  lines.push('🎯 **Take Profit**');
+  if (tpLines.length) {
+    lines.push(...tpLines);
+  } else {
+    if (signal.status === 'STOPPED_OUT')      lines.push('• **None** (Stopped Out ❌ before TP1)');
+    else if (signal.status === 'STOPPED_BE')  lines.push('• **None** (Breakeven 🟨 before TP1)');
+    else                                      lines.push('• **None yet**');
+  }
+  lines.push('');
+
+  // Results
+  lines.push('⚖️ **Results**');
+  lines.push(`• Final: **${finalChip}** ${finalMark}`);
+  lines.push(`• Peak R: **${peakR.toFixed(2)}R**`);
+  lines.push('');
+
+  // Post-Mortem
+  if (notesLines.length) {
+    lines.push('🧠 **Post-Mortem (What I learned)**');
+    notesLines.forEach(ln => lines.push(`• ${ln}`));
+    lines.push('');
+  }
+
+  // Link
+  if (signal.jumpUrl) lines.push(`🔗 [View Original Trade](${signal.jumpUrl})`);
 
   return lines.join('\n');
 }
