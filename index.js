@@ -337,6 +337,39 @@ async function updateSummary() {
 }
 
 // ------------------------------
+// AUTOCOMPLETE for /recap id
+// ------------------------------
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isAutocomplete()) return;
+  try {
+    if (interaction.commandName !== 'recap') return;
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== 'id') return;
+
+    const all = (await getSignals()).map(normalizeSignal);
+    // Most recent first by messageId if present, else createdAt
+    all.sort((a, b) => {
+      if (a.messageId && b.messageId) return (BigInt(b.messageId) - BigInt(a.messageId));
+      return (Number(b.createdAt || 0) - Number(a.createdAt || 0));
+    });
+
+    const q = String(focused.value || '').toLowerCase();
+    const opts = [];
+    for (const s of all.slice(0, 50)) {
+      const name = `$${s.asset} ${s.direction === 'SHORT' ? 'Short' : 'Long'} • ${s.status} • id:${s.id}`;
+      if (!q || name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q)) {
+        opts.push({ name: name.slice(0, 100), value: s.id });
+      }
+      if (opts.length >= 25) break;
+    }
+    await interaction.respond(opts);
+  } catch (e) {
+    console.error('autocomplete error:', e);
+    try { await interaction.respond([]); } catch {}
+  }
+});
+
+// ------------------------------
 // Control UI (TPs + updates + closes)
 // ------------------------------
 function btn(id, key) { return `btn:${key}:${id}`; }
@@ -839,7 +872,7 @@ client.on('interactionCreate', async (interaction) => {
         signal.latestTpHit = tpUpper;
         signal.tpHits[tpUpper] = true;
 
-        // BE label rule: ONLY TP1 can set the "after" marker
+        // Only TP1 can set the "after" marker (and only if BE was pressed and not labeled yet)
         const extra = {};
         if (signal.beSet && !signal.beMovedAfter && tpUpper === 'TP1') {
           signal.beMovedAfter = 'TP1';
@@ -957,9 +990,10 @@ client.on('interactionCreate', async (interaction) => {
         if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
 
         // If any TP already hit, label with the HIGHEST hit (TP5..TP1). Else leave null.
-const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || null;
-const patch = { sl: Number(sig0.entry), validReentry: false, beSet: true };
-if (!sig0.beMovedAfter && highestHit) patch.beMovedAfter = highestHit;
+        const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || null;
+        const patch = { sl: Number(sig0.entry), validReentry: false, beSet: true };
+        if (!sig0.beMovedAfter && highestHit) patch.beMovedAfter = highestHit;
+
         await updateSignal(id, patch);
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
