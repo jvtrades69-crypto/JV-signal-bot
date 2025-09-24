@@ -1,10 +1,9 @@
 // index.js — JV Signal Bot (stable)
 // + createdAt (for monthly), monthly recap
-// + SL→BE persistence: beSet (bool) + beMovedAfter ('TPx' | null)
-//   - Pressing Set BE sets beSet=true immediately (shows "SL moved to breakeven")
-//   - If a TP was already hit, beMovedAfter is set right away (to that TP)
-//   - If no TP yet, the FIRST TP hit after pressing will set beMovedAfter
-//   - We never upgrade beyond the first TP captured
+// + SL→BE persistence: beSet (bool) + beMovedAfter ('TP1' | null)
+//   - On press: beSet=true. If TP1 already hit, beMovedAfter='TP1'; else null.
+//   - Later TP hits: only TP1 can set beMovedAfter='TP1' (never TP2–TP5).
+//   - We never upgrade beyond TP1 label.
 
 import {
   Client,
@@ -97,8 +96,8 @@ function normalizeSignal(raw) {
   s.chartAttached = !!s.chartAttached;
 
   // NEW persisted fields (backward compatible)
-  s.beSet = Boolean(s.beSet);                 // pressed SL→BE at least once
-  s.beMovedAfter = s.beMovedAfter || null;    // 'TPx' or null until first TP after beSet
+  s.beSet = Boolean(s.beSet);              // pressed SL→BE at least once
+  s.beMovedAfter = s.beMovedAfter || null; // only 'TP1' or null by our rule
   s.createdAt = isNum(s.createdAt) ? Number(s.createdAt) : s.createdAt || null;
 
   return s;
@@ -840,16 +839,18 @@ client.on('interactionCreate', async (interaction) => {
         signal.latestTpHit = tpUpper;
         signal.tpHits[tpUpper] = true;
 
-        // If BE was set earlier and we haven't captured "after TPx" yet, capture NOW (first TP after beSet)
-        if (signal.beSet && !signal.beMovedAfter) {
-          signal.beMovedAfter = tpUpper;
+        // BE label rule: ONLY TP1 can set the "after" marker
+        const extra = {};
+        if (signal.beSet && !signal.beMovedAfter && tpUpper === 'TP1') {
+          signal.beMovedAfter = 'TP1';
+          extra.beMovedAfter = 'TP1';
         }
 
         await updateSignal(id, {
           fills: signal.fills,
           latestTpHit: signal.latestTpHit,
           tpHits: signal.tpHits,
-          ...(signal.beSet && !signal.beMovedAfter ? { beMovedAfter: signal.beMovedAfter } : {})
+          ...extra
         });
 
         await editSignalMessage(signal);
@@ -955,13 +956,10 @@ client.on('interactionCreate', async (interaction) => {
         if (!sig0) return safeEditReply(interaction, { content: 'Signal not found.' });
         if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
 
-        // capture TP state NOW (if any); otherwise leave beMovedAfter null for future first TP
-        const lastHit =
-          sig0.latestTpHit ||
-          (['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || null);
-
+        // Only TP1 is considered for "after"
+        const hasTP1 = Boolean(sig0.tpHits?.TP1);
         const patch = { sl: Number(sig0.entry), validReentry: false, beSet: true };
-        if (!sig0.beMovedAfter && lastHit) patch.beMovedAfter = lastHit;
+        if (!sig0.beMovedAfter && hasTP1) patch.beMovedAfter = 'TP1';
 
         await updateSignal(id, patch);
         const updated = normalizeSignal(await getSignal(id));
@@ -997,26 +995,24 @@ client.on('interactionCreate', async (interaction) => {
         if (isNum(planPct) && Number(planPct) > 0 && isNum(tpPrice)) {
           const already = (sig.fills || []).some(f => String(f.source).toUpperCase() === tpUpper);
           if (!already) sig.fills.push({ pct: Number(planPct), price: Number(tpPrice), source: tpUpper });
-          sig.latestTpHit = tpUpper;
-          sig.tpHits[tpUpper] = true;
-
-          // If BE was set earlier and not labeled yet, label it now with this first TP
-          const extra = {};
-          if (sig.beSet && !sig.beMovedAfter) {
-            sig.beMovedAfter = tpUpper;
-            extra.beMovedAfter = tpUpper;
-          }
-
-          await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits, ...extra });
-          await editSignalMessage(sig);
-          await updateSummary();
-          await ensureDeferred(interaction);
-          return safeEditReply(interaction, { content: `✅ ${tpUpper} executed (${planPct}%).` });
         }
 
-        const m = makeTPModal(id, key);
-        if (isNum(planPct)) m.components[0].components[0].setValue(String(planPct));
-        return interaction.showModal(m);
+        // mark TP hit
+        sig.latestTpHit = tpUpper;
+        sig.tpHits[tpUpper] = true;
+
+        // Only TP1 can set the "after" marker (and only if BE was pressed and not labeled yet)
+        const extra = {};
+        if (sig.beSet && !sig.beMovedAfter && tpUpper === 'TP1') {
+          sig.beMovedAfter = 'TP1';
+          extra.beMovedAfter = 'TP1';
+        }
+
+        await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits, ...extra });
+        await editSignalMessage(sig);
+        await updateSummary();
+        await ensureDeferred(interaction);
+        return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${isNum(planPct) && Number(planPct) > 0 ? ` (${planPct}%).` : '.'}` });
       }
 
       return interaction.reply({ content: 'Unknown action.', flags: MessageFlags.Ephemeral });
