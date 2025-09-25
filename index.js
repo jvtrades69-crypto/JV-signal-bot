@@ -371,6 +371,8 @@ function controlRows(signalId) {
   );
   const row4 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'setbe')).setLabel('🟨 Set SL → BE').setStyle(ButtonStyle.Secondary),
+    // NEW: Set SL → In Profit (custom price)
+    new ButtonBuilder().setCustomId(btn(signalId,'setprofit')).setLabel('🟩 Set SL → In Profit').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:maxr')).setLabel('📈 Set Max R').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:chart')).setLabel('🖼️ Set/Replace Chart Link').setStyle(ButtonStyle.Secondary),
   );
@@ -438,7 +440,7 @@ function makeUpdateTradeInfoModal(id) {
     ['upd_dir', 'Direction (LONG/SHORT)', TextInputStyle.Short],
     ['upd_reason', 'Reason (optional)', TextInputStyle.Paragraph],
   ];
-  for (const [cid, label, style] of fields) {
+    for (const [cid, label, style] of fields) {
     m.addComponents(new ActionRowBuilder().addComponents(
       new TextInputBuilder().setCustomId(cid).setLabel(label).setStyle(style).setRequired(false)
     ));
@@ -481,6 +483,18 @@ function makeChartModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'chart')).setTitle('Set / Replace Chart Link');
   const url = new TextInputBuilder().setCustomId('chart_url').setLabel('Image URL (https://...)').setStyle(TextInputStyle.Short).setRequired(true);
   m.addComponents(new ActionRowBuilder().addComponents(url));
+  return m;
+}
+// NEW: Set SL → In Profit (custom price)
+function makeSetProfitModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'profit')).setTitle('Set SL → In Profit (Custom)');
+  const price = new TextInputBuilder()
+    .setCustomId('profit_price')
+    .setLabel('New SL Price (must be in profit vs entry)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder('e.g., 116250');
+  m.addComponents(new ActionRowBuilder().addComponents(price));
   return m;
 }
 
@@ -1036,6 +1050,29 @@ client.on('interactionCreate', async (interaction) => {
           return safeEditReply(interaction, { content: '❌ Could not record the stop. Check logs.' });
         }
       }
+
+      // NEW: handle Set SL → In Profit (custom)
+      if (interaction.customId.startsWith('modal:profit:')) {
+        await ensureDeferred(interaction);
+        const id = interaction.customId.split(':').pop();
+        let signal = normalizeSignal(await getSignal(id));
+        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
+
+        const priceStr = (interaction.fields.getTextInputValue('profit_price') || '').trim();
+        if (!isNum(priceStr)) return safeEditReply(interaction, { content: '❌ SL price must be a number.' });
+        const newSL = Number(priceStr);
+
+        if (!isNum(signal.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set first.' });
+        if (signal.direction === DIR.LONG  && newSL <= signal.entry) return safeEditReply(interaction, { content: '❌ For LONG, SL must be above entry.' });
+        if (signal.direction === DIR.SHORT && newSL >= signal.entry) return safeEditReply(interaction, { content: '❌ For SHORT, SL must be below entry.' });
+
+        // Do NOT change slOriginal
+        await updateSignal(id, { sl: newSL, validReentry: false });
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated);
+        await updateSummary();
+        return safeEditReply(interaction, { content: '✅ SL moved into profits.' });
+      }
     }
 
     // buttons
@@ -1060,8 +1097,8 @@ client.on('interactionCreate', async (interaction) => {
       if (key === 'setbe') {
         await ensureDeferred(interaction);
         const sig0 = normalizeSignal(await getSignal(id));
-        if (!sig0) return safeEditReply(interaction, { content: 'Signal not found.' });
-        if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
+        if (!sig0) return interaction.reply({ content: 'Signal not found.', flags: MessageFlags.Ephemeral });
+        if (!isNum(sig0.entry)) return interaction.reply({ content: '❌ Entry must be set to move SL to BE.', flags: MessageFlags.Ephemeral });
 
         const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || null;
         const patch = { sl: Number(sig0.entry), validReentry: false, beSet: true };
@@ -1071,7 +1108,11 @@ client.on('interactionCreate', async (interaction) => {
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
         await updateSummary();
-        return safeEditReply(interaction, { content: '✅ SL moved to breakeven.' });
+        return interaction.reply({ content: '✅ SL moved to breakeven.', flags: MessageFlags.Ephemeral });
+      }
+
+      if (key === 'setprofit') {
+        return interaction.showModal(makeSetProfitModal(id));
       }
 
       if (key === 'del') {
