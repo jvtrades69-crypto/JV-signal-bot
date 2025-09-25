@@ -52,20 +52,18 @@ function computeTpPercents(signal){
   return acc;
 }
 
-// ---- titles ----
+// ---- titles (show R for quick reference) ----
 function buildTitle(signal){
   const dirWord=signal.direction==='SHORT'?'Short':'Long';
   const circle =signal.direction==='SHORT'?'🔴':'🟢';
   const base=`**$${String(signal.asset).toUpperCase()} | ${dirWord} ${circle}**`;
   const { realized }=computeRealized(signal);
-  if(signal.status==='STOPPED_OUT') return `${base} ( Loss -${Math.abs(realized).toFixed(2)}R )`;
-  if(signal.status==='STOPPED_BE'){
-    const anyFill=(signal.fills||[]).length>0;
-    return `${base} ( ${anyFill?`Win +${realized.toFixed(2)}R`:'Breakeven'} )`;
-  }
-  if(signal.status==='CLOSED') return `${base} ( Win +${realized.toFixed(2)}R )`;
-  if((signal.fills||[]).length>0) return `${base} ( Win +${realized.toFixed(2)}R so far )`;
-  return base;
+  const rForTitle = (signal.status==='RUN_VALID') ? realized : (signal.finalR!=null?Number(signal.finalR):realized);
+  const rChip = signAbsR(rForTitle).text;
+  if(signal.status==='STOPPED_OUT') return `${base} • R ${rChip} (Stopped Out)`;
+  if(signal.status==='STOPPED_BE')  return `${base} • R ${rChip} (Breakeven)`;
+  if(signal.status==='CLOSED')      return `${base} • R ${rChip} (Closed)`;
+  return `${base} • R ${rChip}`;
 }
 
 // ---- live signal (TEXT) ----
@@ -200,14 +198,16 @@ function renderRecapText(signal, extras = {}, rrChips = []){
   const reasonLines=extras.reasonLines||[];
   const confLines=extras.confLines||[];
   let notesLines=extras.notesLines||[];
+  const showBasics = extras.showBasics === true; // default hidden
 
   let overrideFinal=null, overridePeak=null, entryOv=null, slOv=null;
   const tpCaptions={}, tpManual=[];
   const parsedNotes=[];
   for(const raw of notesLines){
     const line=String(raw).trim();
-    const mFinal=line.match(/^final\s*:\s*([+-]?\d+(\.\d+)?)/i);
-    const mPeak =line.match(/^(peak|max)\s*:\s*([+-]?\d+(\.\d+)?)/i);
+    // accept "0.12" or "0.12R"
+    const mFinal=line.match(/^final\s*:\s*([+-]?\d+(?:\.\d+)?)(?:\s*R)?\s*$/i);
+    const mPeak =line.match(/^(peak|max)\s*:\s*([+-]?\d+(?:\.\d+)?)(?:\s*R)?\s*$/i);
     const mTPcap=line.match(/^TP([1-5])\s*:\s*(.+)$/i);
     const mEntry=line.match(/^entry\s*:\s*(.+)$/i);
     const mSL   =line.match(/^sl\s*:\s*(.+)$/i);
@@ -267,7 +267,10 @@ function renderRecapText(signal, extras = {}, rrChips = []){
   if(showPeakLine) lines.push(`- Peak R: ${Number(peakR).toFixed(2)}R`, '');
   else lines.push('');
 
-  lines.push('📊 **Basics**', `- Entry: \`${fmt(entryShown)}\``, `- SL: \`${fmt(slShown)}\``, '');
+  if (showBasics) {
+    lines.push('📊 **Basics**', `- Entry: \`${fmt(entryShown)}\``, `- SL: \`${fmt(slShown)}\``, '');
+  }
+
   if(parsedNotes.length){ lines.push('🧠 **Post-Mortem (What I learned)**', ...parsedNotes.map(ln=>`- ${ln}`),''); }
   if(signal.jumpUrl) lines.push(`🔗 [View Original Trade](${signal.jumpUrl})`);
   return lines.join('\n');
@@ -297,8 +300,8 @@ function parseNotesOverrides(notesLines=[]){
   let finalOv=null, peakOv=null;
   for(const raw of notesLines){
     const line=String(raw??'').trim();
-    const mFinal=line.match(/^final\s*:\s*([+-]?\d+(?:\.\d+)?)/i);
-    const mPeak =line.match(/^(peak|max)\s*:\s*([+-]?\d+(?:\.\d+)?)/i);
+    const mFinal=line.match(/^final\s*:\s*([+-]?\d+(?:\.\d+)?)(?:\s*R)?\s*$/i);
+    const mPeak =line.match(/^(peak|max)\s*:\s*([+-]?\d+(?:\.\d+)?)(?:\s*R)?\s*$/i);
     if(mFinal){ finalOv=Number(mFinal[1]); continue; }
     if(mPeak ){ peakOv =Number(mPeak[2]);  continue; }
   }
@@ -310,9 +313,10 @@ function renderRecapEmbed(
   signal,
   {
     roleId,
-    imageUrl,              // explicit image URL
-    attachmentUrl,         // uploaded file URL
-    chartUrl,              // overrides link target if set
+    attachmentName,        // if provided -> embed.image = attachment://<name>
+    attachmentUrl,         // for "View chart" link
+    chartUrl,              // optional external link
+    imageUrl,              // optional external image
     notesLines = [],
     beToleranceR = 0.05,
     beAfterFallback = 'TP1',
@@ -346,23 +350,25 @@ function renderRecapEmbed(
   const closedPct=order.reduce((a,k)=>a+(tpPerc[k]||0),0);
   const posLine=closedPct?`${closedPct}% closed before stop`:'No partials';
 
-  const basics=`Entry: \`${fmt(signal.entry)}\`  •  SL: \`${fmt(signal.sl)}\``;
-
   const fields=[
     {name:'Result', value:`R: ${finalR.toFixed(2)}`, inline:true},
     ...(typeof peakOv==='number' ? [{name:'Peak R', value:`${peakOv.toFixed(2)}R`, inline:true}] : []),
     {name:'Progress', value:progress, inline:true},
     {name:'Position', value:posLine, inline:true},
-    {name:'Basics', value:basics},
   ];
 
-  const linkUrl = chartUrl || imageUrl || attachmentUrl || signal.chartUrl || null;
+  const linkUrl = chartUrl || attachmentUrl || imageUrl || signal.chartUrl || null;
   if(signal.jumpUrl) fields.push({name:'Signal', value:`[View original signal](${signal.jumpUrl})`});
   if(linkUrl)        fields.push({name:'Chart',  value:`[View chart](${linkUrl})`});
 
   const color = state==='CLOSED_WIN'?beColor.win : state==='CLOSED_LOSS'?beColor.loss : beColor.be;
   const embed={ title, description:desc, fields, color };
-  const img=imageUrl||attachmentUrl; if(img) embed.image={url:img};
+
+  if (attachmentName) {
+    embed.image = { url: `attachment://${attachmentName}` };
+  } else if (imageUrl) {
+    embed.image = { url: imageUrl };
+  }
 
   return {
     content: roleId ? `<@&${roleId}>` : undefined,
@@ -371,7 +377,7 @@ function renderRecapEmbed(
   };
 }
 
-// ---- explicit named exports (fixes your import error) ----
+// ---- explicit named exports ----
 export {
   renderSignalText,
   renderSummaryText,
