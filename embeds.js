@@ -22,8 +22,7 @@ function rAtPrice(direction, entry, slOriginal, price){
 }
 
 function computeRealized(signal){
-  const fills=Array.isArray(signal.fills)?signal.fills:[];
-  let sum=0; const parts=[];
+  const fills=Array.isArray(signal.fills)?signal.fills:[]; let sum=0; const parts=[];
   for(const f of fills){
     const pct=Number(f.pct||0);
     const r=rAtPrice(signal.direction, signal.entry, signal.slOriginal??signal.sl, f.price);
@@ -200,14 +199,15 @@ function renderRecapText(signal, extras = {}, rrChips = []){
   const reasonLines=extras.reasonLines||[];
   const confLines=extras.confLines||[];
   let notesLines=extras.notesLines||[];
+  const showBasics = extras.showBasics === true; // default hidden
 
   let overrideFinal=null, overridePeak=null, entryOv=null, slOv=null;
   const tpCaptions={}, tpManual=[];
   const parsedNotes=[];
   for(const raw of notesLines){
     const line=String(raw).trim();
-    const mFinal=line.match(/^final\s*:\s*([+-]?\d+(\.\d+)?)/i);
-    const mPeak =line.match(/^(peak|max)\s*:\s*([+-]?\d+(\.\d+)?)/i);
+    const mFinal=line.match(/^final\s*:\s*([+-]?\d+(?:\.\d+)?)(?:\s*R)?\s*$/i);
+    const mPeak =line.match(/^(peak|max)\s*:\s*([+-]?\d+(?:\.\d+)?)(?:\s*R)?\s*$/i);
     const mTPcap=line.match(/^TP([1-5])\s*:\s*(.+)$/i);
     const mEntry=line.match(/^entry\s*:\s*(.+)$/i);
     const mSL   =line.match(/^sl\s*:\s*(.+)$/i);
@@ -267,7 +267,10 @@ function renderRecapText(signal, extras = {}, rrChips = []){
   if(showPeakLine) lines.push(`- Peak R: ${Number(peakR).toFixed(2)}R`, '');
   else lines.push('');
 
-  lines.push('📊 **Basics**', `- Entry: \`${fmt(entryShown)}\``, `- SL: \`${fmt(slShown)}\``, '');
+  if (showBasics) {
+    lines.push('📊 **Basics**', `- Entry: \`${fmt(entryShown)}\``, `- SL: \`${fmt(slShown)}\``, '');
+  }
+
   if(parsedNotes.length){ lines.push('🧠 **Post-Mortem (What I learned)**', ...parsedNotes.map(ln=>`- ${ln}`),''); }
   if(signal.jumpUrl) lines.push(`🔗 [View Original Trade](${signal.jumpUrl})`);
   return lines.join('\n');
@@ -297,8 +300,8 @@ function parseNotesOverrides(notesLines=[]){
   let finalOv=null, peakOv=null;
   for(const raw of notesLines){
     const line=String(raw??'').trim();
-    const mFinal=line.match(/^final\s*:\s*([+-]?\d+(?:\.\d+)?)/i);
-    const mPeak =line.match(/^(peak|max)\s*:\s*([+-]?\d+(?:\.\d+)?)/i);
+    const mFinal=line.match(/^final\s*:\s*([+-]?\d+(?:\.\d+)?)(?:\s*R)?\s*$/i);
+    const mPeak =line.match(/^(peak|max)\s*:\s*([+-]?\d+(?:\.\d+)?)(?:\s*R)?\s*$/i);
     if(mFinal){ finalOv=Number(mFinal[1]); continue; }
     if(mPeak ){ peakOv =Number(mPeak[2]);  continue; }
   }
@@ -310,8 +313,9 @@ function renderRecapEmbed(
   signal,
   {
     roleId,
-    imageUrl,              // explicit image URL
-    attachmentUrl,         // uploaded file URL
+    imageUrl,              // explicit external image URL
+    attachmentName,        // use uploaded file: embed.image = attachment://<name>
+    attachmentUrl,         // for the "View chart" link
     chartUrl,              // overrides link target if set
     notesLines = [],
     beToleranceR = 0.05,
@@ -346,23 +350,27 @@ function renderRecapEmbed(
   const closedPct=order.reduce((a,k)=>a+(tpPerc[k]||0),0);
   const posLine=closedPct?`${closedPct}% closed before stop`:'No partials';
 
-  const basics=`Entry: \`${fmt(signal.entry)}\`  •  SL: \`${fmt(signal.sl)}\``;
-
   const fields=[
     {name:'Result', value:`R: ${finalR.toFixed(2)}`, inline:true},
     ...(typeof peakOv==='number' ? [{name:'Peak R', value:`${peakOv.toFixed(2)}R`, inline:true}] : []),
     {name:'Progress', value:progress, inline:true},
     {name:'Position', value:posLine, inline:true},
-    {name:'Basics', value:basics},
   ];
 
-  const linkUrl = chartUrl || imageUrl || attachmentUrl || signal.chartUrl || null;
+  const linkUrl = chartUrl || attachmentUrl || imageUrl || signal.chartUrl || null;
   if(signal.jumpUrl) fields.push({name:'Signal', value:`[View original signal](${signal.jumpUrl})`});
   if(linkUrl)        fields.push({name:'Chart',  value:`[View chart](${linkUrl})`});
 
   const color = state==='CLOSED_WIN'?beColor.win : state==='CLOSED_LOSS'?beColor.loss : beColor.be;
   const embed={ title, description:desc, fields, color };
-  const img=imageUrl||attachmentUrl; if(img) embed.image={url:img};
+
+  if (attachmentName) {
+    embed.image = { url: `attachment://${attachmentName}` };
+  } else if (imageUrl) {
+    embed.image = { url: imageUrl };
+  } else if (attachmentUrl) {
+    embed.image = { url: attachmentUrl };
+  }
 
   return {
     content: roleId ? `<@&${roleId}>` : undefined,
@@ -371,7 +379,7 @@ function renderRecapEmbed(
   };
 }
 
-// ---- explicit named exports (fixes your import error) ----
+// ---- explicit named exports ----
 export {
   renderSignalText,
   renderSummaryText,
