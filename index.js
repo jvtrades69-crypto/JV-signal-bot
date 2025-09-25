@@ -2,7 +2,7 @@
 // + createdAt (for monthly), monthly recap
 // + SL→BE persistence: beSet (bool) + beMovedAfter ('TP1' | null)
 //   - On press: beSet=true. If TP1 already hit, beMovedAfter='TP1'; else null.
-//   - Later TP hits: only TP1 can set beMovedAfter='TP1' (never TP2–TP5).
+//   - Later TP hits: only TP1 can set beMovedTo='TP1' (never TP2–TP5).
 //   - We never upgrade beyond TP1 label.
 
 import {
@@ -16,7 +16,7 @@ import {
   TextInputBuilder,
   TextInputStyle,
   MessageFlags,
-  StringSelectMenuBuilder, // NEW: for the 5-trade picker
+  StringSelectMenuBuilder, // 5-trade picker for /recap
 } from 'discord.js';
 import { customAlphabet } from 'nanoid';
 import config from './config.js';
@@ -517,6 +517,7 @@ function makeChartModal(id) {
 }
 
 // === Recap modal ===
+// + Added 'recap_chart' (optional custom image URL for recap)
 function makeRecapModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'recap')).setTitle('Post Trade Recap');
   m.addComponents(new ActionRowBuilder().addComponents(
@@ -527,6 +528,9 @@ function makeRecapModal(id) {
   ));
   m.addComponents(new ActionRowBuilder().addComponents(
     new TextInputBuilder().setCustomId('recap_notes').setLabel('Notes (optional)').setStyle(TextInputStyle.Paragraph).setRequired(false)
+  ));
+  m.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('recap_chart').setLabel('Custom Chart Image URL (optional)').setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder('https://...png')
   ));
   return m;
 }
@@ -773,6 +777,7 @@ client.on('interactionCreate', async (interaction) => {
         const reason = (interaction.fields.getTextInputValue('recap_reason') || '').trim();
         const confs  = (interaction.fields.getTextInputValue('recap_confs')  || '').trim();
         const notes  = (interaction.fields.getTextInputValue('recap_notes')  || '').trim();
+        const chart  = (interaction.fields.getTextInputValue('recap_chart')  || '').trim();
 
         const rrChips = computeRRChips(signal);
         const recapText = renderRecapText(signal, {
@@ -781,9 +786,19 @@ client.on('interactionCreate', async (interaction) => {
           notesLines:  notes  ? notes.split('\n').map(s => s.trim()).filter(Boolean)  : [],
         }, rrChips);
 
+        // Always tag @trade recap role; restrict allowedMentions to that role only
+        const mention = '<@&1382603857657331792>';
+        const payload = {
+          content: `${recapText}\n\n${mention}`,
+          allowedMentions: { roles: ['1382603857657331792'] }
+        };
+
+        // Attach ONLY the custom recap image if provided (ignore signal.chartUrl here)
+        if (chart && /^https?:\/\//i.test(chart)) {
+          payload.files = [chart];
+        }
+
         const channel = await client.channels.fetch(interaction.channelId);
-        const payload = { content: recapText, allowedMentions: { parse: [] } };
-        if (signal.chartUrl) payload.files = [signal.chartUrl];
         await channel.send(payload);
 
         return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
