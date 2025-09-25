@@ -92,6 +92,7 @@ function renderSignalText(signal){
     lines.push('','📝 **Reasoning**', String(signal.reason).trim());
   }
 
+  // ---- Status ----
   lines.push('','📍 **Status**');
   if(signal.status==='RUN_VALID'){
     const order=['TP1','TP2','TP3','TP4','TP5'];
@@ -105,9 +106,23 @@ function renderSignalText(signal){
     lines.push(parts.length?`Active 🟩 | ${parts.join(' , ')}`:'Active 🟩 | Trade running');
 
     const reentry=signal.validReentry?'✅':'❌';
-    const showBE=Boolean(signal.beSet)||Boolean(signal.beMovedAfter);
-    const afterTxt=(signal.beMovedAfter?` after ${signal.beMovedAfter}`:'');
-    lines.push(`Valid for re-entry: ${reentry}${showBE?' | SL moved to breakeven'+afterTxt:''}`);
+
+    // Build extras after the checkmark
+    const extras=[];
+    // Breakeven moved
+    if (Boolean(signal.beSet) || Boolean(signal.beMovedAfter)) {
+      const afterBE = signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : '';
+      extras.push(`SL moved to breakeven${afterBE}`);
+    }
+    // Profit SL (custom)
+    if (Boolean(signal.slProfitSet)) {
+      const tag = signal.slProfitAfter
+        ? (isNaN(Number(signal.slProfitAfter)) ? `${signal.slProfitAfter}` : `at ${fmt(signal.slProfitAfter)}`)
+        : '';
+      extras.push(`SL moved into profits${tag ? ' ' + tag : ''}`);
+    }
+
+    lines.push(`Valid for re-entry: ${reentry}${extras.length ? ' | ' + extras.join(' | ') : ''}`);
   }else{
     if(signal.status==='CLOSED'){
       const tp=signal.latestTpHit?` after ${signal.latestTpHit}`:'';
@@ -315,10 +330,10 @@ function renderRecapEmbed(
   signal,
   {
     roleId,
-    imageUrl,              // explicit external image URL
-    attachmentName,        // use uploaded file: embed.image = attachment://<name>
-    attachmentUrl,         // for the "View chart" link
-    chartUrl,              // overrides link target if set
+    imageUrl,
+    attachmentName,
+    attachmentUrl,
+    chartUrl,
     notesLines = [],
     beToleranceR = 0.05,
     beAfterFallback = 'TP1',
