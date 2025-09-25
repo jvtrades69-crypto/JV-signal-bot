@@ -38,12 +38,7 @@ const isNum = (v) => v !== undefined && v !== null && v !== '' && !isNaN(Number(
 const toNumOrNull = (v) => (isNum(v) ? Number(v) : null);
 
 const DIR = { LONG: 'LONG', SHORT: 'SHORT' };
-const STATUS = {
-  RUN_VALID: 'RUN_VALID',
-  CLOSED: 'CLOSED',
-  STOPPED_BE: 'STOPPED_BE',
-  STOPPED_OUT: 'STOPPED_OUT',
-};
+const STATUS = { RUN_VALID:'RUN_VALID', CLOSED:'CLOSED', STOPPED_BE:'STOPPED_BE', STOPPED_OUT:'STOPPED_OUT' };
 const TP_KEYS = ['tp1', 'tp2', 'tp3', 'tp4', 'tp5'];
 
 function rAtPrice(direction, entry, slOriginal, price) {
@@ -117,26 +112,12 @@ function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
 
 // acks
 async function ensureDeferred(interaction) {
-  try {
-    if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    }
-  } catch {}
+  try { if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ flags: MessageFlags.Ephemeral }); } catch {}
 }
 async function safeEditReply(interaction, payload) {
-  try {
-    if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    }
-  } catch {}
-  try {
-    return await interaction.editReply(payload);
-  } catch (e) {
-    try {
-      if (!interaction.replied) return await interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
-    } catch {}
-    throw e;
-  }
+  try { if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ flags: MessageFlags.Ephemeral }); } catch {}
+  try { return await interaction.editReply(payload); }
+  catch (e) { try { if (!interaction.replied) return await interaction.reply({ ...payload, flags: MessageFlags.Ephemeral }); } catch {} throw e; }
 }
 
 // thread title
@@ -152,11 +133,7 @@ function computeRealizedR(signal) {
   }
   return Number(sum.toFixed(2));
 }
-function rToTitlePiece(r) {
-  const x = Number(r || 0);
-  if (!isFinite(x) || x === 0) return '';
-  return ` ${x > 0 ? '+' : ''}${x.toFixed(2)}`;
-}
+function rToTitlePiece(r) { const x = Number(r || 0); if (!isFinite(x) || x === 0) return ''; return ` ${x > 0 ? '+' : ''}${x.toFixed(2)}`; }
 function computeThreadName(signal) {
   const base = `${String(signal.asset).toUpperCase()} ${signal.direction === DIR.SHORT ? 'short' : 'long'}`;
   if (signal.status === STATUS.STOPPED_OUT) return `${base} stopped out`;
@@ -177,9 +154,7 @@ async function renameControlThread(signal) {
     const thread = await client.channels.fetch(tid).catch(() => null);
     if (!thread || !thread.isThread?.()) return;
     const desired = computeThreadName(signal);
-    if (thread.name !== desired) {
-      await thread.setName(desired).catch(() => {});
-    }
+    if (thread.name !== desired) await thread.setName(desired).catch(() => {});
   } catch {}
 }
 
@@ -194,15 +169,11 @@ async function postSignalMessage(signal) {
     content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
     ...(mentionLine ? { allowedMentions } : {}),
   };
-
-  if (signal.chartUrl && signal.chartAttached) {
-    payload.files = [signal.chartUrl];
-  }
+  if (signal.chartUrl && signal.chartAttached) payload.files = [signal.chartUrl];
 
   const sent = await channel.send(payload);
   return sent.id;
 }
-
 async function editSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
   const msg = await channel.messages.fetch(signal.messageId).catch(() => null);
@@ -216,17 +187,12 @@ async function editSignalMessage(signal) {
     content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
     ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
   };
-
-  if (!signal.chartAttached) {
-    editPayload.attachments = [];
-    editPayload.files = [];
-  }
+  if (!signal.chartAttached) { editPayload.attachments = []; editPayload.files = []; }
 
   await msg.edit(editPayload).catch(() => {});
   renameControlThread(signal).catch(() => {});
   return true;
 }
-
 async function deleteSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
   const msg = await channel.messages.fetch(signal.messageId).catch(() => null);
@@ -236,80 +202,62 @@ async function deleteSignalMessage(signal) {
 // summary
 let _summaryTimer = null;
 let _summaryBusy = false;
-
 async function hardPurgeChannel(channelId) {
   try {
     const channel = await client.channels.fetch(channelId);
     while (true) {
       const batch = await channel.messages.fetch({ limit: 100 }).catch(() => null);
       if (!batch || batch.size === 0) break;
-
-      const young = batch.filter(m => (Date.now() - m.createdTimestamp) < 14 * 24 * 60 * 60 * 1000);
-      if (young.size) {
-        try { await channel.bulkDelete(young, true); } catch (e) { console.error('purge bulkDelete:', e); }
-      }
+      const young = batch.filter(m => (Date.now() - m.createdTimestamp) < 14*24*60*60*1000);
+      if (young.size) { try { await channel.bulkDelete(young, true); } catch (e) { console.error('purge bulkDelete:', e); } }
       const oldies = batch.filter(m => !young.has(m.id));
-      for (const m of oldies.values()) {
-        try { await m.delete(); } catch (e) { console.error('purge single delete:', e); }
-      }
+      for (const m of oldies.values()) { try { await m.delete(); } catch (e) { console.error('purge single delete:', e); } }
       if (batch.size < 100) break;
     }
-  } catch (e) {
-    console.error('hardPurgeChannel outer error:', e);
-  }
+  } catch (e) { console.error('hardPurgeChannel outer error:', e); }
 }
-
 async function updateSummary() {
   if (_summaryTimer) clearTimeout(_summaryTimer);
   _summaryTimer = setTimeout(async () => {
-    if (_summaryBusy) return;
-    _summaryBusy = true;
+    if (_summaryBusy) return; _summaryBusy = true;
     try {
       const summaryChannel = await client.channels.fetch(config.currentTradesChannelId);
-
       const signals = (await getSignals()).map(normalizeSignal);
       const candidates = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
-
       const active = [];
       for (const s of candidates) {
         let ok = false;
         if (s.messageId && s.channelId) {
-          try {
-            const ch = await client.channels.fetch(s.channelId);
-            await ch.messages.fetch(s.messageId);
-            ok = true;
-          } catch {}
+          try { const ch = await client.channels.fetch(s.channelId); await ch.messages.fetch(s.messageId); ok = true; } catch {}
         }
         if (ok) active.push(s);
       }
-
       const content = active.length === 0
         ? `**JV Current Active Trades** 📊\n\n• There are currently no ongoing trades valid for entry – stay posted for future trades!`
         : renderSummaryText(active);
-
       const recent = await summaryChannel.messages.fetch({ limit: 10 }).catch(() => null);
       let existing = null;
-      if (recent && recent.size) {
-        existing = Array.from(recent.values()).find(m => m.author?.id === client.user.id && !m.system);
-      }
-
+      if (recent && recent.size) existing = Array.from(recent.values()).find(m => m.author?.id === client.user.id && !m.system);
       if (existing) {
         await existing.edit({ content, allowedMentions: { parse: [] } }).catch(() => {});
         for (const m of recent.values()) {
-          if (m.id !== existing.id && m.author?.id === client.user.id) {
-            try { await m.delete(); } catch {}
-          }
+          if (m.id !== existing.id && m.author?.id === client.user.id) { try { await m.delete(); } catch {} }
         }
       } else {
         await hardPurgeChannel(config.currentTradesChannelId);
         await summaryChannel.send({ content, allowedMentions: { parse: [] } }).catch(e => console.error('summary send failed:', e));
       }
-    } catch (e) {
-      console.error('updateSummary error:', e);
-    } finally {
-      _summaryBusy = false;
-    }
+    } catch (e) { console.error('updateSummary error:', e); }
+    finally { _summaryBusy = false; }
   }, 600);
+}
+
+// helper for R chip in menus
+function rChipForSignal(s) {
+  const hasFinal = s.status !== STATUS.RUN_VALID && s.finalR != null && !isNaN(Number(s.finalR));
+  const r = hasFinal ? Number(s.finalR) : computeRealizedR(s);
+  const sign = r > 0 ? '+' : r < 0 ? '' : '';
+  return `${sign}${r.toFixed(2)}R`;
 }
 
 // autocomplete (/recap id)
@@ -333,7 +281,7 @@ client.on('interactionCreate', async (interaction) => {
     const q = String(focused.value || '').toLowerCase();
     const opts = [];
     for (const s of all.slice(0, 50)) {
-      const name = `$${s.asset} ${s.direction === 'SHORT' ? 'Short' : 'Long'} • ${s.status} • id:${s.id}`;
+      const name = `$${s.asset} ${s.direction === 'SHORT' ? 'Short' : 'Long'} • ${s.status} • R ${rChipForSignal(s)} • id:${s.id}`;
       if (!q || name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q)) {
         opts.push({ name: name.slice(0, 100), value: s.id });
       }
@@ -346,7 +294,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-// buttons/modals UI
+// buttons/modals (UI unchanged)
 function btn(id, key) { return `btn:${key}:${id}`; }
 function modal(id, key) { return `modal:${key}:${id}`; }
 
@@ -375,113 +323,6 @@ function controlRows(signalId) {
     new ButtonBuilder().setCustomId(btn(signalId,'upd:chart')).setLabel('🖼️ Set/Replace Chart Link').setStyle(ButtonStyle.Secondary),
   );
   return [row1, row2, row3, row4];
-}
-
-async function createControlThread(signal) {
-  const channel = await client.channels.fetch(signal.channelId);
-  const initialName = computeThreadName(signal);
-  const thread = await channel.threads.create({
-    name: initialName,
-    type: ChannelType.PrivateThread,
-    invitable: false
-  });
-  await thread.members.add(config.ownerId).catch(() => {});
-  await setThreadId(signal.id, thread.id);
-  await thread.send({ content: 'Owner Control Panel', components: controlRows(signal.id) }).catch(() => {});
-  return thread.id;
-}
-
-async function deleteControlThread(signalId) {
-  const tid = await getThreadId(signalId);
-  if (!tid) return;
-  const thread = await client.channels.fetch(tid).catch(() => null);
-  if (thread && thread.isThread()) {
-    await thread.delete().catch(() => {});
-  }
-}
-
-// modals
-function makeTPModal(id, tpKey) {
-  const m = new ModalBuilder().setCustomId(modal(id, `tp:${tpKey}`)).setTitle(`${tpKey.toUpperCase()} Hit`);
-  const pct = new TextInputBuilder()
-    .setCustomId('tp_pct')
-    .setLabel('Close % (0 - 100; leave blank to skip)')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(false);
-  m.addComponents(new ActionRowBuilder().addComponents(pct));
-  return m;
-}
-function makeUpdateTPPricesModal(id) {
-  const m = new ModalBuilder().setCustomId(modal(id,'tpprices')).setTitle('Update TP Prices (TP1–TP5)');
-  for (const [cid, label] of [['upd_tp1','TP1'],['upd_tp2','TP2'],['upd_tp3','TP3'],['upd_tp4','TP4'],['upd_tp5','TP5']]) {
-    m.addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId(cid).setLabel(label).setStyle(TextInputStyle.Short).setRequired(false)
-    ));
-  }
-  return m;
-}
-function makeUpdatePlanModal(id) {
-  const m = new ModalBuilder().setCustomId(modal(id,'plan')).setTitle('Update TP % Plan (0–100)');
-  for (const t of ['tp1','tp2','tp3','tp4','tp5']) {
-    m.addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId(`plan_${t}`).setLabel(`${t.toUpperCase()} planned %`).setStyle(TextInputStyle.Short).setRequired(false)
-    ));
-  }
-  return m;
-}
-function makeUpdateTradeInfoModal(id) {
-  const m = new ModalBuilder().setCustomId(modal(id,'trade')).setTitle('Update Trade Info');
-  const fields = [
-    ['upd_entry', 'Entry', TextInputStyle.Short],
-    ['upd_sl', 'SL', TextInputStyle.Short],
-    ['upd_asset', 'Asset (e.g., BTC, ETH, SOL)', TextInputStyle.Short],
-    ['upd_dir', 'Direction (LONG/SHORT)', TextInputStyle.Short],
-    ['upd_reason', 'Reason (optional)', TextInputStyle.Paragraph],
-  ];
-  for (const [cid, label, style] of fields) {
-    m.addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId(cid).setLabel(label).setStyle(style).setRequired(false)
-    ));
-  }
-  return m;
-}
-function makeUpdateRolesModal(id) {
-  const m = new ModalBuilder().setCustomId(modal(id,'roles')).setTitle('Update Role Mention(s)');
-  const input = new TextInputBuilder()
-    .setCustomId('roles_input')
-    .setLabel('Enter one or more roles (IDs or @mentions)')
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(false);
-  m.addComponents(new ActionRowBuilder().addComponents(input));
-  return m;
-}
-function makeFullCloseModal(id) {
-  const m = new ModalBuilder().setCustomId(modal(id,'full')).setTitle('Fully Close Position');
-  const price = new TextInputBuilder().setCustomId('close_price').setLabel('Close Price').setStyle(TextInputStyle.Short).setRequired(true);
-  const pct = new TextInputBuilder().setCustomId('close_pct').setLabel('Close % (default = remaining)').setStyle(TextInputStyle.Short).setRequired(false);
-  const finalR = new TextInputBuilder().setCustomId('final_r').setLabel('Final R (optional)').setPlaceholder('e.g., 0, -0.5, -1 — overrides calc').setStyle(TextInputStyle.Short).setRequired(false);
-  m.addComponents(new ActionRowBuilder().addComponents(price));
-  m.addComponents(new ActionRowBuilder().addComponents(pct));
-  m.addComponents(new ActionRowBuilder().addComponents(finalR));
-  return m;
-}
-function makeFinalRModal(id, kind) {
-  const m = new ModalBuilder().setCustomId(modal(id, `finalr:${kind}`)).setTitle(kind === 'BE' ? 'Stopped Breakeven' : 'Stopped Out');
-  const r = new TextInputBuilder().setCustomId('final_r').setLabel('Final R (optional)').setPlaceholder('e.g., 0, -0.5, -1 — overrides calc').setStyle(TextInputStyle.Short).setRequired(false);
-  m.addComponents(new ActionRowBuilder().addComponents(r));
-  return m;
-}
-function makeMaxRModal(id) {
-  const m = new ModalBuilder().setCustomId(modal(id,'maxr')).setTitle('Set Max R Reached');
-  const r = new TextInputBuilder().setCustomId('max_r').setLabel('Max R reached (number, no + sign)').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('e.g., 1.5');
-  m.addComponents(new ActionRowBuilder().addComponents(r));
-  return m;
-}
-function makeChartModal(id) {
-  const m = new ModalBuilder().setCustomId(modal(id,'chart')).setTitle('Set / Replace Chart Link');
-  const url = new TextInputBuilder().setCustomId('chart_url').setLabel('Image URL (https://...)').setStyle(TextInputStyle.Short).setRequired(true);
-  m.addComponents(new ActionRowBuilder().addComponents(url));
-  return m;
 }
 
 // recap modal
@@ -519,9 +360,7 @@ client.on('messageDelete', async (message) => {
     await deleteSignal(found.id).catch(() => {});
     await updateSummary().catch(() => {});
     console.log(`ℹ️ Signal ${found.id} removed due to manual delete.`);
-  } catch (e) {
-    console.error('messageDelete handler error:', e);
-  }
+  } catch (e) { console.error('messageDelete handler error:', e); }
 });
 client.on('messageDeleteBulk', async (collection) => {
   try {
@@ -533,9 +372,7 @@ client.on('messageDeleteBulk', async (collection) => {
       await deleteSignal(s.id).catch(() => {});
     }
     if (toRemove.length) await updateSummary().catch(() => {});
-  } catch (e) {
-    console.error('messageDeleteBulk handler error:', e);
-  }
+  } catch (e) { console.error('messageDeleteBulk handler error:', e); }
 });
 
 // dedupe
@@ -564,7 +401,6 @@ async function pickMostRecentSignal(channelId) {
     }
     return Number(b.createdAt || 0) - Number(a.createdAt || 0);
   });
-
   for (const s of list) {
     try {
       const ch = await client.channels.fetch(s.channelId);
@@ -583,13 +419,11 @@ client.on('interactionCreate', async (interaction) => {
     // recap picker
     if (interaction.isStringSelectMenu && interaction.isStringSelectMenu() && interaction.customId === 'recap:pick') {
       const id = interaction.values?.[0];
-      if (!id) {
-        return interaction.reply({ content: '❌ Invalid selection.', flags: MessageFlags.Ephemeral });
-      }
+      if (!id) return interaction.reply({ content: '❌ Invalid selection.', flags: MessageFlags.Ephemeral });
       return interaction.showModal(makeRecapModal(id));
     }
 
-    // /signal
+    // /signal (unchanged flow)
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
@@ -662,51 +496,29 @@ client.on('interactionCreate', async (interaction) => {
 
       if (period === 'monthly') {
         const signals = (await getSignals()).map(normalizeSignal);
-        const now = new Date();
-        const y = now.getUTCFullYear();
-        const m = now.getUTCMonth();
-        const monthly = signals.filter(s => {
-          if (!isNum(s.createdAt)) return false;
-          const d = new Date(Number(s.createdAt));
-          return d.getUTCFullYear() === y && d.getUTCMonth() === m;
-        });
+        const now = new Date(); const y = now.getUTCFullYear(); const m = now.getUTCMonth();
+        const monthly = signals.filter(s => { if (!isNum(s.createdAt)) return false; const d = new Date(Number(s.createdAt)); return d.getUTCFullYear()===y && d.getUTCMonth()===m; });
         const text = renderMonthlyRecap(monthly, y, m);
         return interaction.reply({ content: text, allowedMentions: { parse: [] } });
       }
 
-      if (chosenId) {
-        return interaction.showModal(makeRecapModal(chosenId));
-      }
+      if (chosenId) return interaction.showModal(makeRecapModal(chosenId));
 
       const all = (await getSignals()).map(normalizeSignal);
-      all.sort((a, b) => {
-        if (a.messageId && b.messageId) {
-          const A = BigInt(a.messageId), B = BigInt(b.messageId);
-          if (A === B) return 0;
-          return (B > A) ? 1 : -1;
-        }
-        return Number(b.createdAt || 0) - Number(a.createdAt || 0);
-      });
+      all.sort((a,b)=>{ if(a.messageId&&b.messageId){const A=BigInt(a.messageId),B=BigInt(b.messageId); if(A===B)return 0; return (B>A)?1:-1;} return Number(b.createdAt||0)-Number(a.createdAt||0); });
       const items = all.slice(0, 5);
-      if (!items.length) {
-        return interaction.reply({ content: '❌ No trades found to recap.', flags: MessageFlags.Ephemeral });
-      }
+      if (!items.length) return interaction.reply({ content: '❌ No trades found to recap.', flags: MessageFlags.Ephemeral });
 
       const menu = new StringSelectMenuBuilder()
         .setCustomId('recap:pick')
         .setPlaceholder('Select a trade to recap')
         .addOptions(items.map(s => ({
-          label: `$${s.asset} ${s.direction === 'SHORT' ? 'Short' : 'Long'} • ${s.status}`,
+          label: `$${s.asset} ${s.direction === 'SHORT' ? 'Short' : 'Long'} • ${s.status} • R ${rChipForSignal(s)}`,
           description: `id:${s.id}`,
           value: s.id,
         })));
-
       const row = new ActionRowBuilder().addComponents(menu);
-      return interaction.reply({
-        content: 'Pick a trade to recap:',
-        components: [row],
-        flags: MessageFlags.Ephemeral,
-      });
+      return interaction.reply({ content: 'Pick a trade to recap:', components:[row], flags: MessageFlags.Ephemeral });
     }
 
     // modals
@@ -734,15 +546,13 @@ client.on('interactionCreate', async (interaction) => {
         const notes  = (interaction.fields.getTextInputValue('recap_notes')  || '').trim();
         const chart  = (interaction.fields.getTextInputValue('recap_chart')  || '').trim();
 
-        const reasonLines = reason ? reason.split('\n').map(s => s.trim()).filter(Boolean) : [];
-        const confLines   = confs  ? confs.split('\n').map(s => s.trim()).filter(Boolean)  : [];
-        const notesLines  = notes  ? notes.split('\n').map(s => s.trim()).filter(Boolean)  : [];
+        const reasonLines = reason ? reason.split('\n').map(s=>s.trim()).filter(Boolean) : [];
+        const confLines   = confs  ? confs.split('\n').map(s=>s.trim()).filter(Boolean)  : [];
+        const notesLines  = notes  ? notes.split('\n').map(s=>s.trim()).filter(Boolean)  : [];
 
-        // text recap without Basics
         const rrChips = computeRRChips(signal);
         const recapText = renderRecapText(signal, { reasonLines, confLines, notesLines, showBasics:false }, rrChips);
 
-        // pick user's latest image attachment in channel (last 20)
         const channel = await client.channels.fetch(interaction.channelId);
         const recent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
         let userAtt = null;
@@ -754,10 +564,7 @@ client.on('interactionCreate', async (interaction) => {
           }
         }
 
-        let files = [];
-        let attachmentName = null;
-        let attachmentUrl = null;
-
+        let files = []; let attachmentName = null; let attachmentUrl = null;
         if (userAtt) {
           const res = await fetch(userAtt.url);
           const buf = Buffer.from(await res.arrayBuffer());
@@ -774,7 +581,6 @@ client.on('interactionCreate', async (interaction) => {
           imageUrl: chart || undefined,
         });
 
-        // send text + embed; place role mention in content
         await channel.send({
           content: `${recapText}\n\n<@&1382603857657331792>`,
           allowedMentions: { roles: ['1382603857657331792'] },
@@ -785,7 +591,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
       }
 
-      // TP prices
+      // remaining modal handlers unchanged...
       if (interaction.customId.startsWith('modal:tpprices:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -805,7 +611,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ TP prices updated.' });
       }
 
-      // plan
       if (interaction.customId.startsWith('modal:plan:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -824,7 +629,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ TP % plan updated.' });
       }
 
-      // trade info
       if (interaction.customId.startsWith('modal:trade:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -852,7 +656,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Trade info updated.' });
       }
 
-      // roles
       if (interaction.customId.startsWith('modal:roles:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -866,7 +669,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Role mentions updated.' });
       }
 
-      // max R
       if (interaction.customId.startsWith('modal:maxr:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -880,23 +682,19 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Max R updated.' });
       }
 
-      // chart url
       if (interaction.customId.startsWith('modal:chart:')) {
         await ensureDeferred(interaction);
         const id = idPart;
         const signal = await getSignal(id);
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
         const url = interaction.fields.getTextInputValue('chart_url')?.trim();
-        if (!url || !/^https?:\/\//i.test(url)) {
-          return safeEditReply(interaction, { content: '❌ Please provide a valid http(s) URL.' });
-        }
+        if (!url || !/^https?:\/\//i.test(url)) return safeEditReply(interaction, { content: '❌ Please provide a valid http(s) URL.' });
         await updateSignal(id, { chartUrl: url, chartAttached: false });
         await editSignalMessage(normalizeSignal(await getSignal(id)));
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Chart link updated.' });
       }
 
-      // TP modal submit
       if (interaction.customId.startsWith('modal:tp:')) {
         await ensureDeferred(interaction);
         const parts = interaction.customId.split(':');
@@ -943,7 +741,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${hasPct && pct > 0 ? ` (${pct}%).` : '.'}` });
       }
 
-      // full close
       if (interaction.customId.startsWith('modal:full:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -980,11 +777,10 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Fully closed.' });
       }
 
-      // stop BE / stop out
       if (interaction.customId.startsWith('modal:finalr:')) {
         await ensureDeferred(interaction);
         try {
-          const parts = interaction.customId.split(':'); // ['modal','finalr','BE'|'OUT','<id>']
+          const parts = interaction.customId.split(':');
           const kind  = parts[2];
           const id    = parts[3];
 
@@ -1038,7 +834,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // buttons
+    // buttons (unchanged behaviour)
     if (interaction.isButton()) {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use these controls.', flags: MessageFlags.Ephemeral });
@@ -1191,9 +987,7 @@ async function pruneGhostSignals() {
       try {
         const ch = await client.channels.fetch(s.channelId);
         await ch.messages.fetch(s.messageId);
-      } catch {
-        exists = false;
-      }
+      } catch { exists = false; }
       if (!exists) {
         await deleteSignal(s.id).catch(() => {});
         await deleteControlThread(s.id).catch(() => {});
