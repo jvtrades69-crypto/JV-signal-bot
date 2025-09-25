@@ -57,13 +57,13 @@ function buildTitle(signal){
   const circle =signal.direction==='SHORT'?'🔴':'🟢';
   const base=`**$${String(signal.asset).toUpperCase()} | ${dirWord} ${circle}**`;
   const { realized }=computeRealized(signal);
-  if(signal.status==='STOPPED_OUT') return `${base} ( Loss -${Math.abs(realized).toFixed(2)}R )`;
+  if(signal.status==='STOPPED_OUT') return `${base} (**Loss -${Math.abs(realized).toFixed(2)}R**)`;
   if(signal.status==='STOPPED_BE'){
     const anyFill=(signal.fills||[]).length>0;
-    return `${base} ( ${anyFill?`Win +${realized.toFixed(2)}R`:'Breakeven'} )`;
+    return `${base} (**${anyFill?`Win +${realized.toFixed(2)}R`:'Breakeven'}**)`;
   }
-  if(signal.status==='CLOSED') return `${base} ( Win +${realized.toFixed(2)}R )`;
-  if((signal.fills||[]).length>0) return `${base} ( Win +${realized.toFixed(2)}R so far )`;
+  if(signal.status==='CLOSED') return `${base} (**Win +${realized.toFixed(2)}R**)`;
+  if((signal.fills||[]).length>0) return `${base} (**Win +${realized.toFixed(2)}R so far**)`;
   return base;
 }
 
@@ -161,7 +161,9 @@ function renderSignalText(signal){
         else lines.push('0.00R ( stopped breakeven )');
       }else if(signal.status==='STOPPED_OUT'){
         lines.push(`${pretty} ( stopped out )`);
-      }else if(list){ lines.push(`${pretty} so far ( ${list} )`); }
+      }else if(list){
+        lines.push(`${pretty} so far ( ${list} )`);
+      }
     }
   }
 
@@ -350,9 +352,12 @@ function renderRecapEmbed(
   const closedPct=order.reduce((a,k)=>a+(tpPerc[k]||0),0);
   const posLine=closedPct?`${closedPct}% closed before stop`:'No partials';
 
+  const storedMaxR = (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) ? Number(signal.maxR) : null;
+  const peakToShow = (typeof peakOv === 'number') ? peakOv : storedMaxR;
+
   const fields=[
     {name:'Result', value:`R: ${finalR.toFixed(2)}`, inline:true},
-    ...(typeof peakOv==='number' ? [{name:'Peak R', value:`${peakOv.toFixed(2)}R`, inline:true}] : []),
+    ...(peakToShow != null ? [{name:'Peak R', value:`${peakToShow.toFixed(2)}R`, inline:true}] : []),
     {name:'Progress', value:progress, inline:true},
     {name:'Position', value:posLine, inline:true},
   ];
