@@ -1,9 +1,4 @@
-// index.js — JV Signal Bot (stable)
-// + createdAt (for monthly), monthly recap
-// + SL→BE persistence: beSet (bool) + beMovedAfter ('TP1' | null)
-//   - On press: beSet=true. If TP1 already hit, beMovedAfter='TP1'; else null.
-//   - Later TP hits: only TP1 can set beMovedTo='TP1' (never TP2–TP5).
-//   - We never upgrade beyond TP1 label.
+// index.js — JV Signal Bot
 
 import {
   Client,
@@ -16,7 +11,8 @@ import {
   TextInputBuilder,
   TextInputStyle,
   MessageFlags,
-  StringSelectMenuBuilder, // 5-trade picker for /recap
+  StringSelectMenuBuilder,
+  AttachmentBuilder
 } from 'discord.js';
 import { customAlphabet } from 'nanoid';
 import config from './config.js';
@@ -24,20 +20,20 @@ import {
   saveSignal, getSignal, getSignals, updateSignal, deleteSignal,
   getThreadId, setThreadId
 } from './store.js';
-import { renderSignalText, renderSummaryText, renderRecapText, renderMonthlyRecap } from './embeds.js';
+import {
+  renderSignalText, renderSummaryText, renderRecapText, renderMonthlyRecap, renderRecapEmbed
+} from './embeds.js';
 
 const nano = customAlphabet('1234567890abcdef', 10);
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
 });
 
-// ---- global error catcher ----
+// errors
 process.on('unhandledRejection', (err) => console.error('unhandledRejection:', err));
 process.on('uncaughtException',  (err) => console.error('uncaughtException:', err));
 
-// ------------------------------
-// Utility & core signal helpers
-// ------------------------------
+// utils
 const isNum = (v) => v !== undefined && v !== null && v !== '' && !isNaN(Number(v));
 const toNumOrNull = (v) => (isNum(v) ? Number(v) : null);
 
@@ -53,13 +49,8 @@ const TP_KEYS = ['tp1', 'tp2', 'tp3', 'tp4', 'tp5'];
 function rAtPrice(direction, entry, slOriginal, price) {
   if (!isNum(entry) || !isNum(slOriginal) || !isNum(price)) return null;
   const E = Number(entry), S = Number(slOriginal), P = Number(price);
-  if (direction === DIR.LONG) {
-    const risk = E - S; if (risk <= 0) return null;
-    return (P - E) / risk;
-  } else {
-    const risk = S - E; if (risk <= 0) return null;
-    return (E - P) / risk;
-  }
+  if (direction === DIR.LONG) { const risk = E - S; if (risk <= 0) return null; return (P - E) / risk; }
+  const risk = S - E; if (risk <= 0) return null; return (E - P) / risk;
 }
 
 function computeRRChips(signal) {
@@ -95,12 +86,9 @@ function normalizeSignal(raw) {
   if (!isNum(s.maxR)) s.maxR = null;
   s.chartUrl = s.chartUrl || null;
   s.chartAttached = !!s.chartAttached;
-
-  // NEW persisted fields (backward compatible)
-  s.beSet = Boolean(s.beSet);              // pressed SL→BE at least once
-  s.beMovedAfter = s.beMovedAfter || null; // only 'TP1' or null by our rule
+  s.beSet = Boolean(s.beSet);
+  s.beMovedAfter = s.beMovedAfter || null;
   s.createdAt = isNum(s.createdAt) ? Number(s.createdAt) : s.createdAt || null;
-
   return s;
 }
 
@@ -109,9 +97,7 @@ function isSlMovedToBE(signal) {
   return s.status === STATUS.RUN_VALID && isNum(s.entry) && isNum(s.sl) && Number(s.entry) === Number(s.sl);
 }
 
-// ------------------------------
-// Mentions
-// ------------------------------
+// mentions
 function extractRoleIds(defaultRoleId, extraRoleRaw) {
   const ids = [];
   if (defaultRoleId) ids.push(defaultRoleId);
@@ -129,9 +115,7 @@ function buildMentions(defaultRoleId, extraRoleRaw, forEdit = false) {
   return { content, allowedMentions: { roles: ids } };
 }
 
-// ------------------------------
-// Ack helpers
-// ------------------------------
+// acks
 async function ensureDeferred(interaction) {
   try {
     if (!interaction.deferred && !interaction.replied) {
@@ -155,9 +139,7 @@ async function safeEditReply(interaction, payload) {
   }
 }
 
-// ------------------------------
-// Thread title helpers
-// ------------------------------
+// thread title
 function computeRealizedR(signal) {
   const fills = Array.isArray(signal.fills) ? signal.fills : [];
   if (!fills.length) return 0;
@@ -170,13 +152,11 @@ function computeRealizedR(signal) {
   }
   return Number(sum.toFixed(2));
 }
-
 function rToTitlePiece(r) {
   const x = Number(r || 0);
   if (!isFinite(x) || x === 0) return '';
   return ` ${x > 0 ? '+' : ''}${x.toFixed(2)}`;
 }
-
 function computeThreadName(signal) {
   const base = `${String(signal.asset).toUpperCase()} ${signal.direction === DIR.SHORT ? 'short' : 'long'}`;
   if (signal.status === STATUS.STOPPED_OUT) return `${base} stopped out`;
@@ -190,7 +170,6 @@ function computeThreadName(signal) {
   if (isNum(signal.maxR) && Number(signal.maxR) !== 0) return `${base}${rToTitlePiece(Number(signal.maxR))}`;
   return base;
 }
-
 async function renameControlThread(signal) {
   try {
     const tid = await getThreadId(signal.id);
@@ -204,9 +183,7 @@ async function renameControlThread(signal) {
   } catch {}
 }
 
-// ------------------------------
-// Posting / Editing messages
-// ------------------------------
+// posting live signal
 async function postSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
   const rrChips = computeRRChips(signal);
@@ -256,9 +233,7 @@ async function deleteSignalMessage(signal) {
   if (msg) await msg.delete().catch(() => {});
 }
 
-// ------------------------------
-// Summary (debounced)
-// ------------------------------
+// summary
 let _summaryTimer = null;
 let _summaryBusy = false;
 
@@ -337,9 +312,7 @@ async function updateSummary() {
   }, 600);
 }
 
-// ------------------------------
-// AUTOCOMPLETE for /recap id
-// ------------------------------
+// autocomplete (/recap id)
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isAutocomplete()) return;
   try {
@@ -348,7 +321,6 @@ client.on('interactionCreate', async (interaction) => {
     if (focused.name !== 'id') return;
 
     const all = (await getSignals()).map(normalizeSignal);
-    // Most recent first by messageId if present, else createdAt
     all.sort((a, b) => {
       if (a.messageId && b.messageId) {
         const A = BigInt(a.messageId), B = BigInt(b.messageId);
@@ -374,9 +346,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-// ------------------------------
-// Control UI (TPs + updates + closes)
-// ------------------------------
+// buttons/modals UI
 function btn(id, key) { return `btn:${key}:${id}`; }
 function modal(id, key) { return `modal:${key}:${id}`; }
 
@@ -430,9 +400,7 @@ async function deleteControlThread(signalId) {
   }
 }
 
-// ------------------------------
-// Modals
-// ------------------------------
+// modals
 function makeTPModal(id, tpKey) {
   const m = new ModalBuilder().setCustomId(modal(id, `tp:${tpKey}`)).setTitle(`${tpKey.toUpperCase()} Hit`);
   const pct = new TextInputBuilder()
@@ -516,8 +484,7 @@ function makeChartModal(id) {
   return m;
 }
 
-// === Recap modal ===
-// + Added 'recap_chart' (optional custom image URL for recap)
+// recap modal
 function makeRecapModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'recap')).setTitle('Post Trade Recap');
   m.addComponents(new ActionRowBuilder().addComponents(
@@ -535,14 +502,13 @@ function makeRecapModal(id) {
   return m;
 }
 
-// ------------------------------
-// Bot lifecycle
-// ------------------------------
+// lifecycle
 client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   await pruneGhostSignals().catch(() => {});
 });
 
+// deletes
 client.on('messageDelete', async (message) => {
   try {
     if (!message) return;
@@ -557,7 +523,6 @@ client.on('messageDelete', async (message) => {
     console.error('messageDelete handler error:', e);
   }
 });
-
 client.on('messageDeleteBulk', async (collection) => {
   try {
     const ids = new Set(Array.from(collection.keys()));
@@ -573,9 +538,7 @@ client.on('messageDeleteBulk', async (collection) => {
   }
 });
 
-// ------------------------------
-// Interactions (dedupe guard)
-// ------------------------------
+// dedupe
 const claimed = new Set();
 const CLAIM_TTL_MS = 60_000;
 function tryClaimInteraction(interaction) {
@@ -586,7 +549,7 @@ function tryClaimInteraction(interaction) {
   return true;
 }
 
-// Pick most recent signal (prefers current channel)
+// recent signal picker
 async function pickMostRecentSignal(channelId) {
   const all = (await getSignals()).map(normalizeSignal).filter(s => s.messageId);
   const inChan = all.filter(s => s.channelId === channelId);
@@ -597,9 +560,8 @@ async function pickMostRecentSignal(channelId) {
     if (aId && bId) {
       const A = BigInt(aId), B = BigInt(bId);
       if (A === B) return 0;
-      return (B > A) ? 1 : -1; // newest first
+      return (B > A) ? 1 : -1;
     }
-    // fallback by createdAt if needed
     return Number(b.createdAt || 0) - Number(a.createdAt || 0);
   });
 
@@ -613,14 +575,12 @@ async function pickMostRecentSignal(channelId) {
   return null;
 }
 
-// ------------------------------
-// Interaction router
-// ------------------------------
+// router
 client.on('interactionCreate', async (interaction) => {
   try {
     if (!tryClaimInteraction(interaction)) return;
 
-    // --- recap picker selection -> open recap modal ---
+    // recap picker
     if (interaction.isStringSelectMenu && interaction.isStringSelectMenu() && interaction.customId === 'recap:pick') {
       const id = interaction.values?.[0];
       if (!id) {
@@ -646,13 +606,11 @@ client.on('interactionCreate', async (interaction) => {
       const tp5        = interaction.options.getString('tp5');
       const reason     = interaction.options.getString('reason');
       const extraRole  = interaction.options.getString('extra_role');
-
       const tp1_pct = interaction.options.getString('tp1_pct');
       const tp2_pct = interaction.options.getString('tp2_pct');
       const tp3_pct = interaction.options.getString('tp3_pct');
       const tp4_pct = interaction.options.getString('tp4_pct');
       const tp5_pct = interaction.options.getString('tp5_pct');
-
       const chartAtt  = interaction.options.getAttachment?.('chart');
 
       if (assetSel === 'OTHER') {
@@ -693,7 +651,7 @@ client.on('interactionCreate', async (interaction) => {
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
 
-    // === /recap (single trade OR monthly) ===
+    // /recap
     if (interaction.isChatInputCommand() && interaction.commandName === 'recap') {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
@@ -702,7 +660,6 @@ client.on('interactionCreate', async (interaction) => {
       const period   = interaction.options.getString?.('period') || null;
       const chosenId = interaction.options.getString?.('id')     || null;
 
-      // Monthly recap
       if (period === 'monthly') {
         const signals = (await getSignals()).map(normalizeSignal);
         const now = new Date();
@@ -717,12 +674,10 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: text, allowedMentions: { parse: [] } });
       }
 
-      // If id provided -> open modal directly
       if (chosenId) {
         return interaction.showModal(makeRecapModal(chosenId));
       }
 
-      // Otherwise show 5 most recent trades picker
       const all = (await getSignals()).map(normalizeSignal);
       all.sort((a, b) => {
         if (a.messageId && b.messageId) {
@@ -754,7 +709,7 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
-    // ===== MODALS =====
+    // modals
     if (interaction.isModalSubmit()) {
       const idPart = interaction.customId.split(':').pop();
 
@@ -779,32 +734,58 @@ client.on('interactionCreate', async (interaction) => {
         const notes  = (interaction.fields.getTextInputValue('recap_notes')  || '').trim();
         const chart  = (interaction.fields.getTextInputValue('recap_chart')  || '').trim();
 
+        const reasonLines = reason ? reason.split('\n').map(s => s.trim()).filter(Boolean) : [];
+        const confLines   = confs  ? confs.split('\n').map(s => s.trim()).filter(Boolean)  : [];
+        const notesLines  = notes  ? notes.split('\n').map(s => s.trim()).filter(Boolean)  : [];
+
+        // text recap without Basics
         const rrChips = computeRRChips(signal);
-        const recapText = renderRecapText(signal, {
-          reasonLines: reason ? reason.split('\n').map(s => s.trim()).filter(Boolean) : [],
-          confLines:   confs  ? confs.split('\n').map(s => s.trim()).filter(Boolean)  : [],
-          notesLines:  notes  ? notes.split('\n').map(s => s.trim()).filter(Boolean)  : [],
-        }, rrChips);
+        const recapText = renderRecapText(signal, { reasonLines, confLines, notesLines, showBasics:false }, rrChips);
 
-        // Always tag @trade recap role; restrict allowedMentions to that role only
-        const mention = '<@&1382603857657331792>';
-        const payload = {
-          content: `${recapText}\n\n${mention}`,
-          allowedMentions: { roles: ['1382603857657331792'] }
-        };
-
-        // Attach ONLY the custom recap image if provided (ignore signal.chartUrl here)
-        if (chart && /^https?:\/\//i.test(chart)) {
-          payload.files = [chart];
+        // pick user's latest image attachment in channel (last 20)
+        const channel = await client.channels.fetch(interaction.channelId);
+        const recent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
+        let userAtt = null;
+        if (recent && recent.size) {
+          for (const m of recent.values()) {
+            if (m.author?.id !== interaction.user.id) continue;
+            const att = m.attachments?.first();
+            if (att && att.contentType && att.contentType.startsWith('image/')) { userAtt = att; break; }
+          }
         }
 
-        const channel = await client.channels.fetch(interaction.channelId);
-        await channel.send(payload);
+        let files = [];
+        let attachmentName = null;
+        let attachmentUrl = null;
+
+        if (userAtt) {
+          const res = await fetch(userAtt.url);
+          const buf = Buffer.from(await res.arrayBuffer());
+          attachmentName = userAtt.name || 'chart.png';
+          files = [ new AttachmentBuilder(buf, { name: attachmentName }) ];
+          attachmentUrl = userAtt.url;
+        }
+
+        const embedPack = renderRecapEmbed(signal, {
+          roleId: '1382603857657331792',
+          notesLines,
+          attachmentName,
+          attachmentUrl,
+          imageUrl: chart || undefined,
+        });
+
+        // send text + embed; place role mention in content
+        await channel.send({
+          content: `${recapText}\n\n<@&1382603857657331792>`,
+          allowedMentions: { roles: ['1382603857657331792'] },
+          embeds: embedPack.embeds,
+          files
+        });
 
         return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
       }
 
-      // Remaining modal handlers (TP prices / plan / trade / roles / maxR / chart / TP hit / full close / final R)
+      // TP prices
       if (interaction.customId.startsWith('modal:tpprices:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -824,6 +805,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ TP prices updated.' });
       }
 
+      // plan
       if (interaction.customId.startsWith('modal:plan:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -842,6 +824,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ TP % plan updated.' });
       }
 
+      // trade info
       if (interaction.customId.startsWith('modal:trade:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -869,6 +852,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Trade info updated.' });
       }
 
+      // roles
       if (interaction.customId.startsWith('modal:roles:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -882,6 +866,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Role mentions updated.' });
       }
 
+      // max R
       if (interaction.customId.startsWith('modal:maxr:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -895,6 +880,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Max R updated.' });
       }
 
+      // chart url
       if (interaction.customId.startsWith('modal:chart:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -910,10 +896,11 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Chart link updated.' });
       }
 
+      // TP modal submit
       if (interaction.customId.startsWith('modal:tp:')) {
         await ensureDeferred(interaction);
         const parts = interaction.customId.split(':');
-        const tpKey = parts[2];           // tp1..tp5
+        const tpKey = parts[2];
         const id = parts[3];
 
         let signal = normalizeSignal(await getSignal(id));
@@ -935,11 +922,9 @@ client.on('interactionCreate', async (interaction) => {
           if (!already) signal.fills.push({ pct: Number(pct), price: Number(tpPrice), source: tpUpper });
         }
 
-        // mark TP hit
         signal.latestTpHit = tpUpper;
         signal.tpHits[tpUpper] = true;
 
-        // Only TP1 can set the "after" marker (and only if BE was pressed and not labeled yet)
         const extra = {};
         if (signal.beSet && !signal.beMovedAfter && tpUpper === 'TP1') {
           signal.beMovedAfter = 'TP1';
@@ -958,6 +943,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${hasPct && pct > 0 ? ` (${pct}%).` : '.'}` });
       }
 
+      // full close
       if (interaction.customId.startsWith('modal:full:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -994,7 +980,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Fully closed.' });
       }
 
-      // --- SAFE Stopped BE / Stopped Out modal submit ---
+      // stop BE / stop out
       if (interaction.customId.startsWith('modal:finalr:')) {
         await ensureDeferred(interaction);
         try {
@@ -1018,7 +1004,6 @@ client.on('interactionCreate', async (interaction) => {
           if (hasFinalR) {
             signal.finalR = Number(finalRStr);
           } else {
-            // Close any remaining %
             const price = Number(kind === 'BE' ? signal.entry : (signal.slOriginal ?? signal.sl));
             const currentPct = (Array.isArray(signal.fills) ? signal.fills : []).reduce((a, f) => a + Number(f.pct || 0), 0);
             const remaining  = Math.max(0, 100 - currentPct);
@@ -1053,7 +1038,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // ===== BUTTONS =====
+    // buttons
     if (interaction.isButton()) {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use these controls.', flags: MessageFlags.Ephemeral });
@@ -1078,7 +1063,6 @@ client.on('interactionCreate', async (interaction) => {
         if (!sig0) return safeEditReply(interaction, { content: 'Signal not found.' });
         if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
 
-        // If any TP already hit, label with the HIGHEST hit (TP5..TP1). Else leave null.
         const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || null;
         const patch = { sl: Number(sig0.entry), validReentry: false, beSet: true };
         if (!sig0.beMovedAfter && highestHit) patch.beMovedAfter = highestHit;
@@ -1119,11 +1103,9 @@ client.on('interactionCreate', async (interaction) => {
           if (!already) sig.fills.push({ pct: Number(planPct), price: Number(tpPrice), source: tpUpper });
         }
 
-        // mark TP hit
         sig.latestTpHit = tpUpper;
         sig.tpHits[tpUpper] = true;
 
-        // Only TP1 can set the "after" marker (and only if BE was pressed and not labeled yet)
         const extra = {};
         if (sig.beSet && !sig.beMovedAfter && tpUpper === 'TP1') {
           sig.beMovedAfter = 'TP1';
@@ -1151,15 +1133,13 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-// ------------------------------
-// Create & Save Signal
-// ------------------------------
+// create/save signal
 const pendingSignals = new Map();
 
 async function createSignal(payload, channelId) {
   const signal = normalizeSignal({
     id: nano(),
-    createdAt: Date.now(), // NEW
+    createdAt: Date.now(),
     asset: String(payload.asset || '').toUpperCase(),
     direction: (payload.direction || 'LONG').toUpperCase() === 'SHORT' ? DIR.SHORT : DIR.LONG,
     entry: payload.entry,
@@ -1201,9 +1181,7 @@ async function createSignal(payload, channelId) {
   return signal;
 }
 
-// ------------------------------
-// One-time ghost prune
-// ------------------------------
+// ghost prune
 async function pruneGhostSignals() {
   try {
     const all = (await getSignals()).map(normalizeSignal);
