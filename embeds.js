@@ -88,7 +88,7 @@ function buildTitle(signal) {
     return `${base} ( ${anyFill ? `Win +${realized.toFixed(2)}R` : 'Breakeven'} )`;
   }
   if (signal.status === 'CLOSED') return `${base} ( Win +${realized.toFixed(2)}R )`;
-  if ((signal.fills || []).length > 0) return `${base} ( Win +${realized.toFixed(2)}R so far )`;
+  if ((signal.fills || []).length > 0) return `${base} ( Win +${realized).toFixed(2)}R so far )`;
   return base;
 }
 
@@ -145,7 +145,6 @@ export function renderSignalText(signal) {
 
     const reentry = signal.validReentry ? '✅' : '❌';
 
-    // Show BE if you pressed it; add "after TPx" once captured
     const showBE = Boolean(signal.beSet) || Boolean(signal.beMovedAfter);
     const afterTxt = (signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : '');
     lines.push(`Valid for re-entry: ${reentry}${showBE ? ' | SL moved to breakeven' + afterTxt : ''}`);
@@ -412,28 +411,51 @@ export function renderMonthlyRecap(signals, year, monthIdx) {
   return [title, header, '', ...lines].join('\n');
 }
 
+// --------------------------------------------
+// Notes overrides parser for EMBED (final:/peak:)
+// --------------------------------------------
+function parseNotesOverrides(notesLines = []) {
+  let finalOv = null, peakOv = null;
+  const cleaned = [];
+  for (const raw of notesLines) {
+    const line = String(raw ?? '').trim();
+    const mFinal = line.match(/^final\s*:\s*([+-]?\d+(?:\.\d+)?)/i);
+    const mPeak  = line.match(/^(peak|max)\s*:\s*([+-]?\d+(?:\.\d+)?)/i);
+    if (mFinal) { finalOv = Number(mFinal[1]); continue; }
+    if (mPeak)  { peakOv  = Number(mPeak[2]);  continue; }
+    cleaned.push(line);
+  }
+  return { finalOv, peakOv, cleaned };
+}
+
 // ------------------------------
-// Recap EMBED (breakeven-aware, role tag, custom image)
+// Recap EMBED (breakeven-aware, role tag, custom/attachment image, Notes overrides)
 // ------------------------------
 export function renderRecapEmbed(
   signal,
   {
     roleId,                 // '123...' for @trade recap
-    imageUrl,               // user-supplied image URL for the recap
-    beToleranceR = 0.05,    // treat |finalR| < 0.05R as BE noise window
-    beAfterFallback = 'TP1',// used if we know BE but lack explicit latestTpHit
+    imageUrl,               // explicit image URL (optional)
+    attachmentUrl,          // URL of the uploaded file to use for image + link
+    chartUrl,               // optional explicit chart URL; falls back to attachment/image
+    notesLines = [],        // pass the same notes used by renderRecapText
+    beToleranceR = 0.05,
+    beAfterFallback = 'TP1',
     beColor = { win: 0x2ecc71, be: 0xf1c40f, loss: 0xe74c3c }
   } = {}
 ) {
   const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
   const circle  = signal.direction === 'SHORT' ? '🔴' : '🟢';
 
-  // Final R from stored value or realized from fills
+  const { finalOv, peakOv } = parseNotesOverrides(notesLines);
+
+  // Final R from stored/realized, with optional override
   const { realized } = computeRealized(signal);
   const computedFinal = (signal.status !== 'RUN_VALID' && signal.finalR != null)
     ? Number(signal.finalR)
     : realized;
-  const finalR = Number.isFinite(computedFinal) ? computedFinal : 0;
+  const finalRBase = Number.isFinite(computedFinal) ? computedFinal : 0;
+  const finalR = (typeof finalOv === 'number') ? finalOv : finalRBase;
 
   // BE classification
   const withinBE = Math.abs(finalR) < beToleranceR || signal.status === 'STOPPED_BE';
@@ -452,12 +474,10 @@ export function renderRecapEmbed(
       ? `Closed in **Profit**${signal.latestTpHit ? ` after **${signal.latestTpHit}**` : ''}`
       : `Closed in **Loss**`;
 
-  // Progress field
+  // Progress + position
   const tpHits = signal.tpHits || {};
   const order = ['TP1','TP2','TP3','TP4','TP5'];
   const progress = order.map(k => `${k} ${tpHits[k] ? '✅' : '⏳'}`).join('  •  ');
-
-  // Position field
   const tpPerc = computeTpPercents(signal);
   const closedPct = order.reduce((a,k)=>a + (tpPerc[k]||0), 0);
   const posLine = closedPct ? `${closedPct}% closed before stop` : 'No partials';
@@ -472,14 +492,24 @@ export function renderRecapEmbed(
     { name: 'Basics',   value: basics }
   ];
 
-  if (signal.jumpUrl) fields.push({ name: 'Link', value: `[View Original Trade](${signal.jumpUrl})` });
+  if (typeof peakOv === 'number') {
+    fields.splice(1, 0, { name: 'Peak R', value: `${peakOv.toFixed(2)}R`, inline: true });
+  }
+
+  // Links: “View chart” mirrors the image/attachment if no explicit chartUrl
+  const linkUrl = chartUrl || imageUrl || attachmentUrl || signal.chartUrl || null;
+  if (signal.jumpUrl) fields.push({ name: 'Signal', value: `[View original signal](${signal.jumpUrl})` });
+  if (linkUrl)        fields.push({ name: 'Chart',  value: `[View chart](${linkUrl})` });
 
   const color = state === 'CLOSED_WIN' ? beColor.win
               : state === 'CLOSED_LOSS' ? beColor.loss
               : beColor.be;
 
   const embed = { title, description: desc, fields, color };
-  if (imageUrl) embed.image = { url: imageUrl };
+
+  // Image preference: explicit imageUrl, else the uploaded attachment
+  const img = imageUrl || attachmentUrl;
+  if (img) embed.image = { url: img };
 
   return {
     content: roleId ? `<@&${roleId}>` : undefined,
