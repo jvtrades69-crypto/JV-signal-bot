@@ -978,6 +978,64 @@ client.on('interactionCreate', async (interaction) => {
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Fully closed.' });
       }
+
+      // --- SAFE Stopped BE / Stopped Out modal submit ---
+      if (interaction.customId.startsWith('modal:finalr:')) {
+        await ensureDeferred(interaction);
+        try {
+          const parts = interaction.customId.split(':'); // ['modal','finalr','BE'|'OUT','<id>']
+          const kind  = parts[2];
+          const id    = parts[3];
+
+          if (!id || (kind !== 'BE' && kind !== 'OUT')) {
+            return safeEditReply(interaction, { content: '❌ Invalid request.' });
+          }
+
+          let signal = normalizeSignal(await getSignal(id).catch(() => null));
+          if (!signal) return safeEditReply(interaction, { content: '❌ Trade not found.' });
+
+          const finalRStr = (interaction.fields.getTextInputValue('final_r') || '').trim();
+          const hasFinalR = finalRStr !== '';
+          if (hasFinalR && !isNum(finalRStr)) {
+            return safeEditReply(interaction, { content: '❌ Final R must be a number (e.g., 0, -1, -0.5).' });
+          }
+
+          if (hasFinalR) {
+            signal.finalR = Number(finalRStr);
+          } else {
+            // Close any remaining %
+            const price = Number(kind === 'BE' ? signal.entry : (signal.slOriginal ?? signal.sl));
+            const currentPct = (Array.isArray(signal.fills) ? signal.fills : []).reduce((a, f) => a + Number(f.pct || 0), 0);
+            const remaining  = Math.max(0, 100 - currentPct);
+            if (remaining > 0 && isNum(price)) {
+              signal.fills = Array.isArray(signal.fills) ? signal.fills : [];
+              signal.fills.push({ pct: remaining, price, source: kind === 'BE' ? 'STOP_BE' : 'STOP_OUT' });
+            }
+          }
+
+          signal.status = (kind === 'BE') ? STATUS.STOPPED_BE : STATUS.STOPPED_OUT;
+          signal.validReentry = false;
+
+          await updateSignal(id, {
+            fills: signal.fills,
+            status: signal.status,
+            validReentry: false,
+            ...(hasFinalR ? { finalR: signal.finalR } : {})
+          });
+
+          const updated = normalizeSignal(await getSignal(id));
+          await editSignalMessage(updated);
+          await updateSummary();
+          await deleteControlThread(id).catch(() => {});
+
+          return safeEditReply(interaction, {
+            content: kind === 'BE' ? '✅ Stopped at breakeven.' : '✅ Stopped out.'
+          });
+        } catch (err) {
+          console.error('modal:finalr submit error:', err);
+          return safeEditReply(interaction, { content: '❌ Could not record the stop. Check logs.' });
+        }
+      }
     }
 
     // ===== BUTTONS =====
