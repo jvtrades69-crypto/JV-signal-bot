@@ -1,11 +1,15 @@
 // embeds.js — text renderers
-// - "Active 🟩 | Trade running" when no TP hits yet
-// - "SL moved to breakeven" shows if you pressed the button (beSet=true) and adds "after TPx" once captured
-// - Monthly recap included
-// - Recap format matches user's examples + lightweight overrides via recap modal Notes:
-//    • "final: 1.00"              -> overrides Final R (display only)
-//    • "peak: 2.40" / "max: 2.40" -> overrides Peak/Max R (display only)
-//    • "TP1: Some caption"        -> adds caption after that TP line
+// - Status text for live signals (BE, TP hits, etc.)
+// - Monthly recap
+// - Recap format matches user's examples + OPTIONAL overrides via Notes:
+//
+// Notes keywords (display only; underlying trade stays unchanged):
+//   final: 1.34
+//   peak: 2.40   |  max: 2.40
+//   entry: 115928
+//   sl: 115000
+//   TP1: Buyside liquidity     (adds caption after TP1 line; same for TP2..TP5)
+//   tp: TP1 | 1.22R (50% closed) ✅ | Buyside liquidity   (add multiple 'tp:' to fully override TP list)
 
 function addCommas(num) {
   if (num === null || num === undefined || num === '') return String(num);
@@ -92,7 +96,7 @@ function buildTitle(signal) {
   return base;
 }
 
-// ---- main signal renderer ----
+// ---- main signal renderer (live signals) ----
 export function renderSignalText(signal) {
   const lines = [];
   lines.push(buildTitle(signal));
@@ -164,7 +168,7 @@ export function renderSignalText(signal) {
     lines.push('Valid for re-entry: ❌');
   }
 
-  // Max R
+  // Max R (live signal)
   if (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) {
     const mr = Number(signal.maxR).toFixed(2);
     const soFar = signal.status === 'RUN_VALID' ? ' so far' : '';
@@ -243,34 +247,50 @@ export function renderSummaryText(activeSignals) {
   return lines.join('\n').trimEnd();
 }
 
-// Single-trade recap — formatted like your examples, with overrides via Notes
+// ------------------------------
+// Recap (supports optional overrides via Notes)
+// ------------------------------
 export function renderRecapText(signal, extras = {}, rrChips = []) {
   const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
   const circle  = signal.direction === 'SHORT' ? '🔴' : '🟢';
 
-  // Parse overrides & TP captions from notes lines (optional)
+  // Parse overrides & TP captions from notes
   const reasonLines = extras.reasonLines || [];
   const confLines   = extras.confLines   || [];
   let   notesLines  = extras.notesLines  || [];
 
   let overrideFinal = null;
   let overridePeak  = null;
-  const tpCaptions  = {}; // { TP1: 'text', ... }
+  let entryOv = null;
+  let slOv    = null;
+  const tpCaptions  = {};  // {TP1:'...', ...}
+  const tpManual    = [];  // 'tp:' custom lines
 
   const parsedNotes = [];
   for (const raw of notesLines) {
     const line = String(raw).trim();
+
     const mFinal = line.match(/^final\s*:\s*([+-]?\d+(\.\d+)?)/i);
     const mPeak  = line.match(/^(peak|max)\s*:\s*([+-]?\d+(\.\d+)?)/i);
-    const mTP    = line.match(/^TP([1-5])\s*:\s*(.+)$/i);
+    const mTPcap = line.match(/^TP([1-5])\s*:\s*(.+)$/i);
+    const mEntry = line.match(/^entry\s*:\s*(.+)$/i);
+    const mSL    = line.match(/^sl\s*:\s*(.+)$/i);
+    const mTPman = line.match(/^tp\s*:\s*(.+)$/i);
 
     if (mFinal) { overrideFinal = Number(mFinal[1]); continue; }
     if (mPeak)  { overridePeak  = Number(mPeak[2]);  continue; }
-    if (mTP)    { tpCaptions[`TP${mTP[1]}`] = mTP[2].trim(); continue; }
+    if (mTPcap) { tpCaptions[`TP${mTPcap[1]}`] = mTPcap[2].trim(); continue; }
+    if (mEntry) { entryOv = mEntry[1].trim(); continue; }
+    if (mSL)    { slOv    = mSL[1].trim();    continue; }
+    if (mTPman) { tpManual.push(mTPman[1].trim()); continue; }
 
     parsedNotes.push(line);
   }
   notesLines = parsedNotes;
+
+  // Basics (with optional entry/sl overrides)
+  const entryShown = entryOv != null && entryOv !== '' ? entryOv : signal.entry;
+  const slShown    = slOv    != null && slOv    !== '' ? slOv    : signal.sl;
 
   // Final R (stored or realized) with optional display override
   const { realized } = computeRealized(signal);
@@ -282,25 +302,32 @@ export function renderRecapText(signal, extras = {}, rrChips = []) {
   const finalChip = signAbsR(final).text;
   const finalMark = final > 0 ? '✅' : final < 0 ? '❌' : '➖';
 
-  // TP lines (only those that actually hit)
+  // TP lines (auto list, unless manual 'tp:' lines provided)
+  const lines = [];
   const tpPerc  = computeTpPercents(signal);
   const tpHits  = signal.tpHits || {};
-  const tpLines = [];
-  for (let i = 1; i <= 5; i++) {
-    const key = `TP${i}`, k = `tp${i}`;
-    if (!tpHits[key]) continue;
-    const v = signal[k];
-    const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, v);
-    const pct = tpPerc[key] > 0 ? ` (${tpPerc[key]}% closed)` : '';
-    const caption = tpCaptions[key] ? ` | ${tpCaptions[key]}` : '';
-    tpLines.push(`- ${key} | ${r != null ? `${r.toFixed(2)}R` : '—'}${pct} ✅${caption}`);
+  let   tpLines = [];
+
+  if (tpManual.length) {
+    tpLines = tpManual.map(s => `- ${s}`);
+  } else {
+    for (let i = 1; i <= 5; i++) {
+      const key = `TP${i}`, k = `tp${i}`;
+      if (!tpHits[key]) continue;
+      const v = signal[k];
+      const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, v);
+      const pct = tpPerc[key] > 0 ? ` (${tpPerc[key]}% closed)` : '';
+      const caption = tpCaptions[key] ? ` | ${tpCaptions[key]}` : '';
+      tpLines.push(`- ${key} | ${r != null ? `${r.toFixed(2)}R` : '—'}${pct} ✅${caption}`);
+    }
   }
 
-  // Peak/Max R (stored or display override)
-  const storedMax = (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) ? Number(signal.maxR) : 0;
-  const peakR = (overridePeak != null && !Number.isNaN(overridePeak)) ? overridePeak : storedMax;
-
-  const lines = [];
+  // Peak/Max R (show only if override provided OR you set maxR on the trade)
+  const hasStoredMax = (signal.maxR != null && !Number.isNaN(Number(signal.maxR)));
+  const showPeakLine = (overridePeak != null && !Number.isNaN(Number(overridePeak))) || hasStoredMax;
+  const peakR = (overridePeak != null && !Number.isNaN(Number(overridePeak)))
+    ? Number(overridePeak)
+    : hasStoredMax ? Number(signal.maxR) : null;
 
   // Title
   lines.push(`**$${String(signal.asset).toUpperCase()} | Trade Recap ${finalChip} ${finalMark} (${dirWord}) ${circle}**`);
@@ -334,7 +361,13 @@ export function renderRecapText(signal, extras = {}, rrChips = []) {
   // Results
   lines.push('⚖️ **Results**');
   lines.push(`- Final: ${finalChip} ${finalMark}`);
-  lines.push(`- Peak R: ${Number(peakR).toFixed(2)}R`);
+  if (showPeakLine) lines.push(`- Peak R: ${Number(peakR).toFixed(2)}R`);
+  lines.push('');
+
+  // Basics (entry/sl) — place them at top if you want; here we echo in a compact "Basics" block
+  lines.push('📊 **Basics**');
+  lines.push(`- Entry: \`${fmt(entryShown)}\``);
+  lines.push(`- SL: \`${fmt(slShown)}\``);
   lines.push('');
 
   // Notes / Post-Mortem
@@ -345,14 +378,12 @@ export function renderRecapText(signal, extras = {}, rrChips = []) {
   }
 
   // Link
-  if (signal.jumpUrl) {
-    lines.push(`🔗 [View Original Trade](${signal.jumpUrl})`);
-  }
+  if (signal.jumpUrl) lines.push(`🔗 [View Original Trade](${signal.jumpUrl})`);
 
   return lines.join('\n');
 }
 
-// Monthly recap renderer
+// ---- Monthly recap ----
 export function renderMonthlyRecap(signals, year, monthIdx) {
   const monthName = new Date(Date.UTC(year, monthIdx, 1))
     .toLocaleString('en-US', { month: 'long' });
