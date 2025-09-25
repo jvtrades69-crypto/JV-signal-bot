@@ -1,15 +1,11 @@
-// embeds.js — text renderers
-// - Status text for live signals (BE, TP hits, etc.)
-// - Monthly recap
-// - Recap format matches user's examples + OPTIONAL overrides via Notes:
-//
+// embeds.js — text + embed renderers
 // Notes keywords (display only; underlying trade stays unchanged):
 //   final: 1.34
 //   peak: 2.40   |  max: 2.40
 //   entry: 115928
 //   sl: 115000
-//   TP1: Buyside liquidity     (adds caption after TP1 line; same for TP2..TP5)
-//   tp: TP1 | 1.22R (50% closed) ✅ | Buyside liquidity   (add multiple 'tp:' to fully override TP list)
+//   TP1: Buyside liquidity
+//   tp: TP1 | 1.22R (50% closed) ✅ | Buyside liquidity
 
 function addCommas(num) {
   if (num === null || num === undefined || num === '') return String(num);
@@ -96,7 +92,7 @@ function buildTitle(signal) {
   return base;
 }
 
-// ---- main signal renderer (live signals) ----
+// ---- main signal renderer (live signals, TEXT) ----
 export function renderSignalText(signal) {
   const lines = [];
   lines.push(buildTitle(signal));
@@ -227,7 +223,7 @@ export function renderSignalText(signal) {
   return lines.join('\n');
 }
 
-// Summary list
+// Summary list (TEXT)
 export function renderSummaryText(activeSignals) {
   const title = '**JV Current Active Trades** 📊';
   if (!activeSignals || !activeSignals.length) {
@@ -248,7 +244,7 @@ export function renderSummaryText(activeSignals) {
 }
 
 // ------------------------------
-// Recap (supports optional overrides via Notes)
+// Recap (TEXT; supports optional overrides via Notes)
 // ------------------------------
 export function renderRecapText(signal, extras = {}, rrChips = []) {
   const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
@@ -322,7 +318,7 @@ export function renderRecapText(signal, extras = {}, rrChips = []) {
     }
   }
 
-  // Peak/Max R (show only if override provided OR you set maxR on the trade)
+  // Peak/Max R
   const hasStoredMax = (signal.maxR != null && !Number.isNaN(Number(signal.maxR)));
   const showPeakLine = (overridePeak != null && !Number.isNaN(Number(overridePeak))) || hasStoredMax;
   const peakR = (overridePeak != null && !Number.isNaN(Number(overridePeak)))
@@ -364,7 +360,7 @@ export function renderRecapText(signal, extras = {}, rrChips = []) {
   if (showPeakLine) lines.push(`- Peak R: ${Number(peakR).toFixed(2)}R`);
   lines.push('');
 
-  // Basics (entry/sl) — place them at top if you want; here we echo in a compact "Basics" block
+  // Basics
   lines.push('📊 **Basics**');
   lines.push(`- Entry: \`${fmt(entryShown)}\``);
   lines.push(`- SL: \`${fmt(slShown)}\``);
@@ -383,7 +379,7 @@ export function renderRecapText(signal, extras = {}, rrChips = []) {
   return lines.join('\n');
 }
 
-// ---- Monthly recap ----
+// ---- Monthly recap (TEXT) ----
 export function renderMonthlyRecap(signals, year, monthIdx) {
   const monthName = new Date(Date.UTC(year, monthIdx, 1))
     .toLocaleString('en-US', { month: 'long' });
@@ -414,4 +410,80 @@ export function renderMonthlyRecap(signals, year, monthIdx) {
     `**Net Result:** ${rChip(net)}`;
 
   return [title, header, '', ...lines].join('\n');
+}
+
+// ------------------------------
+// Recap EMBED (breakeven-aware, role tag, custom image)
+// ------------------------------
+export function renderRecapEmbed(
+  signal,
+  {
+    roleId,                 // '123...' for @trade recap
+    imageUrl,               // user-supplied image URL for the recap
+    beToleranceR = 0.05,    // treat |finalR| < 0.05R as BE noise window
+    beAfterFallback = 'TP1',// used if we know BE but lack explicit latestTpHit
+    beColor = { win: 0x2ecc71, be: 0xf1c40f, loss: 0xe74c3c }
+  } = {}
+) {
+  const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
+  const circle  = signal.direction === 'SHORT' ? '🔴' : '🟢';
+
+  // Final R from stored value or realized from fills
+  const { realized } = computeRealized(signal);
+  const computedFinal = (signal.status !== 'RUN_VALID' && signal.finalR != null)
+    ? Number(signal.finalR)
+    : realized;
+  const finalR = Number.isFinite(computedFinal) ? computedFinal : 0;
+
+  // BE classification
+  const withinBE = Math.abs(finalR) < beToleranceR || signal.status === 'STOPPED_BE';
+  const state =
+    withinBE ? 'CLOSED_BE' :
+    finalR > 0 ? 'CLOSED_WIN' :
+    finalR < 0 ? 'CLOSED_LOSS' : 'CLOSED_BE';
+
+  const title = `${String(signal.asset).toUpperCase()} — Trade Recap (${dirWord}) ${circle}`;
+  const afterTxt = signal.latestTpHit || signal.beMovedAfter || beAfterFallback;
+
+  const desc =
+    state === 'CLOSED_BE'
+      ? `Closed at **Breakeven**${afterTxt ? ` after **${afterTxt}**` : ''}`
+      : state === 'CLOSED_WIN'
+      ? `Closed in **Profit**${signal.latestTpHit ? ` after **${signal.latestTpHit}**` : ''}`
+      : `Closed in **Loss**`;
+
+  // Progress field
+  const tpHits = signal.tpHits || {};
+  const order = ['TP1','TP2','TP3','TP4','TP5'];
+  const progress = order.map(k => `${k} ${tpHits[k] ? '✅' : '⏳'}`).join('  •  ');
+
+  // Position field
+  const tpPerc = computeTpPercents(signal);
+  const closedPct = order.reduce((a,k)=>a + (tpPerc[k]||0), 0);
+  const posLine = closedPct ? `${closedPct}% closed before stop` : 'No partials';
+
+  // Basics
+  const basics = `Entry: \`${fmt(signal.entry)}\`  •  SL: \`${fmt(signal.sl)}\``;
+
+  const fields = [
+    { name: 'Result',   value: `R: ${finalR.toFixed(2)}`, inline: true },
+    { name: 'Progress', value: progress,                  inline: true },
+    { name: 'Position', value: posLine,                   inline: true },
+    { name: 'Basics',   value: basics }
+  ];
+
+  if (signal.jumpUrl) fields.push({ name: 'Link', value: `[View Original Trade](${signal.jumpUrl})` });
+
+  const color = state === 'CLOSED_WIN' ? beColor.win
+              : state === 'CLOSED_LOSS' ? beColor.loss
+              : beColor.be;
+
+  const embed = { title, description: desc, fields, color };
+  if (imageUrl) embed.image = { url: imageUrl };
+
+  return {
+    content: roleId ? `<@&${roleId}>` : undefined,
+    embeds: [embed],
+    allowedMentions: roleId ? { roles: [roleId] } : undefined
+  };
 }
