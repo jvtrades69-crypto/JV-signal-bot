@@ -114,7 +114,7 @@ function renderSignalText(signal){
       const afterBE = signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : '';
       extras.push(`SL moved to breakeven${afterBE}`);
     }
-    // Profit SL (custom)
+    // Profit SL (custom flags)
     if (Boolean(signal.slProfitSet)) {
       const tag = signal.slProfitAfter
         ? (isNaN(Number(signal.slProfitAfter)) ? `${signal.slProfitAfter}` : `at ${fmt(signal.slProfitAfter)}`)
