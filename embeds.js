@@ -107,14 +107,11 @@ function renderSignalText(signal){
 
     const reentry=signal.validReentry?'✅':'❌';
 
-    // Build extras after the checkmark
     const extras=[];
-    // Breakeven moved
     if (Boolean(signal.beSet) || Boolean(signal.beMovedAfter)) {
       const afterBE = signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : '';
       extras.push(`SL moved to breakeven${afterBE}`);
     }
-    // Profit SL (custom flags)
     if (Boolean(signal.slProfitSet)) {
       const tag = signal.slProfitAfter
         ? (isNaN(Number(signal.slProfitAfter)) ? `${signal.slProfitAfter}` : `at ${fmt(signal.slProfitAfter)}`)
@@ -312,7 +309,7 @@ function renderMonthlyRecap(signals, year, monthIdx){
   return [title, header, '', ...lines].join('\n');
 }
 
-// ---- notes overrides for embed ----
+// notes overrides for embed (used by embed recap)
 function parseNotesOverrides(notesLines=[]){
   let finalOv=null, peakOv=null;
   for(const raw of notesLines){
@@ -325,7 +322,7 @@ function parseNotesOverrides(notesLines=[]){
   return { finalOv, peakOv };
 }
 
-// ---- recap EMBED ----
+// recap EMBED (unchanged logic)
 function renderRecapEmbed(
   signal,
   {
@@ -399,7 +396,7 @@ function renderRecapEmbed(
   };
 }
 
-// ---- explicit named exports ----
+// explicit exports
 export {
   renderSignalText,
   renderSummaryText,

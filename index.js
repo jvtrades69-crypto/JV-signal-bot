@@ -12,6 +12,8 @@ import {
   TextInputStyle,
   MessageFlags,
   StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  StringSelectMenuInteraction,
   AttachmentBuilder
 } from 'discord.js';
 import { customAlphabet } from 'nanoid';
@@ -88,6 +90,8 @@ function normalizeSignal(raw) {
   s.chartAttached = !!s.chartAttached;
   s.beSet = Boolean(s.beSet);
   s.beMovedAfter = s.beMovedAfter || null;
+  s.slProfitSet = Boolean(s.slProfitSet);
+  s.slProfitAfter = s.slProfitAfter || null;
   s.createdAt = isNum(s.createdAt) ? Number(s.createdAt) : s.createdAt || null;
   return s;
 }
@@ -366,14 +370,15 @@ function controlRows(signalId) {
     new ButtonBuilder().setCustomId(btn(signalId,'upd:trade')).setLabel('✏️ Update Trade Info').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:roles')).setLabel('✏️ Update Role Mention').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'fullclose')).setLabel('✅ Fully Close').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(btn(signalId,'stopprofit')).setLabel('🟧 Stopped In Profit').setStyle(ButtonStyle.Danger), // NEW
+    new ButtonBuilder().setCustomId(btn(signalId,'stopprofit')).setLabel('🟧 Stopped In Profit').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(btn(signalId,'stopbe')).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
   );
   const row4 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'stopped')).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(btn(signalId,'setbe')).setLabel('🟨 Set SL → BE').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'setprofit')).setLabel('🟩 Set SL → In Profit').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'finish')).setLabel('🏁 Finish').setStyle(ButtonStyle.Secondary), // NEW
+    new ButtonBuilder().setCustomId(btn(signalId,'undo_menu')).setLabel('↩ Undo…').setStyle(ButtonStyle.Secondary), // NEW
+    new ButtonBuilder().setCustomId(btn(signalId,'finish')).setLabel('🏁 Finish').setStyle(ButtonStyle.Secondary),
   );
   return [row1, row2, row3, row4];
 }
@@ -401,7 +406,7 @@ async function deleteControlThread(signalId) {
   }
 }
 
-// modals
+// modals (existing) …
 function makeTPModal(id, tpKey) {
   const m = new ModalBuilder().setCustomId(modal(id, `tp:${tpKey}`)).setTitle(`${tpKey.toUpperCase()} Hit`);
   const pct = new TextInputBuilder()
@@ -505,6 +510,18 @@ function makeFinishModal(id){
     .setStyle(TextInputStyle.Short)
     .setRequired(true);
   m.addComponents(new ActionRowBuilder().addComponents(inpt));
+  return m;
+}
+// NEW: Undo TP modal (picker)
+function makeUndoTPModal(id){
+  const m = new ModalBuilder().setCustomId(modal(id,'undo:tp')).setTitle('Undo TP Hit');
+  const input = new TextInputBuilder()
+    .setCustomId('undo_tp_key')
+    .setLabel('Enter TP to undo (TP1–TP5)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder('TP1');
+  m.addComponents(new ActionRowBuilder().addComponents(input));
   return m;
 }
 
@@ -762,11 +779,9 @@ client.on('interactionCreate', async (interaction) => {
         const confLines   = confs  ? confs.split('\n').map(s => s.trim()).filter(Boolean)  : [];
         const notesLines  = notes  ? notes.split('\n').map(s => s.trim()).filter(Boolean)  : [];
 
-        // text recap without Basics
         const rrChips = computeRRChips(signal);
         const recapText = renderRecapText(signal, { reasonLines, confLines, notesLines, showBasics:false }, rrChips);
 
-        // pick user's latest image attachment in channel (last 20)
         const channel = await client.channels.fetch(interaction.channelId);
         const recent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
         let userAtt = null;
@@ -798,7 +813,6 @@ client.on('interactionCreate', async (interaction) => {
           imageUrl: chart || undefined,
         });
 
-        // send text + embed; place role mention in content
         await channel.send({
           content: `${recapText}\n\n<@&1382603857657331792>`,
           allowedMentions: { roles: ['1382603857657331792'] },
@@ -809,7 +823,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
       }
 
-      // TP prices
       if (interaction.customId.startsWith('modal:tpprices:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -829,7 +842,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ TP prices updated.' });
       }
 
-      // plan
       if (interaction.customId.startsWith('modal:plan:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -848,7 +860,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ TP % plan updated.' });
       }
 
-      // trade info
       if (interaction.customId.startsWith('modal:trade:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -876,7 +887,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Trade info updated.' });
       }
 
-      // roles
       if (interaction.customId.startsWith('modal:roles:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -890,7 +900,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Role mentions updated.' });
       }
 
-      // max R
       if (interaction.customId.startsWith('modal:maxr:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -904,7 +913,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Max R updated.' });
       }
 
-      // chart url
       if (interaction.customId.startsWith('modal:chart:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -920,7 +928,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Chart link updated.' });
       }
 
-      // TP modal submit
       if (interaction.customId.startsWith('modal:tp:')) {
         await ensureDeferred(interaction);
         const parts = interaction.customId.split(':');
@@ -967,7 +974,6 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${hasPct && pct > 0 ? ` (${pct}%).` : '.'}` });
       }
 
-      // full close
       if (interaction.customId.startsWith('modal:full:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -1050,18 +1056,14 @@ client.on('interactionCreate', async (interaction) => {
           const updated = normalizeSignal(await getSignal(id));
           await editSignalMessage(updated);
           await updateSummary();
-          // NOTE: do NOT delete control thread here anymore (keeps thread open)
-
-          return safeEditReply(interaction, {
-            content: kind === 'BE' ? '✅ Stopped at breakeven.' : '✅ Stopped out.'
-          });
+          return safeEditReply(interaction, { content: kind === 'BE' ? '✅ Stopped at breakeven.' : '✅ Stopped out.' });
         } catch (err) {
           console.error('modal:finalr submit error:', err);
           return safeEditReply(interaction, { content: '❌ Could not record the stop. Check logs.' });
         }
       }
 
-      // NEW: handle Set SL → In Profit (custom) — FLAGS ONLY
+      // Set SL → In Profit (custom) — FLAGS ONLY
       if (interaction.customId.startsWith('modal:profit:')) {
         await ensureDeferred(interaction);
         const id = interaction.customId.split(':').pop();
@@ -1076,7 +1078,6 @@ client.on('interactionCreate', async (interaction) => {
         if (signal.direction === DIR.LONG  && newSL <= signal.entry) return safeEditReply(interaction, { content: '❌ For LONG, SL must be above entry.' });
         if (signal.direction === DIR.SHORT && newSL >= signal.entry) return safeEditReply(interaction, { content: '❌ For SHORT, SL must be below entry.' });
 
-        // Flags only (do NOT change sl/slOriginal)
         await updateSignal(id, { slProfitSet: true, slProfitAfter: String(newSL), validReentry: false });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
@@ -1084,7 +1085,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ SL moved into profits.' });
       }
 
-      // NEW: finish modal submit — closes the control thread
+      // finish modal submit — closes the control thread
       if (interaction.customId.startsWith('modal:finish:')) {
         await ensureDeferred(interaction);
         const id = interaction.customId.split(':').pop();
@@ -1094,6 +1095,31 @@ client.on('interactionCreate', async (interaction) => {
         }
         await deleteControlThread(id).catch(()=>{});
         return safeEditReply(interaction, { content: '🏁 Finished. Control thread closed.' });
+      }
+
+      // NEW: Undo TP (modal submit)
+      if (interaction.customId.startsWith('modal:undo:tp:')) {
+        await ensureDeferred(interaction);
+        const id = interaction.customId.split(':').pop();
+        let signal = normalizeSignal(await getSignal(id));
+        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
+
+        const keyLine = (interaction.fields.getTextInputValue('undo_tp_key') || '').trim().toUpperCase();
+        if (!/^TP[1-5]$/.test(keyLine)) return safeEditReply(interaction, { content: '❌ Enter TP1–TP5.' });
+
+        // remove fills from that TP
+        signal.fills = (signal.fills || []).filter(f => String(f.source).toUpperCase() !== keyLine);
+        // clear hit flag
+        signal.tpHits = { ...(signal.tpHits || {}) , [keyLine]: false };
+        // recompute latestTpHit to highest still hit
+        const order = ['TP5','TP4','TP3','TP2','TP1'];
+        signal.latestTpHit = order.find(k => signal.tpHits[k]) || null;
+
+        await updateSignal(id, { fills: signal.fills, tpHits: signal.tpHits, latestTpHit: signal.latestTpHit });
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated);
+        await updateSummary();
+        return safeEditReply(interaction, { content: `↩️ ${keyLine} undone.` });
       }
     }
 
@@ -1119,11 +1145,10 @@ client.on('interactionCreate', async (interaction) => {
       if (key === 'setbe') {
         await ensureDeferred(interaction);
         const sig0 = normalizeSignal(await getSignal(id));
-        if (!sig0) return interaction.reply({ content: 'Signal not found.', flags: MessageFlags.Ephemeral });
-        if (!isNum(sig0.entry)) return interaction.reply({ content: '❌ Entry must be set to move SL to BE.', flags: MessageFlags.Ephemeral });
+        if (!sig0) return safeEditReply(interaction, { content: 'Signal not found.' });
+        if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
 
         const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || null;
-        // FLAGS ONLY — do not change sl/slOriginal
         const patch = { validReentry: false, beSet: true };
         if (!sig0.beMovedAfter && highestHit) patch.beMovedAfter = highestHit;
 
@@ -1131,7 +1156,7 @@ client.on('interactionCreate', async (interaction) => {
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
         await updateSummary();
-        return interaction.reply({ content: '✅ SL moved to breakeven.', flags: MessageFlags.Ephemeral });
+        return safeEditReply(interaction, { content: '✅ SL moved to breakeven.' });
       }
 
       if (key === 'setprofit') {
@@ -1161,6 +1186,59 @@ client.on('interactionCreate', async (interaction) => {
 
       if (key === 'finish') {
         return interaction.showModal(makeFinishModal(id));
+      }
+
+      // NEW: Undo menu
+      if (key === 'undo_menu') {
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(btn(id,'undo:tp')).setLabel('↩ Undo TP…').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId(btn(id,'undo:be')).setLabel('↩ Undo SL → BE').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId(btn(id,'undo:profit')).setLabel('↩ Undo SL → Profit').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId(btn(id,'undo:reopen')).setLabel('↩ Reopen').setStyle(ButtonStyle.Secondary),
+        );
+        return interaction.reply({ content: 'Undo actions:', components: [row], flags: MessageFlags.Ephemeral });
+      }
+
+      // Undo sub-actions
+      if (key === 'undo:tp') {
+        return interaction.showModal(makeUndoTPModal(id));
+      }
+      if (key === 'undo:be') {
+        await ensureDeferred(interaction);
+        let signal = normalizeSignal(await getSignal(id));
+        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
+        await updateSignal(id, { beSet:false, beMovedAfter:null });
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated); await updateSummary();
+        return safeEditReply(interaction, { content: '↩️ Undid SL → BE.' });
+      }
+      if (key === 'undo:profit') {
+        await ensureDeferred(interaction);
+        let signal = normalizeSignal(await getSignal(id));
+        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
+        await updateSignal(id, { slProfitSet:false, slProfitAfter:null });
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated); await updateSummary();
+        return safeEditReply(interaction, { content: '↩️ Undid SL → Profit.' });
+      }
+      if (key === 'undo:reopen') {
+        await ensureDeferred(interaction);
+        let signal = normalizeSignal(await getSignal(id));
+        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
+
+        // Only if closed/stopped
+        if (![STATUS.CLOSED, STATUS.STOPPED_BE, STATUS.STOPPED_OUT].includes(signal.status)) {
+          return safeEditReply(interaction, { content: 'ℹ️ Trade is already active.' });
+        }
+        // Remove stop/close fills
+        signal.fills = (signal.fills || []).filter(f => !['FINAL_CLOSE','STOP_BE','STOP_OUT','STOP_PROFIT'].includes(String(f.source).toUpperCase()));
+        signal.status = STATUS.RUN_VALID;
+        signal.validReentry = true;
+
+        await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: true });
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated); await updateSummary();
+        return safeEditReply(interaction, { content: '↩️ Reopened trade.' });
       }
 
       if (key === 'del') {
@@ -1251,6 +1329,8 @@ async function createSignal(payload, channelId) {
     channelId,
     beSet: false,
     beMovedAfter: null,
+    slProfitSet: false,
+    slProfitAfter: null,
   });
 
   await saveSignal(signal);
