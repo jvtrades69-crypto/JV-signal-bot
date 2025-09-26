@@ -366,15 +366,14 @@ function controlRows(signalId) {
     new ButtonBuilder().setCustomId(btn(signalId,'upd:trade')).setLabel('✏️ Update Trade Info').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:roles')).setLabel('✏️ Update Role Mention').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'fullclose')).setLabel('✅ Fully Close').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(btn(signalId,'stopprofit')).setLabel('🟧 Stopped In Profit').setStyle(ButtonStyle.Danger), // NEW
     new ButtonBuilder().setCustomId(btn(signalId,'stopbe')).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId(btn(signalId,'stopped')).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
   );
   const row4 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(btn(signalId,'stopped')).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(btn(signalId,'setbe')).setLabel('🟨 Set SL → BE').setStyle(ButtonStyle.Secondary),
-    // NEW: Set SL → In Profit (custom price)
     new ButtonBuilder().setCustomId(btn(signalId,'setprofit')).setLabel('🟩 Set SL → In Profit').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'upd:maxr')).setLabel('📈 Set Max R').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'upd:chart')).setLabel('🖼️ Set/Replace Chart Link').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'finish')).setLabel('🏁 Finish').setStyle(ButtonStyle.Secondary), // NEW
   );
   return [row1, row2, row3, row4];
 }
@@ -495,6 +494,17 @@ function makeSetProfitModal(id) {
     .setRequired(true)
     .setPlaceholder('e.g., 116250');
   m.addComponents(new ActionRowBuilder().addComponents(price));
+  return m;
+}
+// NEW: Finish confirmation
+function makeFinishModal(id){
+  const m = new ModalBuilder().setCustomId(modal(id,'finish')).setTitle('Finish & close control thread');
+  const inpt = new TextInputBuilder()
+    .setCustomId('finish_confirm')
+    .setLabel('Type FINISH to confirm')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true);
+  m.addComponents(new ActionRowBuilder().addComponents(inpt));
   return m;
 }
 
@@ -994,7 +1004,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Fully closed.' });
       }
 
-      // stop BE / stop out
+      // stop BE / stop out (keep thread open now)
       if (interaction.customId.startsWith('modal:finalr:')) {
         await ensureDeferred(interaction);
         try {
@@ -1040,7 +1050,7 @@ client.on('interactionCreate', async (interaction) => {
           const updated = normalizeSignal(await getSignal(id));
           await editSignalMessage(updated);
           await updateSummary();
-          await deleteControlThread(id).catch(() => {});
+          // NOTE: do NOT delete control thread here anymore (keeps thread open)
 
           return safeEditReply(interaction, {
             content: kind === 'BE' ? '✅ Stopped at breakeven.' : '✅ Stopped out.'
@@ -1051,7 +1061,7 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
 
-      // NEW: handle Set SL → In Profit (custom)
+      // NEW: handle Set SL → In Profit (custom) — FLAGS ONLY
       if (interaction.customId.startsWith('modal:profit:')) {
         await ensureDeferred(interaction);
         const id = interaction.customId.split(':').pop();
@@ -1066,12 +1076,24 @@ client.on('interactionCreate', async (interaction) => {
         if (signal.direction === DIR.LONG  && newSL <= signal.entry) return safeEditReply(interaction, { content: '❌ For LONG, SL must be above entry.' });
         if (signal.direction === DIR.SHORT && newSL >= signal.entry) return safeEditReply(interaction, { content: '❌ For SHORT, SL must be below entry.' });
 
-        // Do NOT change slOriginal
-        await updateSignal(id, { sl: newSL, validReentry: false });
+        // Flags only (do NOT change sl/slOriginal)
+        await updateSignal(id, { slProfitSet: true, slProfitAfter: String(newSL), validReentry: false });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ SL moved into profits.' });
+      }
+
+      // NEW: finish modal submit — closes the control thread
+      if (interaction.customId.startsWith('modal:finish:')) {
+        await ensureDeferred(interaction);
+        const id = interaction.customId.split(':').pop();
+        const token = (interaction.fields.getTextInputValue('finish_confirm') || '').trim();
+        if (token !== 'FINISH') {
+          return safeEditReply(interaction, { content: '❌ Type FINISH to confirm.' });
+        }
+        await deleteControlThread(id).catch(()=>{});
+        return safeEditReply(interaction, { content: '🏁 Finished. Control thread closed.' });
       }
     }
 
@@ -1101,7 +1123,8 @@ client.on('interactionCreate', async (interaction) => {
         if (!isNum(sig0.entry)) return interaction.reply({ content: '❌ Entry must be set to move SL to BE.', flags: MessageFlags.Ephemeral });
 
         const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || null;
-        const patch = { sl: Number(sig0.entry), validReentry: false, beSet: true };
+        // FLAGS ONLY — do not change sl/slOriginal
+        const patch = { validReentry: false, beSet: true };
         if (!sig0.beMovedAfter && highestHit) patch.beMovedAfter = highestHit;
 
         await updateSignal(id, patch);
@@ -1113,6 +1136,31 @@ client.on('interactionCreate', async (interaction) => {
 
       if (key === 'setprofit') {
         return interaction.showModal(makeSetProfitModal(id));
+      }
+
+      if (key === 'stopprofit') {
+        await ensureDeferred(interaction);
+        let signal = normalizeSignal(await getSignal(id));
+        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
+
+        const price = Number(signal.sl);
+        const currentPct = (Array.isArray(signal.fills) ? signal.fills : []).reduce((a,f)=>a+Number(f.pct||0),0);
+        const remaining  = Math.max(0, 100 - currentPct);
+        if (remaining > 0 && isNum(price)) {
+          signal.fills = Array.isArray(signal.fills) ? signal.fills : [];
+          signal.fills.push({ pct: remaining, price, source: 'STOP_PROFIT' });
+        }
+        signal.status = STATUS.CLOSED;
+        signal.validReentry = false;
+
+        await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false });
+        await editSignalMessage(signal);
+        await updateSummary();
+        return safeEditReply(interaction, { content: '✅ Stopped in profit.' });
+      }
+
+      if (key === 'finish') {
+        return interaction.showModal(makeFinishModal(id));
       }
 
       if (key === 'del') {
