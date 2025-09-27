@@ -12,8 +12,6 @@ import {
   TextInputStyle,
   MessageFlags,
   StringSelectMenuBuilder,
-  StringSelectMenuOptionBuilder,
-  StringSelectMenuInteraction,
   AttachmentBuilder
 } from 'discord.js';
 import { customAlphabet } from 'nanoid';
@@ -88,10 +86,13 @@ function normalizeSignal(raw) {
   if (!isNum(s.maxR)) s.maxR = null;
   s.chartUrl = s.chartUrl || null;
   s.chartAttached = !!s.chartAttached;
+
+  // Flags
   s.beSet = Boolean(s.beSet);
   s.beMovedAfter = s.beMovedAfter || null;
   s.slProfitSet = Boolean(s.slProfitSet);
   s.slProfitAfter = s.slProfitAfter || null;
+
   s.createdAt = isNum(s.createdAt) ? Number(s.createdAt) : s.createdAt || null;
   return s;
 }
@@ -272,7 +273,11 @@ async function updateSummary() {
       const summaryChannel = await client.channels.fetch(config.currentTradesChannelId);
 
       const signals = (await getSignals()).map(normalizeSignal);
-      const candidates = signals.filter(s => s.status === STATUS.RUN_VALID && s.validReentry === true);
+
+      // Exclude anything that's not valid for re-entry OR has BE/Profit flags
+      const candidates = signals.filter(
+        s => s.status === STATUS.RUN_VALID && s.validReentry === true && !s.beSet && !s.slProfitSet
+      );
 
       const active = [];
       for (const s of candidates) {
@@ -377,7 +382,7 @@ function controlRows(signalId) {
     new ButtonBuilder().setCustomId(btn(signalId,'stopped')).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(btn(signalId,'setbe')).setLabel('🟨 Set SL → BE').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'setprofit')).setLabel('🟩 Set SL → In Profit').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'undo_menu')).setLabel('↩ Undo…').setStyle(ButtonStyle.Secondary), // NEW
+    new ButtonBuilder().setCustomId(btn(signalId,'undo_menu')).setLabel('↩ Undo…').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'finish')).setLabel('🏁 Finish').setStyle(ButtonStyle.Secondary),
   );
   return [row1, row2, row3, row4];
@@ -406,7 +411,7 @@ async function deleteControlThread(signalId) {
   }
 }
 
-// modals (existing) …
+// modals
 function makeTPModal(id, tpKey) {
   const m = new ModalBuilder().setCustomId(modal(id, `tp:${tpKey}`)).setTitle(`${tpKey.toUpperCase()} Hit`);
   const pct = new TextInputBuilder()
@@ -512,7 +517,7 @@ function makeFinishModal(id){
   m.addComponents(new ActionRowBuilder().addComponents(inpt));
   return m;
 }
-// NEW: Undo TP modal (picker)
+// NEW: Undo TP modal
 function makeUndoTPModal(id){
   const m = new ModalBuilder().setCustomId(modal(id,'undo:tp')).setTitle('Undo TP Hit');
   const input = new TextInputBuilder()
@@ -1010,7 +1015,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Fully closed.' });
       }
 
-      // stop BE / stop out (keep thread open now)
+      // stop BE / stop out (keep thread open)
       if (interaction.customId.startsWith('modal:finalr:')) {
         await ensureDeferred(interaction);
         try {
@@ -1078,7 +1083,7 @@ client.on('interactionCreate', async (interaction) => {
         if (signal.direction === DIR.LONG  && newSL <= signal.entry) return safeEditReply(interaction, { content: '❌ For LONG, SL must be above entry.' });
         if (signal.direction === DIR.SHORT && newSL >= signal.entry) return safeEditReply(interaction, { content: '❌ For SHORT, SL must be below entry.' });
 
-        await updateSignal(id, { slProfitSet: true, slProfitAfter: String(newSL), validReentry: false });
+        await updateSignal(id, { slProfitSet: true, slProfitAfter: String(newSL), validReentry: false, beSet: false, beMovedAfter: null });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
         await updateSummary();
@@ -1097,7 +1102,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '🏁 Finished. Control thread closed.' });
       }
 
-      // NEW: Undo TP (modal submit)
+      // Undo TP (modal submit)
       if (interaction.customId.startsWith('modal:undo:tp:')) {
         await ensureDeferred(interaction);
         const id = interaction.customId.split(':').pop();
@@ -1149,7 +1154,8 @@ client.on('interactionCreate', async (interaction) => {
         if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
 
         const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || null;
-        const patch = { validReentry: false, beSet: true };
+        // FLAGS ONLY — clear profit flags; set BE flags
+        const patch = { validReentry: false, beSet: true, slProfitSet: false, slProfitAfter: null };
         if (!sig0.beMovedAfter && highestHit) patch.beMovedAfter = highestHit;
 
         await updateSignal(id, patch);
@@ -1188,7 +1194,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.showModal(makeFinishModal(id));
       }
 
-      // NEW: Undo menu
+      // Undo menu (ephemeral row of actions)
       if (key === 'undo_menu') {
         const row = new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId(btn(id,'undo:tp')).setLabel('↩ Undo TP…').setStyle(ButtonStyle.Secondary),
@@ -1226,11 +1232,9 @@ client.on('interactionCreate', async (interaction) => {
         let signal = normalizeSignal(await getSignal(id));
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
-        // Only if closed/stopped
         if (![STATUS.CLOSED, STATUS.STOPPED_BE, STATUS.STOPPED_OUT].includes(signal.status)) {
           return safeEditReply(interaction, { content: 'ℹ️ Trade is already active.' });
         }
-        // Remove stop/close fills
         signal.fills = (signal.fills || []).filter(f => !['FINAL_CLOSE','STOP_BE','STOP_OUT','STOP_PROFIT'].includes(String(f.source).toUpperCase()));
         signal.status = STATUS.RUN_VALID;
         signal.validReentry = true;
