@@ -114,7 +114,8 @@ if (Boolean(signal.slProfitSet)) {
   const tag = signal.slProfitAfter
     ? (isNaN(Number(signal.slProfitAfter)) ? `${signal.slProfitAfter}` : `at \`${fmt(signal.slProfitAfter)}\``)
     : '';
-  extra = ` | SL moved into profits${afterTP}${tag ? ` (${tag})` : ''}`;
+  extra = ` | SL moved into profits${afterTP}${tag ? ` ${tag}` : ''}`;
+
 } else if (Boolean(signal.beSet) || Boolean(signal.beMovedAfter)) {
   const afterBE = signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : '';
   extra = ` | SL moved to breakeven${afterBE}`;
