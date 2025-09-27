@@ -105,21 +105,23 @@ function renderSignalText(signal){
     const parts=hitList.map(k=>perTpExec[k]>0?`${k} hit (${Math.round(perTpExec[k])}% closed)`:`${k} hit`);
     lines.push(parts.length?`Active 🟩 | ${parts.join(' , ')}`:'Active 🟩 | Trade running');
 
-    const reentry=signal.validReentry?'✅':'❌';
+    const reentry = signal.validReentry ? '✅' : '❌';
 
-    // Mutually exclusive — Profit takes precedence over BE
-    let extra = '';
-    if (Boolean(signal.slProfitSet)) {
-      const tag = signal.slProfitAfter
-        ? (isNaN(Number(signal.slProfitAfter)) ? `${signal.slProfitAfter}` : `at ${fmt(signal.slProfitAfter)}`)
-        : '';
-      extra = ` | SL moved into profits${tag ? ' ' + tag : ''}`;
-    } else if (Boolean(signal.beSet) || Boolean(signal.beMovedAfter)) {
-      const afterBE = signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : '';
-      extra = ` | SL moved to breakeven${afterBE}`;
-    }
+// Mutually exclusive — Profit takes precedence over BE
+let extra = '';
+if (Boolean(signal.slProfitSet)) {
+  const afterTP = signal.slProfitAfterTP ? ` after ${signal.slProfitAfterTP}` : '';
+  const tag = signal.slProfitAfter
+    ? (isNaN(Number(signal.slProfitAfter)) ? `${signal.slProfitAfter}` : `at \`${fmt(signal.slProfitAfter)}\``)
+    : '';
+  extra = ` | SL moved into profits${afterTP}${tag ? ` (${tag})` : ''}`;
+} else if (Boolean(signal.beSet) || Boolean(signal.beMovedAfter)) {
+  const afterBE = signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : '';
+  extra = ` | SL moved to breakeven${afterBE}`;
+}
 
-    lines.push(`Valid for re-entry: ${reentry}${extra}`);
+lines.push(`Valid for re-entry: ${reentry}${extra}`);
+
   }else{
     if(signal.status==='CLOSED'){
       const tp=signal.latestTpHit?` after ${signal.latestTpHit}`:'';
