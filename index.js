@@ -92,6 +92,8 @@ function normalizeSignal(raw) {
   s.beMovedAfter = s.beMovedAfter || null;
   s.slProfitSet = Boolean(s.slProfitSet);
   s.slProfitAfter = s.slProfitAfter || null;
+  // NEW: track which TP was active when SL→Profit was set
+  s.slProfitAfterTP = s.slProfitAfterTP || null;
 
   s.createdAt = isNum(s.createdAt) ? Number(s.createdAt) : s.createdAt || null;
   return s;
@@ -144,7 +146,7 @@ async function safeEditReply(interaction, payload) {
   }
 }
 
-// thread title
+// thread title helpers ...
 function computeRealizedR(signal) {
   const fills = Array.isArray(signal.fills) ? signal.fills : [];
   if (!fills.length) return 0;
@@ -274,7 +276,7 @@ async function updateSummary() {
 
       const signals = (await getSignals()).map(normalizeSignal);
 
-      // Exclude anything that's not valid for re-entry OR has BE/Profit flags
+      // Exclude anything not valid for re-entry OR with BE/Profit flags
       const candidates = signals.filter(
         s => s.status === STATUS.RUN_VALID && s.validReentry === true && !s.beSet && !s.slProfitSet
       );
@@ -828,6 +830,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
       }
 
+      // TP prices
       if (interaction.customId.startsWith('modal:tpprices:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -847,6 +850,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ TP prices updated.' });
       }
 
+      // plan
       if (interaction.customId.startsWith('modal:plan:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -865,6 +869,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ TP % plan updated.' });
       }
 
+      // trade info
       if (interaction.customId.startsWith('modal:trade:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -892,6 +897,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Trade info updated.' });
       }
 
+      // roles
       if (interaction.customId.startsWith('modal:roles:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -905,6 +911,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Role mentions updated.' });
       }
 
+      // max R
       if (interaction.customId.startsWith('modal:maxr:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -918,6 +925,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Max R updated.' });
       }
 
+      // chart url
       if (interaction.customId.startsWith('modal:chart:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -933,6 +941,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Chart link updated.' });
       }
 
+      // TP modal submit (records TP hit)
       if (interaction.customId.startsWith('modal:tp:')) {
         await ensureDeferred(interaction);
         const parts = interaction.customId.split(':');
@@ -958,13 +967,20 @@ client.on('interactionCreate', async (interaction) => {
           if (!already) signal.fills.push({ pct: Number(pct), price: Number(tpPrice), source: tpUpper });
         }
 
+        // mark TP
         signal.latestTpHit = tpUpper;
         signal.tpHits[tpUpper] = true;
 
+        // If BE was set and not labeled yet, label now with TP1
         const extra = {};
         if (signal.beSet && !signal.beMovedAfter && tpUpper === 'TP1') {
           signal.beMovedAfter = 'TP1';
           extra.beMovedAfter = 'TP1';
+        }
+        // NEW: if Profit SL is set and we haven't captured TP yet, capture this TP
+        if (signal.slProfitSet && !signal.slProfitAfterTP) {
+          signal.slProfitAfterTP = tpUpper;
+          extra.slProfitAfterTP = tpUpper;
         }
 
         await updateSignal(id, {
@@ -979,6 +995,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${hasPct && pct > 0 ? ` (${pct}%).` : '.'}` });
       }
 
+      // full close
       if (interaction.customId.startsWith('modal:full:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -1068,7 +1085,7 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
 
-      // Set SL → In Profit (custom) — FLAGS ONLY
+      // Set SL → In Profit (custom) — FLAGS ONLY + capture TP if any
       if (interaction.customId.startsWith('modal:profit:')) {
         await ensureDeferred(interaction);
         const id = interaction.customId.split(':').pop();
@@ -1083,7 +1100,18 @@ client.on('interactionCreate', async (interaction) => {
         if (signal.direction === DIR.LONG  && newSL <= signal.entry) return safeEditReply(interaction, { content: '❌ For LONG, SL must be above entry.' });
         if (signal.direction === DIR.SHORT && newSL >= signal.entry) return safeEditReply(interaction, { content: '❌ For SHORT, SL must be below entry.' });
 
-        await updateSignal(id, { slProfitSet: true, slProfitAfter: String(newSL), validReentry: false, beSet: false, beMovedAfter: null });
+        // capture highest already-hit TP for display (TP5..TP1)
+        const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits?.[k]) || null;
+
+        await updateSignal(id, {
+          slProfitSet: true,
+          slProfitAfter: String(newSL),
+          slProfitAfterTP: highestHit,   // NEW
+          validReentry: false,
+          beSet: false,
+          beMovedAfter: null
+        });
+
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
         await updateSummary();
@@ -1122,8 +1150,7 @@ client.on('interactionCreate', async (interaction) => {
 
         await updateSignal(id, { fills: signal.fills, tpHits: signal.tpHits, latestTpHit: signal.latestTpHit });
         const updated = normalizeSignal(await getSignal(id));
-        await editSignalMessage(updated);
-        await updateSummary();
+        await editSignalMessage(updated); await updateSummary();
         return safeEditReply(interaction, { content: `↩️ ${keyLine} undone.` });
       }
     }
@@ -1155,13 +1182,12 @@ client.on('interactionCreate', async (interaction) => {
 
         const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || null;
         // FLAGS ONLY — clear profit flags; set BE flags
-        const patch = { validReentry: false, beSet: true, slProfitSet: false, slProfitAfter: null };
+        const patch = { validReentry: false, beSet: true, slProfitSet: false, slProfitAfter: null, slProfitAfterTP: null };
         if (!sig0.beMovedAfter && highestHit) patch.beMovedAfter = highestHit;
 
         await updateSignal(id, patch);
         const updated = normalizeSignal(await getSignal(id));
-        await editSignalMessage(updated);
-        await updateSummary();
+        await editSignalMessage(updated); await updateSummary();
         return safeEditReply(interaction, { content: '✅ SL moved to breakeven.' });
       }
 
@@ -1185,8 +1211,7 @@ client.on('interactionCreate', async (interaction) => {
         signal.validReentry = false;
 
         await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false });
-        await editSignalMessage(signal);
-        await updateSummary();
+        await editSignalMessage(signal); await updateSummary();
         return safeEditReply(interaction, { content: '✅ Stopped in profit.' });
       }
 
@@ -1194,7 +1219,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.showModal(makeFinishModal(id));
       }
 
-      // Undo menu (ephemeral row of actions)
+      // Undo menu
       if (key === 'undo_menu') {
         const row = new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId(btn(id,'undo:tp')).setLabel('↩ Undo TP…').setStyle(ButtonStyle.Secondary),
@@ -1222,7 +1247,7 @@ client.on('interactionCreate', async (interaction) => {
         await ensureDeferred(interaction);
         let signal = normalizeSignal(await getSignal(id));
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
-        await updateSignal(id, { slProfitSet:false, slProfitAfter:null });
+        await updateSignal(id, { slProfitSet:false, slProfitAfter:null, slProfitAfterTP:null });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated); await updateSummary();
         return safeEditReply(interaction, { content: '↩️ Undid SL → Profit.' });
@@ -1282,10 +1307,14 @@ client.on('interactionCreate', async (interaction) => {
           sig.beMovedAfter = 'TP1';
           extra.beMovedAfter = 'TP1';
         }
+        // NEW: if Profit SL is set and no TP marker yet, record this TP
+        if (sig.slProfitSet && !sig.slProfitAfterTP) {
+          sig.slProfitAfterTP = tpUpper;
+          extra.slProfitAfterTP = tpUpper;
+        }
 
         await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits, ...extra });
-        await editSignalMessage(sig);
-        await updateSummary();
+        await editSignalMessage(sig); await updateSummary();
         await ensureDeferred(interaction);
         return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${isNum(planPct) && Number(planPct) > 0 ? ` (${planPct}%).` : '.'}` });
       }
@@ -1335,6 +1364,8 @@ async function createSignal(payload, channelId) {
     beMovedAfter: null,
     slProfitSet: false,
     slProfitAfter: null,
+    // NEW
+    slProfitAfterTP: null,
   });
 
   await saveSignal(signal);
