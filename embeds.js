@@ -107,19 +107,19 @@ function renderSignalText(signal){
 
     const reentry=signal.validReentry?'✅':'❌';
 
-    const extras=[];
-    if (Boolean(signal.beSet) || Boolean(signal.beMovedAfter)) {
-      const afterBE = signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : '';
-      extras.push(`SL moved to breakeven${afterBE}`);
-    }
+    // Mutually exclusive — Profit takes precedence over BE
+    let extra = '';
     if (Boolean(signal.slProfitSet)) {
       const tag = signal.slProfitAfter
         ? (isNaN(Number(signal.slProfitAfter)) ? `${signal.slProfitAfter}` : `at ${fmt(signal.slProfitAfter)}`)
         : '';
-      extras.push(`SL moved into profits${tag ? ' ' + tag : ''}`);
+      extra = ` | SL moved into profits${tag ? ' ' + tag : ''}`;
+    } else if (Boolean(signal.beSet) || Boolean(signal.beMovedAfter)) {
+      const afterBE = signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : '';
+      extra = ` | SL moved to breakeven${afterBE}`;
     }
 
-    lines.push(`Valid for re-entry: ${reentry}${extras.length ? ' | ' + extras.join(' | ') : ''}`);
+    lines.push(`Valid for re-entry: ${reentry}${extra}`);
   }else{
     if(signal.status==='CLOSED'){
       const tp=signal.latestTpHit?` after ${signal.latestTpHit}`:'';
@@ -309,7 +309,7 @@ function renderMonthlyRecap(signals, year, monthIdx){
   return [title, header, '', ...lines].join('\n');
 }
 
-// notes overrides for embed (used by embed recap)
+// notes overrides for embed recap
 function parseNotesOverrides(notesLines=[]){
   let finalOv=null, peakOv=null;
   for(const raw of notesLines){
@@ -322,7 +322,7 @@ function parseNotesOverrides(notesLines=[]){
   return { finalOv, peakOv };
 }
 
-// recap EMBED (unchanged logic)
+// recap EMBED
 function renderRecapEmbed(
   signal,
   {
