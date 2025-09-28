@@ -92,11 +92,14 @@ function normalizeSignal(raw) {
   s.beMovedAfter = s.beMovedAfter || null;
   s.slProfitSet = Boolean(s.slProfitSet);
   s.slProfitAfter = s.slProfitAfter || null;
-  s.slProfitAfterTP = s.slProfitAfterTP || null; // track TP when SL→Profit set
+  s.slProfitAfterTP = s.slProfitAfterTP || null;
 
-  // Optional display flags for “stopped in profits”
+  // optional display flags
   s.stoppedInProfit = Boolean(s.stoppedInProfit);
   s.stoppedInProfitAfterTP = s.stoppedInProfitAfterTP || null;
+
+  // history
+  s.history = Array.isArray(s.history) ? s.history : [];
 
   s.createdAt = isNum(s.createdAt) ? Number(s.createdAt) : s.createdAt || null;
   return s;
@@ -193,6 +196,63 @@ async function renameControlThread(signal) {
   } catch {}
 }
 
+// ---- UNDO infrastructure (tiny) ----
+const ACTION_KEYS = {
+  'tp:hit': ['fills','tpHits','latestTpHit','slProfitAfterTP','beMovedAfter'],
+  'tp:undo': ['fills','tpHits','latestTpHit','slProfitAfterTP','beMovedAfter'],
+
+  'upd:tpprices': ['tp1','tp2','tp3','tp4','tp5'],
+  'upd:plan': ['plan'],
+  'upd:trade': ['entry','sl','asset','direction','reason'],
+  'upd:roles': ['extraRole'],
+  'upd:maxr': ['maxR'],
+  'upd:chart': ['chartUrl','chartAttached'],
+
+  'set:be': ['beSet','beMovedAfter','validReentry','slProfitSet','slProfitAfter','slProfitAfterTP'],
+  'set:profit': ['slProfitSet','slProfitAfter','slProfitAfterTP','beSet','beMovedAfter','validReentry'],
+  'stop:be': ['status','validReentry','fills','finalR'],
+  'stop:out': ['status','validReentry','fills','finalR'],
+  'stop:profit': ['status','validReentry','fills','stoppedInProfit','stoppedInProfitAfterTP'],
+
+  'fullclose': ['fills','status','validReentry','latestTpHit','finalR'],
+  'reopen': ['fills','status','validReentry','stoppedInProfit','stoppedInProfitAfterTP'],
+};
+
+function pick(obj, keys) {
+  const out = {};
+  for (const k of keys) if (k in obj) out[k] = structuredClone(obj[k]);
+  return out;
+}
+
+async function applyPatch(id, action, mutateFn) {
+  const s0 = normalizeSignal(await getSignal(id));
+  if (!s0) throw new Error('signal not found');
+  const keys = ACTION_KEYS[action] || [];
+  const before = pick(s0, keys);
+
+  const patch = await mutateFn(structuredClone(s0)); // returns { ...fields }
+  await updateSignal(id, patch);
+
+  const s1 = normalizeSignal(await getSignal(id));
+  const after = pick(s1, keys);
+
+  const hist = Array.isArray(s1.history) ? s1.history : [];
+  hist.push({ ts: Date.now(), action, before, after });
+  await updateSignal(id, { history: hist });
+  return s1;
+}
+
+async function undoLast(id) {
+  const s = normalizeSignal(await getSignal(id));
+  const hist = Array.isArray(s.history) ? s.history : [];
+  const entry = hist.pop();
+  if (!entry) return { undone: false };
+
+  await updateSignal(id, { ...entry.before, history: hist });
+  const s2 = normalizeSignal(await getSignal(id));
+  return { undone: true, action: entry.action, snapshot: s2 };
+}
+
 // posting live signal
 async function postSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
@@ -279,7 +339,7 @@ async function updateSummary() {
 
       const signals = (await getSignals()).map(normalizeSignal);
 
-      // Exclude anything not valid for re-entry OR with BE/Profit flags
+      // Exclude not-valid + BE/profit set
       const candidates = signals.filter(
         s => s.status === STATUS.RUN_VALID && s.validReentry === true && !s.beSet && !s.slProfitSet
       );
@@ -371,15 +431,14 @@ function controlRows(signalId) {
     new ButtonBuilder().setCustomId(btn(signalId,'tp3')).setLabel('🎯 TP3 Hit').setStyle(ButtonStyle.Success),
   );
 
-const row2 = new ActionRowBuilder().addComponents(
-  new ButtonBuilder().setCustomId(btn(signalId,'tp4')).setLabel('🎯 TP4 Hit').setStyle(ButtonStyle.Success),
-  new ButtonBuilder().setCustomId(btn(signalId,'tp5')).setLabel('🎯 TP5 Hit').setStyle(ButtonStyle.Success),
-  new ButtonBuilder().setCustomId(btn(signalId,'upd:tpprices')).setLabel('✏️ Update TP Prices').setStyle(ButtonStyle.Secondary),
-  new ButtonBuilder().setCustomId(btn(signalId,'upd:plan')).setLabel('✏️ Update TP % Plan').setStyle(ButtonStyle.Secondary),
-  new ButtonBuilder().setCustomId(btn(signalId,'upd:maxr')).setLabel('📈 Set Max R').setStyle(ButtonStyle.Secondary),
-);
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(btn(signalId,'tp4')).setLabel('🎯 TP4 Hit').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(btn(signalId,'tp5')).setLabel('🎯 TP5 Hit').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(btn(signalId,'upd:tpprices')).setLabel('✏️ Update TP Prices').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'upd:plan')).setLabel('✏️ Update TP % Plan').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'upd:maxr')).setLabel('📈 Set Max R').setStyle(ButtonStyle.Secondary),
+  );
 
-  // Keep ≤5 per row
   const row3 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'upd:trade')).setLabel('✏️ Update Trade Info').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:roles')).setLabel('✏️ Update Role Mention').setStyle(ButtonStyle.Secondary),
@@ -822,7 +881,7 @@ client.on('interactionCreate', async (interaction) => {
               files = [ new AttachmentBuilder(buf, { name: attachmentName }) ];
               attachmentUrl = userAtt.url;
             } else {
-              files = []; // Node < 18 — skip inline attach
+              files = [];
             }
           } catch {
             files = [];
@@ -859,9 +918,8 @@ client.on('interactionCreate', async (interaction) => {
           const v = interaction.fields.getTextInputValue(`upd_${k}`)?.trim();
           if (v !== undefined && v !== '') patch[k] = v;
         }
-        await updateSignal(id, { ...patch });
+        await applyPatch(id, 'upd:tpprices', async () => ({ ...patch }));
         const updated = normalizeSignal(await getSignal(id));
-        if (isSlMovedToBE(updated)) { updated.validReentry = false; await updateSignal(id, { validReentry: false }); }
         await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ TP prices updated.' });
@@ -880,8 +938,9 @@ client.on('interactionCreate', async (interaction) => {
           if (raw === '' || raw === undefined) continue;
           if (isNum(raw)) patchPlan[t.toUpperCase()] = Math.max(0, Math.min(100, Number(raw)));
         }
-        await updateSignal(id, { plan: patchPlan });
-        await editSignalMessage(normalizeSignal(await getSignal(id)));
+        await applyPatch(id, 'upd:plan', async () => ({ plan: patchPlan }));
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ TP % plan updated.' });
       }
@@ -906,9 +965,8 @@ client.on('interactionCreate', async (interaction) => {
         if (dir === 'LONG' || dir === 'SHORT') patch.direction = dir;
         if (reason !== undefined) patch.reason = reason;
 
-        await updateSignal(id, patch);
+        await applyPatch(id, 'upd:trade', async () => patch);
         const updated = normalizeSignal(await getSignal(id));
-        if (isSlMovedToBE(updated)) { updated.validReentry = false; await updateSignal(id, { validReentry: false }); }
         await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Trade info updated.' });
@@ -922,8 +980,9 @@ client.on('interactionCreate', async (interaction) => {
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
         const rolesRaw = interaction.fields.getTextInputValue('roles_input') ?? '';
-        await updateSignal(id, { extraRole: rolesRaw });
-        await editSignalMessage(normalizeSignal(await getSignal(id)));
+        await applyPatch(id, 'upd:roles', async () => ({ extraRole: rolesRaw }));
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Role mentions updated.' });
       }
@@ -936,8 +995,9 @@ client.on('interactionCreate', async (interaction) => {
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
         const raw = interaction.fields.getTextInputValue('max_r')?.trim();
         if (!isNum(raw)) return safeEditReply(interaction, { content: '❌ Max R must be a number.' });
-        await updateSignal(id, { maxR: Number(raw) });
-        await editSignalMessage(normalizeSignal(await getSignal(id)));
+        await applyPatch(id, 'upd:maxr', async () => ({ maxR: Number(raw) }));
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Max R updated.' });
       }
@@ -952,8 +1012,9 @@ client.on('interactionCreate', async (interaction) => {
         if (!url || !/^https?:\/\//i.test(url)) {
           return safeEditReply(interaction, { content: '❌ Please provide a valid http(s) URL.' });
         }
-        await updateSignal(id, { chartUrl: url, chartAttached: false });
-        await editSignalMessage(normalizeSignal(await getSignal(id)));
+        await applyPatch(id, 'upd:chart', async () => ({ chartUrl: url, chartAttached: false }));
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Chart link updated.' });
       }
@@ -965,11 +1026,11 @@ client.on('interactionCreate', async (interaction) => {
         const tpKey = parts[2];
         const id = parts[3];
 
-        let signal = normalizeSignal(await getSignal(id));
-        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
+        let sig = normalizeSignal(await getSignal(id));
+        if (!sig) return safeEditReply(interaction, { content: 'Signal not found.' });
 
         const tpUpper = tpKey.toUpperCase();
-        if (signal.tpHits?.[tpUpper]) return safeEditReply(interaction, { content: `${tpUpper} already recorded.` });
+        if (sig.tpHits?.[tpUpper]) return safeEditReply(interaction, { content: `${tpUpper} already recorded.` });
 
         const pctRaw = interaction.fields.getTextInputValue('tp_pct')?.trim();
         const hasPct = pctRaw !== undefined && pctRaw !== null && pctRaw !== '';
@@ -978,35 +1039,29 @@ client.on('interactionCreate', async (interaction) => {
           return safeEditReply(interaction, { content: '❌ Close % must be between 0 and 100 (or leave blank to skip).' });
         }
 
-        const tpPrice = signal[tpKey];
+        const tpPrice = sig[tpKey];
         if (hasPct && pct > 0 && isNum(tpPrice)) {
-          const already = (signal.fills || []).some(f => String(f.source).toUpperCase() === tpUpper);
-          if (!already) signal.fills.push({ pct: Number(pct), price: Number(tpPrice), source: tpUpper });
+          const already = (sig.fills || []).some(f => String(f.source).toUpperCase() === tpUpper);
+          if (!already) sig.fills.push({ pct: Number(pct), price: Number(tpPrice), source: tpUpper });
         }
 
-        // mark TP
-        signal.latestTpHit = tpUpper;
-        signal.tpHits[tpUpper] = true;
+        // wrap in history
+        await applyPatch(id, 'tp:hit', async () => {
+          const patch = {};
+          const fills = (sig.fills || []).slice();
+          const tpHits = { ...(sig.tpHits||{}) };
+          let latestTpHit = tpUpper;
 
-        const extra = {};
-        if (signal.beSet && !signal.beMovedAfter && tpUpper === 'TP1') {
-          signal.beMovedAfter = 'TP1';
-          extra.beMovedAfter = 'TP1';
-        }
-        // capture TP for profit SL if needed
-        if (signal.slProfitSet && !signal.slProfitAfterTP) {
-          signal.slProfitAfterTP = tpUpper;
-          extra.slProfitAfterTP = tpUpper;
-        }
+          tpHits[tpUpper] = true;
 
-        await updateSignal(id, {
-          fills: signal.fills,
-          latestTpHit: signal.latestTpHit,
-          tpHits: signal.tpHits,
-          ...extra
+          if (sig.beSet && !sig.beMovedAfter && tpUpper === 'TP1') patch.beMovedAfter = 'TP1';
+          if (sig.slProfitSet && !sig.slProfitAfterTP) patch.slProfitAfterTP = tpUpper;
+
+          return { fills, tpHits, latestTpHit, ...patch };
         });
 
-        await editSignalMessage(signal);
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${hasPct && pct > 0 ? ` (${pct}%).` : '.'}` });
       }
@@ -1038,12 +1093,17 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         const latest = signal.latestTpHit || TP_KEYS.find(k => signal[k] !== null)?.toUpperCase() || null;
-        signal.status = STATUS.CLOSED;
-        signal.validReentry = false;
-        signal.latestTpHit = latest;
 
-        await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, latestTpHit: latest, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
-        await editSignalMessage(signal);
+        await applyPatch(id, 'fullclose', async () => ({
+          fills: signal.fills,
+          status: STATUS.CLOSED,
+          validReentry: false,
+          latestTpHit: latest,
+          ...(hasFinalR ? { finalR: signal.finalR } : {})
+        }));
+
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Fully closed.' });
       }
@@ -1052,7 +1112,7 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.customId.startsWith('modal:finalr:')) {
         await ensureDeferred(interaction);
         try {
-          const parts = interaction.customId.split(':'); // ['modal','finalr','BE'|'OUT','<id>']
+          const parts = interaction.customId.split(':');
           const kind  = parts[2];
           const id    = parts[3];
 
@@ -1081,15 +1141,12 @@ client.on('interactionCreate', async (interaction) => {
             }
           }
 
-          signal.status = (kind === 'BE') ? STATUS.STOPPED_BE : STATUS.STOPPED_OUT;
-          signal.validReentry = false;
-
-          await updateSignal(id, {
+          await applyPatch(id, kind === 'BE' ? 'stop:be' : 'stop:out', async () => ({
             fills: signal.fills,
-            status: signal.status,
+            status: kind === 'BE' ? STATUS.STOPPED_BE : STATUS.STOPPED_OUT,
             validReentry: false,
             ...(hasFinalR ? { finalR: signal.finalR } : {})
-          });
+          }));
 
           const updated = normalizeSignal(await getSignal(id));
           await editSignalMessage(updated);
@@ -1118,14 +1175,14 @@ client.on('interactionCreate', async (interaction) => {
 
         const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits?.[k]) || null;
 
-        await updateSignal(id, {
+        await applyPatch(id, 'set:profit', async () => ({
           slProfitSet: true,
           slProfitAfter: String(newSL),
           slProfitAfterTP: highestHit,
           validReentry: false,
           beSet: false,
           beMovedAfter: null
-        });
+        }));
 
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
@@ -1155,12 +1212,14 @@ client.on('interactionCreate', async (interaction) => {
         const keyLine = (interaction.fields.getTextInputValue('undo_tp_key') || '').trim().toUpperCase();
         if (!/^TP[1-5]$/.test(keyLine)) return safeEditReply(interaction, { content: '❌ Enter TP1–TP5.' });
 
-        signal.fills = (signal.fills || []).filter(f => String(f.source).toUpperCase() !== keyLine);
-        signal.tpHits = { ...(signal.tpHits || {}) , [keyLine]: false };
-        const order = ['TP5','TP4','TP3','TP2','TP1'];
-        signal.latestTpHit = order.find(k => signal.tpHits[k]) || null;
+        await applyPatch(id, 'tp:undo', async () => {
+          const fills = (signal.fills || []).filter(f => String(f.source).toUpperCase() !== keyLine);
+          const tpHits = { ...(signal.tpHits || {}), [keyLine]: false };
+          const order = ['TP5','TP4','TP3','TP2','TP1'];
+          const latestTpHit = order.find(k => tpHits[k]) || null;
+          return { fills, tpHits, latestTpHit };
+        });
 
-        await updateSignal(id, { fills: signal.fills, tpHits: signal.tpHits, latestTpHit: signal.latestTpHit });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated); await updateSummary();
         return safeEditReply(interaction, { content: `↩️ ${keyLine} undone.` });
@@ -1196,7 +1255,7 @@ client.on('interactionCreate', async (interaction) => {
         const patch = { validReentry: false, beSet: true, slProfitSet: false, slProfitAfter: null, slProfitAfterTP: null };
         if (!sig0.beMovedAfter && highestHit) patch.beMovedAfter = highestHit;
 
-        await updateSignal(id, patch);
+        await applyPatch(id, 'set:be', async () => patch);
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated); await updateSummary();
         return safeEditReply(interaction, { content: '✅ SL moved to breakeven.' });
@@ -1218,20 +1277,18 @@ client.on('interactionCreate', async (interaction) => {
           signal.fills = Array.isArray(signal.fills) ? signal.fills : [];
           signal.fills.push({ pct: remaining, price, source: 'STOP_PROFIT' });
         }
-        signal.status = STATUS.CLOSED;
-        signal.validReentry = false;
 
-        // mark for “stopped in profits after TPx”
         const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits?.[k]) || null;
 
-        await updateSignal(id, {
+        await applyPatch(id, 'stop:profit', async () => ({
           fills: signal.fills,
-          status: signal.status,
+          status: STATUS.CLOSED,
           validReentry: false,
           stoppedInProfit: true,
           stoppedInProfitAfterTP: highestHit
-        });
-        await editSignalMessage(signal);
+        }));
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Stopped in profit.' });
       }
@@ -1247,6 +1304,7 @@ client.on('interactionCreate', async (interaction) => {
           new ButtonBuilder().setCustomId(btn(id,'undo:be')).setLabel('↩ Undo SL → BE').setStyle(ButtonStyle.Secondary),
           new ButtonBuilder().setCustomId(btn(id,'undo:profit')).setLabel('↩ Undo SL → Profit').setStyle(ButtonStyle.Secondary),
           new ButtonBuilder().setCustomId(btn(id,'undo:reopen')).setLabel('↩ Reopen').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId(btn(id,'undo:last')).setLabel('↩ Undo Last').setStyle(ButtonStyle.Secondary),
         );
         return interaction.reply({ content: 'Undo actions:', components: [row], flags: MessageFlags.Ephemeral });
       }
@@ -1257,18 +1315,14 @@ client.on('interactionCreate', async (interaction) => {
       }
       if (key === 'undo:be') {
         await ensureDeferred(interaction);
-        let signal = normalizeSignal(await getSignal(id));
-        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
-        await updateSignal(id, { beSet:false, beMovedAfter:null });
+        await applyPatch(id, 'set:be', async () => ({ beSet:false, beMovedAfter:null }));
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated); await updateSummary();
         return safeEditReply(interaction, { content: '↩️ Undid SL → BE.' });
       }
       if (key === 'undo:profit') {
         await ensureDeferred(interaction);
-        let signal = normalizeSignal(await getSignal(id));
-        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
-        await updateSignal(id, { slProfitSet:false, slProfitAfter:null, slProfitAfterTP:null, stoppedInProfit:false, stoppedInProfitAfterTP:null });
+        await applyPatch(id, 'set:profit', async () => ({ slProfitSet:false, slProfitAfter:null, slProfitAfterTP:null }));
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated); await updateSummary();
         return safeEditReply(interaction, { content: '↩️ Undid SL → Profit.' });
@@ -1281,14 +1335,21 @@ client.on('interactionCreate', async (interaction) => {
         if (![STATUS.CLOSED, STATUS.STOPPED_BE, STATUS.STOPPED_OUT].includes(signal.status)) {
           return safeEditReply(interaction, { content: 'ℹ️ Trade is already active.' });
         }
-        signal.fills = (signal.fills || []).filter(f => !['FINAL_CLOSE','STOP_BE','STOP_OUT','STOP_PROFIT'].includes(String(f.source).toUpperCase()));
-        signal.status = STATUS.RUN_VALID;
-        signal.validReentry = true;
-
-        await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: true, stoppedInProfit:false, stoppedInProfitAfterTP:null });
+        const fills = (signal.fills || []).filter(f => !['FINAL_CLOSE','STOP_BE','STOP_OUT','STOP_PROFIT'].includes(String(f.source).toUpperCase()));
+        await applyPatch(id, 'reopen', async () => ({
+          fills, status: STATUS.RUN_VALID, validReentry: true, stoppedInProfit:false, stoppedInProfitAfterTP:null
+        }));
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated); await updateSummary();
         return safeEditReply(interaction, { content: '↩️ Reopened trade.' });
+      }
+      if (key === 'undo:last') {
+        await ensureDeferred(interaction);
+        const { undone, action } = await undoLast(id);
+        if (!undone) return safeEditReply(interaction, { content: 'Nothing to undo.' });
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated); await updateSummary();
+        return safeEditReply(interaction, { content: `↩️ Undid last action: ${action}.` });
       }
 
       if (key === 'del') {
@@ -1320,21 +1381,18 @@ client.on('interactionCreate', async (interaction) => {
           if (!already) sig.fills.push({ pct: Number(planPct), price: Number(tpPrice), source: tpUpper });
         }
 
-        sig.latestTpHit = tpUpper;
-        sig.tpHits[tpUpper] = true;
+        // history-wrapped mutation
+        await applyPatch(id, 'tp:hit', async () => {
+          const tpHits = { ...(sig.tpHits||{}) };
+          tpHits[tpUpper] = true;
+          const patch = {};
+          if (sig.beSet && !sig.beMovedAfter && tpUpper === 'TP1') patch.beMovedAfter = 'TP1';
+          if (sig.slProfitSet && !sig.slProfitAfterTP) patch.slProfitAfterTP = tpUpper;
+          return { fills: sig.fills, tpHits, latestTpHit: tpUpper, ...patch };
+        });
 
-        const extra = {};
-        if (sig.beSet && !sig.beMovedAfter && tpUpper === 'TP1') {
-          sig.beMovedAfter = 'TP1';
-          extra.beMovedAfter = 'TP1';
-        }
-        if (sig.slProfitSet && !sig.slProfitAfterTP) {
-          sig.slProfitAfterTP = tpUpper;
-          extra.slProfitAfterTP = tpUpper;
-        }
-
-        await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits, ...extra });
-        await editSignalMessage(sig);
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated);
         await updateSummary();
         await ensureDeferred(interaction);
         return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${isNum(planPct) && Number(planPct) > 0 ? ` (${planPct}%).` : '.'}` });
@@ -1388,6 +1446,7 @@ async function createSignal(payload, channelId) {
     slProfitAfterTP: null,
     stoppedInProfit: false,
     stoppedInProfitAfterTP: null,
+    history: [],
   });
 
   await saveSignal(signal);
