@@ -92,7 +92,11 @@ function normalizeSignal(raw) {
   s.beMovedAfter = s.beMovedAfter || null;
   s.slProfitSet = Boolean(s.slProfitSet);
   s.slProfitAfter = s.slProfitAfter || null;
-  s.slProfitAfterTP = s.slProfitAfterTP || null; // NEW
+  s.slProfitAfterTP = s.slProfitAfterTP || null; // track TP when SL→Profit set
+
+  // Optional display flags for “stopped in profits”
+  s.stoppedInProfit = Boolean(s.stoppedInProfit);
+  s.stoppedInProfitAfterTP = s.stoppedInProfitAfterTP || null;
 
   s.createdAt = isNum(s.createdAt) ? Number(s.createdAt) : s.createdAt || null;
   return s;
@@ -370,11 +374,11 @@ function controlRows(signalId) {
   const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'tp4')).setLabel('🎯 TP4 Hit').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(btn(signalId,'tp5')).setLabel('🎯 TP5 Hit').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(btn(signalId,'upd:tpprices')).setLabel(✏️ Update TP Prices').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'upd:tpprices')).setLabel('✏️ Update TP Prices').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:plan')).setLabel('✏️ Update TP % Plan').setStyle(ButtonStyle.Secondary),
   );
 
-  // keep ≤5 buttons per row
+  // Keep ≤5 per row
   const row3 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'upd:trade')).setLabel('✏️ Update Trade Info').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:roles')).setLabel('✏️ Update Role Mention').setStyle(ButtonStyle.Secondary),
@@ -809,11 +813,19 @@ client.on('interactionCreate', async (interaction) => {
         let attachmentUrl = null;
 
         if (userAtt) {
-          const res = await fetch(userAtt.url);
-          const buf = Buffer.from(await res.arrayBuffer());
-          attachmentName = userAtt.name || 'chart.png';
-          files = [ new AttachmentBuilder(buf, { name: attachmentName }) ];
-          attachmentUrl = userAtt.url;
+          try {
+            if (typeof fetch === 'function') {
+              const res = await fetch(userAtt.url);
+              const buf = Buffer.from(await res.arrayBuffer());
+              attachmentName = userAtt.name || 'chart.png';
+              files = [ new AttachmentBuilder(buf, { name: attachmentName }) ];
+              attachmentUrl = userAtt.url;
+            } else {
+              files = []; // Node < 18 — skip inline attach
+            }
+          } catch {
+            files = [];
+          }
         }
 
         const embedPack = renderRecapEmbed(signal, {
@@ -834,6 +846,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
       }
 
+      // TP prices
       if (interaction.customId.startsWith('modal:tpprices:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -853,6 +866,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ TP prices updated.' });
       }
 
+      // plan
       if (interaction.customId.startsWith('modal:plan:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -871,6 +885,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ TP % plan updated.' });
       }
 
+      // trade info
       if (interaction.customId.startsWith('modal:trade:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -898,6 +913,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Trade info updated.' });
       }
 
+      // roles
       if (interaction.customId.startsWith('modal:roles:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -911,6 +927,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Role mentions updated.' });
       }
 
+      // max R
       if (interaction.customId.startsWith('modal:maxr:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -924,6 +941,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Max R updated.' });
       }
 
+      // chart url
       if (interaction.customId.startsWith('modal:chart:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -939,6 +957,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Chart link updated.' });
       }
 
+      // TP modal submit (records TP hit)
       if (interaction.customId.startsWith('modal:tp:')) {
         await ensureDeferred(interaction);
         const parts = interaction.customId.split(':');
@@ -991,6 +1010,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${hasPct && pct > 0 ? ` (${pct}%).` : '.'}` });
       }
 
+      // full close
       if (interaction.customId.startsWith('modal:full:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -1031,7 +1051,7 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.customId.startsWith('modal:finalr:')) {
         await ensureDeferred(interaction);
         try {
-          const parts = interaction.customId.split(':');
+          const parts = interaction.customId.split(':'); // ['modal','finalr','BE'|'OUT','<id>']
           const kind  = parts[2];
           const id    = parts[3];
 
@@ -1200,7 +1220,16 @@ client.on('interactionCreate', async (interaction) => {
         signal.status = STATUS.CLOSED;
         signal.validReentry = false;
 
-        await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false });
+        // mark for “stopped in profits after TPx”
+        const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits?.[k]) || null;
+
+        await updateSignal(id, {
+          fills: signal.fills,
+          status: signal.status,
+          validReentry: false,
+          stoppedInProfit: true,
+          stoppedInProfitAfterTP: highestHit
+        });
         await editSignalMessage(signal);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Stopped in profit.' });
@@ -1238,7 +1267,7 @@ client.on('interactionCreate', async (interaction) => {
         await ensureDeferred(interaction);
         let signal = normalizeSignal(await getSignal(id));
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
-        await updateSignal(id, { slProfitSet:false, slProfitAfter:null, slProfitAfterTP:null });
+        await updateSignal(id, { slProfitSet:false, slProfitAfter:null, slProfitAfterTP:null, stoppedInProfit:false, stoppedInProfitAfterTP:null });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated); await updateSummary();
         return safeEditReply(interaction, { content: '↩️ Undid SL → Profit.' });
@@ -1255,7 +1284,7 @@ client.on('interactionCreate', async (interaction) => {
         signal.status = STATUS.RUN_VALID;
         signal.validReentry = true;
 
-        await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: true });
+        await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: true, stoppedInProfit:false, stoppedInProfitAfterTP:null });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated); await updateSummary();
         return safeEditReply(interaction, { content: '↩️ Reopened trade.' });
@@ -1356,6 +1385,8 @@ async function createSignal(payload, channelId) {
     slProfitSet: false,
     slProfitAfter: null,
     slProfitAfterTP: null,
+    stoppedInProfit: false,
+    stoppedInProfitAfterTP: null,
   });
 
   await saveSignal(signal);

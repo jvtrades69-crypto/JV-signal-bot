@@ -184,7 +184,7 @@ function renderSignalText(signal){
     }else{
       const info=computeRealized(signal);
       const pretty=signAbsR(info.realized).text;
-      const list=info.parts.length?info.parts.join(', ')`:null;
+      const list=info.parts.length ? info.parts.join(', ') : null;
       if(signal.status==='RUN_VALID'){ if(list) lines.push(`${pretty} so far ( ${list} )`); }
       else if(signal.status==='CLOSED'){
         if (signal.stoppedInProfit) {
@@ -198,7 +198,7 @@ function renderSignalText(signal){
         }
       }else if(signal.status==='STOPPED_BE'){
         if(signal.latestTpHit) lines.push(`${pretty} ( stopped breakeven after ${signal.latestTpHit} )`);
-        else lines.push('0.00R ( stopped breakeven )`);
+        else lines.push('0.00R ( stopped breakeven )');
       }else if(signal.status==='STOPPED_OUT'){
         lines.push(`${pretty} ( stopped out )`);
       }else if(list){
@@ -350,7 +350,7 @@ function parseNotesOverrides(notesLines=[]){
   return { finalOv, peakOv };
 }
 
-// recap EMBED (unchanged helper)
+// recap EMBED (helper unchanged)
 function renderRecapEmbed(
   signal,
   {
