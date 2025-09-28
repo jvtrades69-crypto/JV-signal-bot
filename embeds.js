@@ -55,16 +55,21 @@ function computeTpPercents(signal){
 function buildTitle(signal){
   const dirWord=signal.direction==='SHORT'?'Short':'Long';
   const circle =signal.direction==='SHORT'?'🔴':'🟢';
-  const base=`**$${String(signal.asset).toUpperCase()} | ${dirWord} ${circle}**`;
+  const head   = `$${String(signal.asset).toUpperCase()} | ${dirWord} ${circle}`;
+
   const { realized }=computeRealized(signal);
-  if(signal.status==='STOPPED_OUT') return `${base} (**Loss -${Math.abs(realized).toFixed(2)}R**)`;
-  if(signal.status==='STOPPED_BE'){
+  let suffix = '';
+  if (signal.status==='STOPPED_OUT') {
+    suffix = `Loss -${Math.abs(realized).toFixed(2)}R`;
+  } else if (signal.status==='STOPPED_BE') {
     const anyFill=(signal.fills||[]).length>0;
-    return `${base} (**${anyFill?`Win +${realized.toFixed(2)}R`:'Breakeven'}**)`;
+    suffix = anyFill ? `Win +${realized.toFixed(2)}R` : 'Breakeven';
+  } else if (signal.status==='CLOSED') {
+    suffix = `Win +${realized.toFixed(2)}R`;
+  } else if ((signal.fills||[]).length>0) {
+    suffix = `Win +${realized.toFixed(2)}R so far`;
   }
-  if(signal.status==='CLOSED') return `${base} (**Win +${realized.toFixed(2)}R**)`;
-  if((signal.fills||[]).length>0) return `${base} (**Win +${realized.toFixed(2)}R so far**)`;
-  return base;
+  return suffix ? `**${head} (${suffix})**` : `**${head}**`;
 }
 
 // ---- live signal (TEXT) ----
@@ -107,26 +112,33 @@ function renderSignalText(signal){
 
     const reentry = signal.validReentry ? '✅' : '❌';
 
-// Mutually exclusive — Profit takes precedence over BE
-let extra = '';
-if (Boolean(signal.slProfitSet)) {
-  const afterTP = signal.slProfitAfterTP ? ` after ${signal.slProfitAfterTP}` : '';
-  const tag = signal.slProfitAfter
-    ? (isNaN(Number(signal.slProfitAfter)) ? `${signal.slProfitAfter}` : `at \`${fmt(signal.slProfitAfter)}\``)
-    : '';
-  extra = ` | SL moved into profits${afterTP}${tag ? ` ${tag}` : ''}`;
+    // Mutually exclusive — Profit takes precedence over BE
+    let extra = '';
+    if (Boolean(signal.slProfitSet)) {
+      const afterTP = signal.slProfitAfterTP ? ` after ${signal.slProfitAfterTP}` : '';
+      const tag = signal.slProfitAfter
+        ? (isNaN(Number(signal.slProfitAfter)) ? `${signal.slProfitAfter}` : `at \`${fmt(signal.slProfitAfter)}\``)
+        : '';
+      extra = ` | SL moved into profits${afterTP}${tag ? ` ${tag}` : ''}`;
+    } else if (Boolean(signal.beSet) || Boolean(signal.beMovedAfter)) {
+      const afterBE = signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : '';
+      extra = ` | SL moved to breakeven${afterBE}`;
+    }
 
-} else if (Boolean(signal.beSet) || Boolean(signal.beMovedAfter)) {
-  const afterBE = signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : '';
-  extra = ` | SL moved to breakeven${afterBE}`;
-}
-
-lines.push(`Valid for re-entry: ${reentry}${extra}`);
+    lines.push(`Valid for re-entry: ${reentry}${extra}`);
 
   }else{
     if(signal.status==='CLOSED'){
-      const tp=signal.latestTpHit?` after ${signal.latestTpHit}`:'';
-      lines.push(`Inactive 🟥 | Fully closed${tp}`);
+      // Prefer explicit "stopped in profits" if flagged
+      if (signal.stoppedInProfit) {
+        const tp = signal.stoppedInProfitAfterTP
+          ? ` after ${signal.stoppedInProfitAfterTP}`
+          : (signal.latestTpHit ? ` after ${signal.latestTpHit}` : '');
+        lines.push(`Inactive 🟥 | Stopped in profits${tp}`);
+      } else {
+        const tp=signal.latestTpHit?` after ${signal.latestTpHit}`:'';
+        lines.push(`Inactive 🟥 | Fully closed${tp}`);
+      }
     }else if(signal.status==='STOPPED_BE'){
       const tp=signal.latestTpHit?` after ${signal.latestTpHit}`:'';
       lines.push(`Inactive 🟥 | Stopped breakeven${tp}`);
@@ -152,8 +164,15 @@ lines.push(`Valid for re-entry: ${reentry}${extra}`);
     if(signal.status!=='RUN_VALID' && signal.finalR!=null){
       const {text}=signAbsR(Number(signal.finalR));
       if(signal.status==='CLOSED'){
-        const after=signal.latestTpHit?` after ${signal.latestTpHit}`:'';
-        lines.push(`${text} ( fully closed${after} )`);
+        if (signal.stoppedInProfit) {
+          const after = signal.stoppedInProfitAfterTP
+            ? ` after ${signal.stoppedInProfitAfterTP}`
+            : (signal.latestTpHit ? ` after ${signal.latestTpHit}` : '');
+          lines.push(`${text} ( stopped in profits${after} )`);
+        } else {
+          const after=signal.latestTpHit?` after ${signal.latestTpHit}`:'';
+          lines.push(`${text} ( fully closed${after} )`);
+        }
       }else if(signal.status==='STOPPED_BE'){
         if(Number(signal.finalR)===0) lines.push('0.00R ( stopped breakeven )');
         else{
@@ -169,8 +188,15 @@ lines.push(`Valid for re-entry: ${reentry}${extra}`);
       const list=info.parts.length?info.parts.join(', '):null;
       if(signal.status==='RUN_VALID'){ if(list) lines.push(`${pretty} so far ( ${list} )`); }
       else if(signal.status==='CLOSED'){
-        const after=signal.latestTpHit?` after ${signal.latestTpHit}`:'';
-        lines.push(`${pretty} ( fully closed${after} )`);
+        if (signal.stoppedInProfit) {
+          const after = signal.stoppedInProfitAfterTP
+            ? ` after ${signal.stoppedInProfitAfterTP}`
+            : (signal.latestTpHit ? ` after ${signal.latestTpHit}` : '');
+          lines.push(`${pretty} ( stopped in profits${after} )`);
+        } else {
+          const after=signal.latestTpHit?` after ${signal.latestTpHit}`:'';
+          lines.push(`${pretty} ( fully closed${after} )`);
+        }
       }else if(signal.status==='STOPPED_BE'){
         if(signal.latestTpHit) lines.push(`${pretty} ( stopped breakeven after ${signal.latestTpHit} )`);
         else lines.push('0.00R ( stopped breakeven )');
