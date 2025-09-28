@@ -73,7 +73,7 @@ function buildTitle(signal){
 }
 
 // ---- live signal (TEXT) ----
-function renderSignalText(signal){
+export function renderSignalText(signal){
   const lines=[];
   lines.push(buildTitle(signal),'','📊 **Trade Details**');
   lines.push(`- Entry: \`${fmt(signal.entry)}\``);
@@ -162,12 +162,16 @@ function renderSignalText(signal){
     lines.push('','💰 **Realized**');
     if(signal.status!=='RUN_VALID' && signal.finalR!=null){
       const {text}=signAbsR(Number(signal.finalR));
+      const stopFill = (signal.fills || []).slice().reverse().find(f =>
+        String(f.source).toUpperCase() === 'STOP_PROFIT' || String(f.source).toUpperCase() === 'STOP_BE'
+      );
+      const stopAt = isFinite(stopFill?.price) ? ` at \`${fmt(stopFill.price)}\`` : '';
       if(signal.status==='CLOSED'){
         if (signal.stoppedInProfit) {
           const after = signal.stoppedInProfitAfterTP
             ? ` after ${signal.stoppedInProfitAfterTP}`
             : (signal.latestTpHit ? ` after ${signal.latestTpHit}` : '');
-          lines.push(`${text} ( stopped in profits${after} )`);
+          lines.push(`${text} ( stopped in profits${after}${stopAt} )`);
         } else {
           const after=signal.latestTpHit?` after ${signal.latestTpHit}`:'';
           lines.push(`${text} ( fully closed${after} )`);
@@ -176,7 +180,7 @@ function renderSignalText(signal){
         if(Number(signal.finalR)===0) lines.push('0.00R ( stopped breakeven )');
         else{
           const after=signal.latestTpHit?` after ${signal.latestTpHit}`:'';
-          lines.push(`${text} ( stopped breakeven${after} )`);
+          lines.push(`${text} ( stopped breakeven${after}${stopAt} )`);
         }
       }else if(signal.status==='STOPPED_OUT'){
         lines.push(`${text} ( stopped out )`);
@@ -184,14 +188,18 @@ function renderSignalText(signal){
     }else{
       const info=computeRealized(signal);
       const pretty=signAbsR(info.realized).text;
-      const list=info.parts.length ? info.parts.join(', ') : null;
+      const stopFill = (signal.fills || []).slice().reverse().find(f =>
+        String(f.source).toUpperCase() === 'STOP_PROFIT' || String(f.source).toUpperCase() === 'STOP_BE'
+      );
+      const stopAt = isFinite(stopFill?.price) ? ` at \`${fmt(stopFill.price)}\`` : '';
+      const list = info.parts.length ? info.parts.join(', ') : null;
       if(signal.status==='RUN_VALID'){ if(list) lines.push(`${pretty} so far ( ${list} )`); }
       else if(signal.status==='CLOSED'){
         if (signal.stoppedInProfit) {
           const after = signal.stoppedInProfitAfterTP
             ? ` after ${signal.stoppedInProfitAfterTP}`
             : (signal.latestTpHit ? ` after ${signal.latestTpHit}` : '');
-          lines.push(`${pretty} ( stopped in profits${after} )`);
+        lines.push(`${pretty} ( stopped in profits${after}${stopAt} )`);
         } else {
           const after=signal.latestTpHit?` after ${signal.latestTpHit}`:'';
           lines.push(`${pretty} ( fully closed${after} )`);
@@ -214,7 +222,7 @@ function renderSignalText(signal){
 }
 
 // ---- summary (TEXT) ----
-function renderSummaryText(activeSignals){
+export function renderSummaryText(activeSignals){
   const title='**JV Current Active Trades** 📊';
   if(!activeSignals||!activeSignals.length){
     return `${title}\n\n• There are currently no ongoing trades valid for entry – stay posted for future trades!`;
@@ -234,7 +242,7 @@ function renderSummaryText(activeSignals){
 }
 
 // ---- recap (TEXT) ----
-function renderRecapText(signal, extras = {}, rrChips = []){
+export function renderRecapText(signal, extras = {}, rrChips = []){
   const dirWord=signal.direction==='SHORT'?'Short':'Long';
   const circle =signal.direction==='SHORT'?'🔴':'🟢';
 
@@ -317,118 +325,3 @@ function renderRecapText(signal, extras = {}, rrChips = []){
   if(signal.jumpUrl) lines.push(`🔗 [View Original Trade](${signal.jumpUrl})`);
   return lines.join('\n');
 }
-
-// ---- monthly recap (TEXT) ----
-function renderMonthlyRecap(signals, year, monthIdx){
-  const monthName=new Date(Date.UTC(year, monthIdx, 1)).toLocaleString('en-US',{month:'long'});
-  const title=`📊 **Monthly Trade Recap — ${monthName} ${year}**`;
-  if(!signals.length) return `${title}\nNo trades this month.`;
-  let wins=0, losses=0, be=0, net=0;
-  const rChip=(r)=>{ const v=Number(r||0); const emo=v>0?'✅':v<0?'❌':'➖'; const sign=v>0?'+':v<0?'':''; return `${sign}${v.toFixed(2)}R ${emo}`; };
-  const lines=[];
-  for(const s of signals){
-    const { realized }=computeRealized(s);
-    const r=s.finalR!=null?Number(s.finalR):realized;
-    net+=r; if(r>0) wins++; else if(r<0) losses++; else be++;
-    const dir=s.direction==='SHORT'?'Short 🔴':'Long 🟢';
-    lines.push(`**$${s.asset} | ${rChip(r)} (${dir})**`);
-  }
-  const header=`**Total trades:** ${signals.length} | Wins: ${wins} | Losses: ${losses} | BE: ${be}\n**Net Result:** ${rChip(net)}`;
-  return [title, header, '', ...lines].join('\n');
-}
-
-// notes overrides for embed recap
-function parseNotesOverrides(notesLines=[]){
-  let finalOv=null, peakOv=null;
-  for(const raw of notesLines){
-    const line=String(raw??'').trim();
-    const mFinal=line.match(/^final\s*:\s*([+-]?\d+(?:\.\d+)?)(?:\s*R)?\s*$/i);
-    const mPeak =line.match(/^(peak|max)\s*:\s*([+-]?\d+(?:\.\d+)?)(?:\s*R)?\s*$/i);
-    if(mFinal){ finalOv=Number(mFinal[1]); continue; }
-    if(mPeak ){ peakOv =Number(mPeak[2]);  continue; }
-  }
-  return { finalOv, peakOv };
-}
-
-// recap EMBED (helper unchanged)
-function renderRecapEmbed(
-  signal,
-  {
-    roleId,
-    imageUrl,
-    attachmentName,
-    attachmentUrl,
-    chartUrl,
-    notesLines = [],
-    beToleranceR = 0.05,
-    beAfterFallback = 'TP1',
-    beColor = { win: 0x2ecc71, be: 0xf1c40f, loss: 0xe74c3c }
-  } = {}
-){
-  const dirWord=signal.direction==='SHORT'?'Short':'Long';
-  const circle =signal.direction==='SHORT'?'🔴':'🟢';
-
-  const { finalOv, peakOv }=parseNotesOverrides(notesLines);
-  const { realized }=computeRealized(signal);
-  const computedFinal=(signal.status!=='RUN_VALID'&&signal.finalR!=null)?Number(signal.finalR):realized;
-  const finalRBase=Number.isFinite(computedFinal)?computedFinal:0;
-  const finalR=(typeof finalOv==='number')?finalOv:finalRBase;
-
-  const withinBE=Math.abs(finalR)<beToleranceR || signal.status==='STOPPED_BE';
-  const state= withinBE?'CLOSED_BE' : finalR>0?'CLOSED_WIN' : finalR<0?'CLOSED_LOSS' : 'CLOSED_BE';
-
-  const title=`${String(signal.asset).toUpperCase()} — Trade Recap (${dirWord}) ${circle}`;
-  const afterTxt=signal.latestTpHit||signal.beMovedAfter||beAfterFallback;
-  const desc= state==='CLOSED_BE'
-    ? `Closed at **Breakeven**${afterTxt?` after **${afterTxt}**`:''}`
-    : state==='CLOSED_WIN'
-    ? `Closed in **Profit**${signal.latestTpHit?` after **${signal.latestTpHit}**`:''}`
-    : `Closed in **Loss**`;
-
-  const tpHits=signal.tpHits||{};
-  const order=['TP1','TP2','TP3','TP4','TP5'];
-  const progress=order.map(k=>`${k} ${tpHits[k]?'✅':'⏳'}`).join('  •  ');
-  const tpPerc=computeTpPercents(signal);
-  const closedPct=order.reduce((a,k)=>a+(tpPerc[k]||0),0);
-  const posLine=closedPct?`${closedPct}% closed before stop`:'No partials';
-
-  const storedMaxR = (signal.maxR != null && !Number.isNaN(Number(signal.maxR))) ? Number(signal.maxR) : null;
-  const peakToShow = (typeof peakOv === 'number') ? peakOv : storedMaxR;
-
-  const fields=[
-    {name:'Result', value:`R: ${finalR.toFixed(2)}`, inline:true},
-    ...(peakToShow != null ? [{name:'Peak R', value:`${peakToShow.toFixed(2)}R`, inline:true}] : []),
-    {name:'Progress', value:progress, inline:true},
-    {name:'Position', value:posLine, inline:true},
-  ];
-
-  const linkUrl = chartUrl || attachmentUrl || imageUrl || signal.chartUrl || null;
-  if(signal.jumpUrl) fields.push({name:'Signal', value:`[View original signal](${signal.jumpUrl})`});
-  if(linkUrl)        fields.push({name:'Chart',  value:`[View chart](${linkUrl})`});
-
-  const color = state==='CLOSED_WIN'?beColor.win : state==='CLOSED_LOSS'?beColor.loss : beColor.be;
-  const embed={ title, description:desc, fields, color };
-
-  if (attachmentName) {
-    embed.image = { url: `attachment://${attachmentName}` };
-  } else if (imageUrl) {
-    embed.image = { url: imageUrl };
-  } else if (attachmentUrl) {
-    embed.image = { url: attachmentUrl };
-  }
-
-  return {
-    content: roleId ? `<@&${roleId}>` : undefined,
-    embeds: [embed],
-    allowedMentions: roleId ? { roles: [roleId] } : undefined
-  };
-}
-
-// explicit exports
-export {
-  renderSignalText,
-  renderSummaryText,
-  renderRecapText,
-  renderMonthlyRecap,
-  renderRecapEmbed
-};
