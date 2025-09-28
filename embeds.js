@@ -112,7 +112,7 @@ function renderSignalText(signal){
 
     const reentry = signal.validReentry ? '✅' : '❌';
 
-    // Mutually exclusive — Profit takes precedence over BE
+    // Profit vs BE (mutually exclusive). Profit takes precedence.
     let extra = '';
     if (Boolean(signal.slProfitSet)) {
       const afterTP = signal.slProfitAfterTP ? ` after ${signal.slProfitAfterTP}` : '';
@@ -129,7 +129,6 @@ function renderSignalText(signal){
 
   }else{
     if(signal.status==='CLOSED'){
-      // Prefer explicit "stopped in profits" if flagged
       if (signal.stoppedInProfit) {
         const tp = signal.stoppedInProfitAfterTP
           ? ` after ${signal.stoppedInProfitAfterTP}`
@@ -185,7 +184,7 @@ function renderSignalText(signal){
     }else{
       const info=computeRealized(signal);
       const pretty=signAbsR(info.realized).text;
-      const list=info.parts.length?info.parts.join(', '):null;
+      const list=info.parts.length?info.parts.join(', ')`:null;
       if(signal.status==='RUN_VALID'){ if(list) lines.push(`${pretty} so far ( ${list} )`); }
       else if(signal.status==='CLOSED'){
         if (signal.stoppedInProfit) {
@@ -199,7 +198,7 @@ function renderSignalText(signal){
         }
       }else if(signal.status==='STOPPED_BE'){
         if(signal.latestTpHit) lines.push(`${pretty} ( stopped breakeven after ${signal.latestTpHit} )`);
-        else lines.push('0.00R ( stopped breakeven )');
+        else lines.push('0.00R ( stopped breakeven )`);
       }else if(signal.status==='STOPPED_OUT'){
         lines.push(`${pretty} ( stopped out )`);
       }else if(list){
@@ -242,7 +241,7 @@ function renderRecapText(signal, extras = {}, rrChips = []){
   const reasonLines=extras.reasonLines||[];
   const confLines=extras.confLines||[];
   let notesLines=extras.notesLines||[];
-  const showBasics = extras.showBasics === true; // default hidden
+  const showBasics = extras.showBasics === true;
 
   let overrideFinal=null, overridePeak=null, entryOv=null, slOv=null;
   const tpCaptions={}, tpManual=[];
@@ -351,7 +350,7 @@ function parseNotesOverrides(notesLines=[]){
   return { finalOv, peakOv };
 }
 
-// recap EMBED
+// recap EMBED (unchanged helper)
 function renderRecapEmbed(
   signal,
   {
