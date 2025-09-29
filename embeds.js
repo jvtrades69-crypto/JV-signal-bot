@@ -313,7 +313,9 @@ export function renderRecapText(signal, extras = {}, rrChips = []){
     else if(signal.status==='STOPPED_BE') lines.push('- **None** (Breakeven 🟨 before TP1)');
     else                                  lines.push('- **None yet**');
   }
-  lines.push('', ⚖️ **Results**', `- Final: ${finalChip} ${finalMark}`);
+
+  // FIXED: header must be a string
+  lines.push('', '⚖️ **Results**', `- Final: ${finalChip} ${finalMark}`);
   if(showPeakLine) lines.push(`- Peak R: ${Number(peakR).toFixed(2)}R`, '');
   else lines.push('');
 
