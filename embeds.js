@@ -321,7 +321,47 @@ export function renderRecapText(signal, extras = {}, rrChips = []){
     lines.push('📊 **Basics**', `- Entry: \`${fmt(entryShown)}\``, `- SL: \`${fmt(slShown)}\``, '');
   }
 
-  if(parsedNotes.length){ lines.push('🧠 **Post-Mortem (What I learned)**', ...parsedNotes.map(ln=>`- ${ln}`),''); }
+  if(parsedNotes.length){ lines.push('🧠 **Post-Mortem (What I learned)**', ...notesLines.map(ln=>`- ${ln}`),''); }
   if(signal.jumpUrl) lines.push(`🔗 [View Original Trade](${signal.jumpUrl})`);
+  return lines.join('\n');
+}
+
+/* ------------------------ NEW: Monthly recap ------------------------ */
+export function renderMonthlyRecap(signals = [], year, monthIdx){
+  const monthName = new Date(Date.UTC(year, monthIdx ?? 0, 1))
+    .toLocaleString('en-US', { month: 'long' });
+  const title = `📊 **Monthly Trade Recap — ${monthName} ${year}**`;
+
+  if (!Array.isArray(signals) || signals.length === 0) {
+    return `${title}\nNo trades this month.`;
+  }
+
+  let wins = 0, losses = 0, be = 0, net = 0;
+
+  const chip = (r) => {
+    const v = Number(r || 0);
+    const emo = v > 0 ? '✅' : v < 0 ? '❌' : '➖';
+    const sign = v > 0 ? '+' : v < 0 ? '' : '';
+    return `${sign}${v.toFixed(2)}R ${emo}`;
+  };
+
+  const lines = [title, ''];
+
+  for (const s of signals) {
+    const { realized } = computeRealized(s);
+    const r = s.finalR != null ? Number(s.finalR) : realized;
+    net += r;
+    if (r > 0) wins++; else if (r < 0) losses++; else be++;
+
+    const dir = s.direction === 'SHORT' ? 'Short 🔴' : 'Long 🟢';
+    lines.push(`**$${s.asset} | ${chip(r)} (${dir})**`);
+  }
+
+  lines.splice(1, 0,
+    `**Total trades:** ${signals.length} | Wins: ${wins} | Losses: ${losses} | BE: ${be}`,
+    `**Net Result:** ${chip(net)}`,
+    ''
+  );
+
   return lines.join('\n');
 }
