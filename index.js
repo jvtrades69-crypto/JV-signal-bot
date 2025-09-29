@@ -1,6 +1,3 @@
-Here’s your **full `index.js`** with only one change: `computeThreadName` replaced to always show `ASSET dir ±x.xxR, tpN hit` and update on every edit. Everything else is untouched.
-
-```js
 // index.js — JV Signal Bot
 
 import {
@@ -1526,4 +1523,3 @@ async function pruneGhostSignals() {
 }
 
 client.login(config.token);
-```
