@@ -313,7 +313,7 @@ export function renderRecapText(signal, extras = {}, rrChips = []){
     else if(signal.status==='STOPPED_BE') lines.push('- **None** (Breakeven 🟨 before TP1)');
     else                                  lines.push('- **None yet**');
   }
-  lines.push('', '⚖️ **Results**', `- Final: ${finalChip} ${finalMark}`);
+  lines.push('', ⚖️ **Results**', `- Final: ${finalChip} ${finalMark}`);
   if(showPeakLine) lines.push(`- Peak R: ${Number(peakR).toFixed(2)}R`, '');
   else lines.push('');
 
@@ -365,3 +365,56 @@ export function renderMonthlyRecap(signals = [], year, monthIdx){
 
   return lines.join('\n');
 }
+
+/* ----------------------- NEW: Recap embed builder ----------------------- */
+export function renderRecapEmbed(
+  signal,
+  {
+    roleId,
+    imageUrl,
+    attachmentName,   // if provided, use attachment://
+    attachmentUrl,    // link to chart
+    chartUrl,         // override link target if provided
+    notesLines = [],
+    beColor = { win: 0x2ecc71, be: 0xf1c40f, loss: 0xe74c3c }
+  } = {}
+){
+  const realized = computeRealized(signal).realized;
+  const r = signal.finalR != null ? Number(signal.finalR) : realized;
+
+  const state = r > 0 ? 'WIN' : r < 0 ? 'LOSS' : 'BE';
+  const color = state === 'WIN' ? beColor.win : state === 'LOSS' ? beColor.loss : beColor.be;
+
+  const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
+  const circle  = signal.direction === 'SHORT' ? '🔴' : '🟢';
+
+  const title = `${String(signal.asset).toUpperCase()} — Trade Recap (${dirWord}) ${circle}`;
+  const fields = [
+    { name: 'Result', value: `R: ${r.toFixed(2)}`, inline: true },
+  ];
+
+  const link = chartUrl || attachmentUrl || imageUrl || signal.chartUrl || null;
+  if (signal.jumpUrl) fields.push({ name: 'Signal', value: `[View original signal](${signal.jumpUrl})` });
+  if (link)          fields.push({ name: 'Chart',  value: `[View chart](${link})` });
+
+  const embed = { title, description: '', fields, color };
+
+  if (attachmentName)      embed.image = { url: `attachment://${attachmentName}` };
+  else if (imageUrl)       embed.image = { url: imageUrl };
+  else if (attachmentUrl)  embed.image = { url: attachmentUrl };
+
+  return {
+    content: roleId ? `<@&${roleId}>` : undefined,
+    embeds: [embed],
+    allowedMentions: roleId ? { roles: [roleId] } : undefined
+  };
+}
+
+// === FINAL EXPORTS ===
+export {
+  renderSignalText,
+  renderSummaryText,
+  renderRecapText,
+  renderMonthlyRecap,
+  renderRecapEmbed
+};
