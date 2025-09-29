@@ -57,17 +57,22 @@ function buildTitle(signal){
   const circle =signal.direction==='SHORT'?'🔴':'🟢';
   const head   = `$${String(signal.asset).toUpperCase()} | ${dirWord} ${circle}`;
 
+  // Prefer override finalR in final states; else use computed realized
+  const isFinal = signal.status==='CLOSED' || signal.status==='STOPPED_BE' || signal.status==='STOPPED_OUT';
+  const hasFinal = signal.finalR!=null && isFinite(Number(signal.finalR));
   const { realized }=computeRealized(signal);
+  const useR = (isFinal && hasFinal) ? Number(signal.finalR) : Number(realized);
+
   let suffix = '';
   if (signal.status==='STOPPED_OUT') {
-    suffix = `Loss -${Math.abs(realized).toFixed(2)}R`;
+    suffix = `Loss -${Math.abs(useR).toFixed(2)}R`;
   } else if (signal.status==='STOPPED_BE') {
     const anyFill=(signal.fills||[]).length>0;
-    suffix = anyFill ? `Win +${realized.toFixed(2)}R` : 'Breakeven';
+    suffix = anyFill ? `Win +${useR.toFixed(2)}R` : 'Breakeven';
   } else if (signal.status==='CLOSED') {
-    suffix = `Win +${realized.toFixed(2)}R`;
+    suffix = `Win +${useR.toFixed(2)}R`;
   } else if ((signal.fills||[]).length>0) {
-    suffix = `Win +${realized.toFixed(2)}R so far`;
+    suffix = `Win +${useR.toFixed(2)}R so far`;
   }
   return suffix ? `**${head} (${suffix})**` : `**${head}**`;
 }
@@ -314,7 +319,6 @@ export function renderRecapText(signal, extras = {}, rrChips = []){
     else                                  lines.push('- **None yet**');
   }
 
-  // FIXED: header must be a string
   lines.push('', '⚖️ **Results**', `- Final: ${finalChip} ${finalMark}`);
   if(showPeakLine) lines.push(`- Peak R: ${Number(peakR).toFixed(2)}R`, '');
   else lines.push('');
