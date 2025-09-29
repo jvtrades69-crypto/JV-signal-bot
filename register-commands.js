@@ -1,4 +1,4 @@
-// register-commands.js — Registers /ping, /signal, and /recap (with period + id autocomplete)
+// register-commands.js — Registers /ping, /signal, /recap, /thread-restore
 
 import { REST, Routes, SlashCommandBuilder } from 'discord.js';
 import config from './config.js';
@@ -59,7 +59,27 @@ const recapCmd = new SlashCommandBuilder()
       .setAutocomplete(true)
   );
 
-const commands = [pingCmd, signalCmd, recapCmd].map(c => c.toJSON());
+/* /thread-restore */
+const threadRestoreCmd = new SlashCommandBuilder()
+  .setName('thread-restore')
+  .setDescription('Restore a trade’s thread if it was deleted or archived')
+  .addStringOption(opt =>
+    opt.setName('trade')
+      .setDescription('Pick a trade (autocomplete)')
+      .setRequired(true)
+      .setAutocomplete(true)
+  )
+  .addStringOption(opt =>
+    opt.setName('mode')
+      .setDescription('Post style in restored thread')
+      .setRequired(false)
+      .addChoices(
+        { name: 'Recap embed', value: 'embed' },
+        { name: 'Recap text',  value: 'text'  }
+      )
+  );
+
+const commands = [pingCmd, signalCmd, recapCmd, threadRestoreCmd].map(c => c.toJSON());
 
 async function main() {
   if (!token || !clientId || !guildId) {
