@@ -488,8 +488,15 @@ function makeFullCloseModal(id) {
   return m;
 }
 function makeFinalRModal(id, kind) {
-  const m = new ModalBuilder().setCustomId(modal(id, `finalr:${kind}`)).setTitle(kind === 'BE' ? 'Stopped Breakeven' : 'Stopped Out');
-  const r = new TextInputBuilder().setCustomId('final_r').setLabel('Final R (optional)').setPlaceholder('e.g., 0, -0.5, -1 — overrides calc').setStyle(TextInputStyle.Short).setRequired(false);
+  const m = new ModalBuilder().setCustomId(modal(id, `finalr:${kind}`)).setTitle(
+    kind === 'BE' ? 'Stopped Breakeven' : kind === 'OUT' ? 'Stopped Out' : 'Stopped In Profit'
+  );
+  const r = new TextInputBuilder()
+    .setCustomId('final_r')
+    .setLabel('Final R (optional)')
+    .setPlaceholder('e.g., 0.3, 1.0 — overrides calc')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false);
   m.addComponents(new ActionRowBuilder().addComponents(r));
   return m;
 }
@@ -1052,15 +1059,15 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Fully closed.' });
       }
 
-      // stop BE / stop out (keep thread open) — BE uses entry price
+      // stop BE / stop out / stop profit with RR override
       if (interaction.customId.startsWith('modal:finalr:')) {
         await ensureDeferred(interaction);
         try {
-          const parts = interaction.customId.split(':'); // modal:finalr:BE|OUT:id
+          const parts = interaction.customId.split(':'); // modal:finalr:BE|OUT|PROFIT:id
           const kind  = parts[2];
           const id    = parts[3];
 
-          if (!id || (kind !== 'BE' && kind !== 'OUT')) {
+          if (!id || !['BE','OUT','PROFIT'].includes(kind)) {
             return safeEditReply(interaction, { content: '❌ Invalid request.' });
           }
 
@@ -1070,35 +1077,59 @@ client.on('interactionCreate', async (interaction) => {
           const finalRStr = (interaction.fields.getTextInputValue('final_r') || '').trim();
           const hasFinalR = finalRStr !== '';
           if (hasFinalR && !isNum(finalRStr)) {
-            return safeEditReply(interaction, { content: '❌ Final R must be a number (e.g., 0, -1, -0.5).' });
+            return safeEditReply(interaction, { content: '❌ Final R must be a number (e.g., 0, -1, 0.3).' });
           }
 
           if (hasFinalR) {
             signal.finalR = Number(finalRStr);
           } else {
-            const price = Number(kind === 'BE' ? signal.entry : (signal.slOriginal ?? signal.sl));
+            let price = null;
+            if (kind === 'BE') price = Number(signal.entry);
+            else if (kind === 'OUT') price = Number(signal.slOriginal ?? signal.sl);
+            else if (kind === 'PROFIT') price = isNum(signal.slProfitAfter) ? Number(signal.slProfitAfter) : null;
+
+            if (!isNum(price)) {
+              return safeEditReply(interaction, { content: '❌ Set SL → In Profit first (price required).' });
+            }
+
             const currentPct = (Array.isArray(signal.fills) ? signal.fills : []).reduce((a, f) => a + Number(f.pct || 0), 0);
             const remaining  = Math.max(0, 100 - currentPct);
-            if (remaining > 0 && isNum(price)) {
+            if (remaining > 0) {
               signal.fills = Array.isArray(signal.fills) ? signal.fills : [];
-              signal.fills.push({ pct: remaining, price, source: kind === 'BE' ? 'STOP_BE' : 'STOP_OUT' });
+              const src = kind === 'BE' ? 'STOP_BE' : kind === 'OUT' ? 'STOP_OUT' : 'STOP_PROFIT';
+              signal.fills.push({ pct: remaining, price, source: src });
             }
           }
 
-          signal.status = (kind === 'BE') ? STATUS.STOPPED_BE : STATUS.STOPPED_OUT;
-          signal.validReentry = false;
+          if (kind === 'PROFIT') {
+            signal.status = STATUS.CLOSED;
+            signal.validReentry = false;
+            const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits?.[k]) || null;
+            await updateSignal(id, {
+              fills: signal.fills,
+              status: signal.status,
+              validReentry: false,
+              stoppedInProfit: true,
+              stoppedInProfitAfterTP: highestHit,
+              ...(hasFinalR ? { finalR: signal.finalR } : {})
+            });
+          } else {
+            signal.status = (kind === 'BE') ? STATUS.STOPPED_BE : STATUS.STOPPED_OUT;
+            signal.validReentry = false;
 
-          await updateSignal(id, {
-            fills: signal.fills,
-            status: signal.status,
-            validReentry: false,
-            ...(hasFinalR ? { finalR: signal.finalR } : {})
-          });
+            await updateSignal(id, {
+              fills: signal.fills,
+              status: signal.status,
+              validReentry: false,
+              ...(hasFinalR ? { finalR: signal.finalR } : {})
+            });
+          }
 
           const updated = normalizeSignal(await getSignal(id));
           await editSignalMessage(updated);
           await updateSummary();
-          return safeEditReply(interaction, { content: kind === 'BE' ? '✅ Stopped at breakeven.' : '✅ Stopped out.' });
+          const msg = kind === 'BE' ? '✅ Stopped at breakeven.' : kind === 'OUT' ? '✅ Stopped out.' : '✅ Stopped in profit.';
+          return safeEditReply(interaction, { content: msg });
         } catch (err) {
           console.error('modal:finalr submit error:', err);
           return safeEditReply(interaction, { content: '❌ Could not record the stop. Check logs.' });
@@ -1210,39 +1241,9 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.showModal(makeSetProfitModal(id));
       }
 
+      // changed: open modal to allow Final R override for profit stop
       if (key === 'stopprofit') {
-        await ensureDeferred(interaction);
-        let signal = normalizeSignal(await getSignal(id));
-        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
-
-        // Close at the profit SL price (required)
-        const stopPrice = isNum(signal.slProfitAfter) ? Number(signal.slProfitAfter) : null;
-        if (!isNum(stopPrice)) {
-          return safeEditReply(interaction, { content: '❌ Set SL → In Profit first (price required).' });
-        }
-
-        const currentPct = (Array.isArray(signal.fills) ? signal.fills : []).reduce((a,f)=>a+Number(f.pct||0),0);
-        const remaining  = Math.max(0, 100 - currentPct);
-        if (remaining > 0) {
-          signal.fills = Array.isArray(signal.fills) ? signal.fills : [];
-          signal.fills.push({ pct: remaining, price: stopPrice, source: 'STOP_PROFIT' });
-        }
-        signal.status = STATUS.CLOSED;
-        signal.validReentry = false;
-
-        const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits?.[k]) || null;
-
-        await updateSignal(id, {
-          fills: signal.fills,
-          status: signal.status,
-          validReentry: false,
-          stoppedInProfit: true,
-          stoppedInProfitAfterTP: highestHit
-        });
-        const updated = normalizeSignal(await getSignal(id));
-        await editSignalMessage(updated);
-        await updateSummary();
-        return safeEditReply(interaction, { content: '✅ Stopped in profit.' });
+        return interaction.showModal(makeFinalRModal(id, 'PROFIT'));
       }
 
       if (key === 'finish') {
