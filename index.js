@@ -327,34 +327,56 @@ async function updateSummary() {
   }, 600);
 }
 
-// autocomplete (/recap id)
+// autocomplete (/recap id) + (/thread-restore trade)
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isAutocomplete()) return;
   try {
-    if (interaction.commandName !== 'recap') return;
-    const focused = interaction.options.getFocused(true);
-    if (focused.name !== 'id') return;
+    // recap id autocomplete
+    if (interaction.commandName === 'recap') {
+      const focused = interaction.options.getFocused(true);
+      if (focused.name !== 'id') return;
 
-    const all = (await getSignals()).map(normalizeSignal);
-    all.sort((a, b) => {
-      if (a.messageId && b.messageId) {
-        const A = BigInt(a.messageId), B = BigInt(b.messageId);
-        if (A === B) return 0;
-        return (B > A) ? 1 : -1;
-      }
-      return Number(b.createdAt || 0) - Number(a.createdAt || 0);
-    });
+      const all = (await getSignals()).map(normalizeSignal);
+      all.sort((a, b) => {
+        if (a.messageId && b.messageId) {
+          const A = BigInt(a.messageId), B = BigInt(b.messageId);
+          if (A === B) return 0;
+          return (B > A) ? 1 : -1;
+        }
+        return Number(b.createdAt || 0) - Number(a.createdAt || 0);
+      });
 
-    const q = String(focused.value || '').toLowerCase();
-    const opts = [];
-    for (const s of all.slice(0, 50)) {
-      const name = `$${s.asset} ${s.direction === 'SHORT' ? 'Short' : 'Long'} • ${s.status} • id:${s.id}`;
-      if (!q || name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q)) {
-        opts.push({ name: name.slice(0, 100), value: s.id });
+      const q = String(focused.value || '').toLowerCase();
+      const opts = [];
+      for (const s of all.slice(0, 50)) {
+        const name = `$${s.asset} ${s.direction === 'SHORT' ? 'Short' : 'Long'} • ${s.status} • id:${s.id}`;
+        if (!q || name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q)) {
+          opts.push({ name: name.slice(0, 100), value: s.id });
+        }
+        if (opts.length >= 25) break;
       }
-      if (opts.length >= 25) break;
+      return await interaction.respond(opts);
     }
-    await interaction.respond(opts);
+
+    // thread-restore trade autocomplete
+    if (interaction.commandName === 'thread-restore') {
+      const focused = interaction.options.getFocused(true);
+      if (focused.name !== 'trade') return;
+      const q = String(focused.value || '').toLowerCase();
+
+      const all = (await getSignals()).map(normalizeSignal)
+        .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
+        .slice(0, 50);
+
+      const choices = all.map(s => ({
+        name: `$${s.asset} • ${s.direction} • ${s.status} • id:${s.id}`.slice(0, 100),
+        value: s.id,
+      }));
+
+      return await interaction.respond(
+        q ? choices.filter(c => c.name.toLowerCase().includes(q)) : choices
+      );
+    }
   } catch (e) {
     console.error('autocomplete error:', e);
     try { await interaction.respond([]); } catch {}
@@ -771,6 +793,64 @@ client.on('interactionCreate', async (interaction) => {
         components: [row],
         flags: MessageFlags.Ephemeral,
       });
+    }
+
+    // /thread-restore
+    if (interaction.isChatInputCommand() && interaction.commandName === 'thread-restore') {
+      if (interaction.user.id !== config.ownerId) {
+        return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
+      }
+
+      await ensureDeferred(interaction);
+
+      const tradeId = interaction.options.getString('trade', true);
+      const mode    = interaction.options.getString('mode') ?? 'embed';
+
+      const raw = await getSignal(tradeId).catch(()=>null);
+      if (!raw) return safeEditReply(interaction, { content: '❌ Trade not found.' });
+
+      // Try existing thread
+      const linkId = await getThreadId(tradeId).catch(() => null);
+      if (linkId) {
+        try {
+          const thread = await interaction.client.channels.fetch(linkId);
+          if (thread) {
+            if (thread.archived) await thread.setArchived(false);
+            await thread.members.add(interaction.user.id).catch(()=>{});
+            return safeEditReply(interaction, { content: `Thread already exists: <#${thread.id}>` });
+          }
+        } catch {
+          // fall through to recreate
+        }
+      }
+
+      // Recreate under original channel
+      const channel = await interaction.client.channels.fetch(raw.channelId).catch(()=>null);
+      if (!channel?.isTextBased?.()) return safeEditReply(interaction, { content: '❌ Original channel not found.' });
+
+      const sig = normalizeSignal(raw);
+      const name = computeThreadName(sig);
+      const thread = await channel.threads.create({
+        name,
+        invitable: false,
+        type: ChannelType.PrivateThread,
+        reason: `Restore thread for trade ${tradeId}`,
+      });
+      await thread.members.add(interaction.user.id).catch(()=>{});
+
+      // Post recap view
+      if (mode === 'embed') {
+        const pack = renderRecapEmbed(sig, { roleId: undefined, chartUrl: sig.chartUrl });
+        await thread.send({ embeds: pack.embeds });
+      } else {
+        const txt = renderRecapText(sig, { showBasics: true }, []);
+        await thread.send({ content: txt });
+      }
+
+      await setThreadId(tradeId, thread.id);
+      await thread.send({ content: 'Owner Control Panel', components: controlRows(sig.id) }).catch(()=>{});
+
+      return safeEditReply(interaction, { content: `Restored: <#${thread.id}>` });
     }
 
     // modals
@@ -1241,7 +1321,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.showModal(makeSetProfitModal(id));
       }
 
-      // changed: open modal to allow Final R override for profit stop
+      // open modal to allow Final R override for profit stop
       if (key === 'stopprofit') {
         return interaction.showModal(makeFinalRModal(id, 'PROFIT'));
       }
