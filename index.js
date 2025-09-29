@@ -169,19 +169,24 @@ function rToTitlePiece(r) {
   return ` ${x > 0 ? '+' : ''}${x.toFixed(2)}`;
 }
 function computeThreadName(signal) {
-  const base = `${String(signal.asset).toUpperCase()} ${signal.direction === DIR.SHORT ? 'short' : 'long'}`;
-  if (signal.status === STATUS.STOPPED_OUT) return `${base} stopped out`;
-  if (signal.status === STATUS.STOPPED_BE)  return `${base} breakeven`;
-  if (signal.status === STATUS.CLOSED) {
-    const r = isNum(signal.finalR) ? Number(signal.finalR) : computeRealizedR(signal);
-    return `${base}${rToTitlePiece(r)}`;
-  }
-  const r = computeRealizedR(signal);
-  if (r !== 0) return `${base}${rToTitlePiece(r)}`;
-  if (isNum(signal.maxR) && Number(signal.maxR) !== 0) return `${base}${rToTitlePiece(Number(signal.maxR))}`;
-  return base;
+  const asset = String(signal.asset || '').toUpperCase();
+  const dir   = signal.direction === DIR.SHORT ? 'short' : 'long';
+
+  // Prefer override in final states; else realized-so-far
+  const isFinal   = [STATUS.CLOSED, STATUS.STOPPED_BE, STATUS.STOPPED_OUT].includes(signal.status);
+  const hasFinal  = isNum(signal.finalR);
+  const rValue    = (isFinal && hasFinal) ? Number(signal.finalR) : computeRealizedR(signal);
+  const rTxt      = `${rValue >= 0 ? '+' : ''}${rValue.toFixed(2)}R`;
+
+  // Latest TP badge
+  const latestHit = signal.latestTpHit ||
+    ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits?.[k]) || null;
+
+  let name = `${asset} ${dir} ${rTxt}`;
+  if (latestHit) name += `, ${latestHit.toLowerCase()} hit`;
+
+  return name.length > 95 ? name.slice(0, 95) : name;
 }
-async function renameControlThread(signal) {
   try {
     const tid = await getThreadId(signal.id);
     if (!tid) return;
