@@ -357,7 +357,7 @@ client.on('interactionCreate', async (interaction) => {
       const q = String(focused.value || '').toLowerCase();
       const opts = [];
       for (const s of all.slice(0, 50)) {
-        const name = `$${s.asset} ${s.direction === 'SHORT' ? 'Short' : 'Long'} • ${s.status} • id:${s.id}`;
+        const name = `${computeThreadName(s)} • id:${s.id}`;
         if (!q || name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q)) {
           opts.push({ name: name.slice(0, 100), value: s.id });
         }
@@ -377,9 +377,10 @@ client.on('interactionCreate', async (interaction) => {
         .slice(0, 50);
 
       const choices = all.map(s => ({
-        name: `$${s.asset} • ${s.direction} • ${s.status} • id:${s.id}`.slice(0, 100),
-        value: s.id,
-      }));
+  name: `${computeThreadName(s)} • id:${s.id}`.slice(0, 100),
+  value: s.id,
+}));
+
 
       return await interaction.respond(
         q ? choices.filter(c => c.name.toLowerCase().includes(q)) : choices
