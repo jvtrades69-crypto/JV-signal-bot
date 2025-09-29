@@ -1,5 +1,4 @@
 // index.js — JV Signal Bot
-
 import {
   Client,
   GatewayIntentBits,
