@@ -411,12 +411,3 @@ export function renderRecapEmbed(
     allowedMentions: roleId ? { roles: [roleId] } : undefined
   };
 }
-
-// === FINAL EXPORTS ===
-export {
-  renderSignalText,
-  renderSummaryText,
-  renderRecapText,
-  renderMonthlyRecap,
-  renderRecapEmbed
-};
