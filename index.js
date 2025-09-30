@@ -364,25 +364,49 @@ client.on('interactionCreate', async (interaction) => {
       return await interaction.respond(opts);
     }
 
-    // thread-restore trade autocomplete
-    if (interaction.commandName === 'thread-restore') {
-      const focused = interaction.options.getFocused(true);
-      if (focused.name !== 'trade') return;
-      const q = String(focused.value || '').toLowerCase();
+// thread-restore trade autocomplete — only trades with live signal msg and missing thread
+if (interaction.commandName === 'thread-restore') {
+  const focused = interaction.options.getFocused(true);
+  if (focused.name !== 'trade') return;
+  const q = String(focused.value || '').toLowerCase();
 
-      const all = (await getSignals()).map(normalizeSignal)
-        .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
-        .slice(0, 50);
+  const all = (await getSignals()).map(normalizeSignal)
+    .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
 
-      const choices = all.map(s => ({
-        name: `${computeThreadName(s)} • id:${s.id}`.slice(0, 100),
-        value: s.id,
-      }));
+  const choices = [];
+  for (const s of all) {
+    // OPTIONAL: keep only active trades
+    // if (s.status !== STATUS.RUN_VALID) continue;
 
-      return await interaction.respond(
-        q ? choices.filter(c => c.name.toLowerCase().includes(q)) : choices
-      );
+    // must have a live signal message
+    if (!s.channelId || !s.messageId) continue;
+    let messageAlive = false;
+    try {
+      const ch = await interaction.client.channels.fetch(s.channelId);
+      await ch.messages.fetch(s.messageId);
+      messageAlive = true;
+    } catch {}
+    if (!messageAlive) continue;
+
+    // skip if a usable thread already exists
+    const linkId = await getThreadId(s.id).catch(() => null);
+    if (linkId) {
+      try {
+        const thr = await interaction.client.channels.fetch(linkId);
+        if (thr?.isThread?.()) continue; // already has a thread
+      } catch {}
     }
+
+    const name = `${computeThreadName(s)} • id:${s.id}`.slice(0, 100);
+    if (!q || name.toLowerCase().includes(q)) {
+      choices.push({ name, value: s.id });
+    }
+    if (choices.length >= 25) break;
+  }
+
+  return await interaction.respond(choices);
+}
+
 
     // signal-restore id autocomplete (deleted signals)
     if (interaction.commandName === 'signal-restore') {
