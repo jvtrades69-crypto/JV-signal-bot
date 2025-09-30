@@ -1070,33 +1070,45 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ TP % plan updated.' });
       }
 
-      // trade info
-      if (interaction.customId.startsWith('modal:trade:')) {
-        await ensureDeferred(interaction);
-        const id = idPart;
-        const signal = await getSignal(id);
-        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
+     // trade info — only patch fields the user actually filled
+if (interaction.customId.startsWith('modal:trade:')) {
+  await ensureDeferred(interaction);
+  const id = idPart;
+  const signal = await getSignal(id);
+  if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
-        const patch = {};
-        const entry     = interaction.fields.getTextInputValue('upd_entry')?.trim();
-        const sl        = interaction.fields.getTextInputValue('upd_sl')?.trim();
-        const asset     = interaction.fields.getTextInputValue('upd_asset')?.trim();
-        const dir       = interaction.fields.getTextInputValue('upd_dir')?.trim()?.toUpperCase();
-        const reason    = interaction.fields.getTextInputValue('upd_reason')?.trim();
+  const patch = {};
+  const entryRaw  = interaction.fields.getTextInputValue('upd_entry');
+  const slRaw     = interaction.fields.getTextInputValue('upd_sl');
+  const assetRaw  = interaction.fields.getTextInputValue('upd_asset');
+  const dirRaw    = interaction.fields.getTextInputValue('upd_dir');
+  const reasonRaw = interaction.fields.getTextInputValue('upd_reason');
 
-        if (entry) patch.entry = entry;
-        if (sl)    patch.sl = sl;
-        if (asset) patch.asset = asset.toUpperCase();
-        if (dir === 'LONG' || dir === 'SHORT') patch.direction = dir;
-        if (reason !== undefined) patch.reason = reason;
+  const entry  = entryRaw?.trim();
+  const sl     = slRaw?.trim();
+  const asset  = assetRaw?.trim();
+  const dir    = dirRaw?.trim()?.toUpperCase();
+  const reason = reasonRaw?.trim();
 
-        await updateSignal(id, patch);
-        const updated = normalizeSignal(await getSignal(id));
-        if (isSlMovedToBE(updated)) { updated.validReentry = false; await updateSignal(id, { validReentry: false }); }
-        await editSignalMessage(updated);
-        await updateSummary();
-        return safeEditReply(interaction, { content: '✅ Trade info updated.' });
-      }
+  // Only set if non-empty
+  if (entry && !isNaN(Number(entry))) patch.entry = entry;
+  if (sl && !isNaN(Number(sl)))       patch.sl = sl;
+  if (asset)                          patch.asset = asset.toUpperCase();
+  if (dir === 'LONG' || dir === 'SHORT') patch.direction = dir;
+  if (reason && reason.length > 0)       patch.reason = reason;
+
+  if (Object.keys(patch).length === 0) {
+    return safeEditReply(interaction, { content: 'No changes provided.' });
+  }
+
+  await updateSignal(id, patch);
+  const updated = normalizeSignal(await getSignal(id));
+  if (isSlMovedToBE(updated)) { await updateSignal(id, { validReentry: false }); }
+  await editSignalMessage(updated);
+  await updateSummary();
+  return safeEditReply(interaction, { content: '✅ Trade info updated.' });
+}
+
 
       // roles
       if (interaction.customId.startsWith('modal:roles:')) {
