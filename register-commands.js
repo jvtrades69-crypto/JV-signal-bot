@@ -1,4 +1,4 @@
-// register-commands.js — Registers /ping, /signal, /recap, /thread-restore, /signal-restore
+// register-commands.js — Registers /ping, /signal, /recap, /thread-restore
 
 import { REST, Routes, SlashCommandBuilder } from 'discord.js';
 import config from './config.js';
@@ -24,14 +24,16 @@ const signalCmd = new SlashCommandBuilder()
     opt.setName('direction').setDescription('Trade direction').setRequired(true)
       .addChoices({ name: 'Long', value: 'LONG' }, { name: 'Short', value: 'SHORT' })
   )
-  .addStringOption(opt => opt.setName('entry').setDescription('Entry').setRequired(true))
-  .addStringOption(opt => opt.setName('sl').setDescription('SL').setRequired(true))
-  .addAttachmentOption(opt => opt.setName('chart').setDescription('Attach chart image').setRequired(false))
-  .addStringOption(opt => opt.setName('tp1').setDescription('TP1'))
-  .addStringOption(opt => opt.setName('tp2').setDescription('TP2'))
-  .addStringOption(opt => opt.setName('tp3').setDescription('TP3'))
-  .addStringOption(opt => opt.setName('tp4').setDescription('TP4'))
-  .addStringOption(opt => opt.setName('tp5').setDescription('TP5'))
+  .addStringOption(opt => opt.setName('entry').setDescription('Entry (free text number)').setRequired(true))
+  .addStringOption(opt => opt.setName('sl').setDescription('SL (free text number)').setRequired(true))
+  .addAttachmentOption(opt =>
+    opt.setName('chart').setDescription('Attach chart image (optional)').setRequired(false)
+  )
+  .addStringOption(opt => opt.setName('tp1').setDescription('TP1 (optional)'))
+  .addStringOption(opt => opt.setName('tp2').setDescription('TP2 (optional)'))
+  .addStringOption(opt => opt.setName('tp3').setDescription('TP3 (optional)'))
+  .addStringOption(opt => opt.setName('tp4').setDescription('TP4 (optional)'))
+  .addStringOption(opt => opt.setName('tp5').setDescription('TP5 (optional)'))
   .addStringOption(opt => opt.setName('tp1_pct').setDescription('Planned % at TP1 (0–100)'))
   .addStringOption(opt => opt.setName('tp2_pct').setDescription('Planned % at TP2 (0–100)'))
   .addStringOption(opt => opt.setName('tp3_pct').setDescription('Planned % at TP3 (0–100)'))
@@ -60,26 +62,24 @@ const recapCmd = new SlashCommandBuilder()
 /* /thread-restore */
 const threadRestoreCmd = new SlashCommandBuilder()
   .setName('thread-restore')
-  .setDescription('Restore the private control thread for an existing live signal')
+  .setDescription('Restore a trade’s thread if it was deleted or archived')
   .addStringOption(opt =>
-    opt.setName('id')
-      .setDescription('Signal ID (autocomplete)')
+    opt.setName('trade')
+      .setDescription('Pick a trade (autocomplete)')
       .setRequired(true)
       .setAutocomplete(true)
-  );
-
-/* /signal-restore — restore soft-deleted signal first */
-const signalRestoreCmd = new SlashCommandBuilder()
-  .setName('signal-restore')
-  .setDescription('Restore a soft-deleted signal (then you can restore its thread)')
+  )
   .addStringOption(opt =>
-    opt.setName('id')
-      .setDescription('Deleted signal id (autocomplete)')
-      .setRequired(true)
-      .setAutocomplete(true)
+    opt.setName('mode')
+      .setDescription('Post style in restored thread')
+      .setRequired(false)
+      .addChoices(
+        { name: 'Recap embed', value: 'embed' },
+        { name: 'Recap text',  value: 'text'  }
+      )
   );
 
-const commands = [pingCmd, signalCmd, recapCmd, threadRestoreCmd, signalRestoreCmd].map(c => c.toJSON());
+const commands = [pingCmd, signalCmd, recapCmd, threadRestoreCmd].map(c => c.toJSON());
 
 async function main() {
   if (!token || !clientId || !guildId) {
