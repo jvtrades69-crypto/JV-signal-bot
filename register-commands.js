@@ -1,4 +1,4 @@
-// register-commands.js — Registers /ping, /signal, /recap, /thread-restore
+// register-commands.js — Registers /ping, /signal, /recap, /thread-restore, /signal-restore
 
 import { REST, Routes, SlashCommandBuilder } from 'discord.js';
 import config from './config.js';
@@ -79,7 +79,18 @@ const threadRestoreCmd = new SlashCommandBuilder()
       )
   );
 
-const commands = [pingCmd, signalCmd, recapCmd, threadRestoreCmd].map(c => c.toJSON());
+/* /signal-restore */
+const signalRestoreCmd = new SlashCommandBuilder()
+  .setName('signal-restore')
+  .setDescription('Restore a soft-deleted trade signal')
+  .addStringOption(opt =>
+    opt.setName('id')
+      .setDescription('Deleted signal ID (autocomplete)')
+      .setRequired(true)
+      .setAutocomplete(true)
+  );
+
+const commands = [pingCmd, signalCmd, recapCmd, threadRestoreCmd, signalRestoreCmd].map(c => c.toJSON());
 
 async function main() {
   if (!token || !clientId || !guildId) {
