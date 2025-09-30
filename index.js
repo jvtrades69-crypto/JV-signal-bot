@@ -373,8 +373,9 @@ client.on('interactionCreate', async (interaction) => {
       const q = String(focused.value || '').toLowerCase();
 
       const all = (await getSignals()).map(normalizeSignal)
-        .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
-        .slice(0, 50);
+  .filter(s => s.messageId && s.channelId)
+  .sort((a,b) => Number(b.createdAt||0)-Number(a.createdAt||0))
+  .slice(0,50);
 
       const choices = all.map(s => ({
   name: `${computeThreadName(s)} • id:${s.id}`.slice(0, 100),
