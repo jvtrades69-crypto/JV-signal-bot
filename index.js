@@ -899,17 +899,10 @@ client.on('interactionCreate', async (interaction) => {
       });
       await thread.members.add(interaction.user.id).catch(()=>{});
 
-      // Post recap view
-      if (mode === 'embed') {
-        const pack = renderRecapEmbed(sig, { roleId: undefined, chartUrl: sig.chartUrl });
-        await thread.send({ embeds: pack.embeds });
-      } else {
-        const txt = renderRecapText(sig, { showBasics: true }, []);
-        await thread.send({ content: txt });
-      }
+// No recap on restore; only control panel
+await setThreadId(tradeId, thread.id);
+await thread.send({ content: 'Owner Control Panel', components: controlRows(sig.id) }).catch(()=>{});
 
-      await setThreadId(tradeId, thread.id);
-      await thread.send({ content: 'Owner Control Panel', components: controlRows(sig.id) }).catch(()=>{});
 
       return safeEditReply(interaction, { content: `Restored: <#${thread.id}>` });
     }
