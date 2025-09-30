@@ -168,8 +168,7 @@ function rToTitlePiece(r) {
   return ` ${x > 0 ? '+' : ''}${x.toFixed(2)}`;
 }
 
-// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-// REPLACED: computeThreadName — always show ASSET dir ±x.xxR, tpN hit
+// computeThreadName — ASSET dir ±x.xxR, tpN hit
 function computeThreadName(signal) {
   const asset = String(signal.asset || '').toUpperCase();
   const dir   = signal.direction === DIR.SHORT ? 'short' : 'long';
@@ -187,7 +186,6 @@ function computeThreadName(signal) {
 
   return name.length > 95 ? name.slice(0, 95) : name;
 }
-// <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
 async function renameControlThread(signal) {
   try {
@@ -335,7 +333,7 @@ async function updateSummary() {
   }, 600);
 }
 
-// autocomplete (/recap id) + (/thread-restore trade)
+// autocomplete (/recap id) + (/thread-restore trade) + (/signal-restore id)
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isAutocomplete()) return;
   try {
@@ -373,19 +371,38 @@ client.on('interactionCreate', async (interaction) => {
       const q = String(focused.value || '').toLowerCase();
 
       const all = (await getSignals()).map(normalizeSignal)
-  .filter(s => s.messageId && s.channelId)
-  .sort((a,b) => Number(b.createdAt||0)-Number(a.createdAt||0))
-  .slice(0,50);
+        .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
+        .slice(0, 50);
 
       const choices = all.map(s => ({
-  name: `${computeThreadName(s)} • id:${s.id}`.slice(0, 100),
-  value: s.id,
-}));
-
+        name: `${computeThreadName(s)} • id:${s.id}`.slice(0, 100),
+        value: s.id,
+      }));
 
       return await interaction.respond(
         q ? choices.filter(c => c.name.toLowerCase().includes(q)) : choices
       );
+    }
+
+    // signal-restore id autocomplete (deleted signals)
+    if (interaction.commandName === 'signal-restore') {
+      const focused = interaction.options.getFocused(true);
+      if (focused.name !== 'id') return;
+      const q = String(focused.value || '').toLowerCase();
+
+      let choices = [];
+      try {
+        const store = await import('./store.js');
+        const list = (await store.getDeletedSignals?.()) || [];
+        const items = list.map(normalizeSignal).slice(0, 50);
+        choices = items.map(s => ({
+          name: `${computeThreadName(s)} • id:${s.id}`.slice(0, 100),
+          value: s.id,
+        }));
+      } catch {
+        choices = [];
+      }
+      return await interaction.respond(q ? choices.filter(c => c.name.toLowerCase().includes(q)) : choices);
     }
   } catch (e) {
     console.error('autocomplete error:', e);
@@ -804,7 +821,7 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
-    // /thread-restore
+    // /thread-restore — block if original signal message was deleted
     if (interaction.isChatInputCommand() && interaction.commandName === 'thread-restore') {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
@@ -816,7 +833,11 @@ client.on('interactionCreate', async (interaction) => {
       const mode    = interaction.options.getString('mode') ?? 'embed';
 
       const raw = await getSignal(tradeId).catch(()=>null);
-      if (!raw) return safeEditReply(interaction, { content: '❌ Trade not found.' });
+      if (!raw) return safeEditReply(interaction, { content: '❌ Trade not found. Restore the signal first with /signal-restore.' });
+
+      if (!raw.messageId || !raw.channelId) {
+        return safeEditReply(interaction, { content: '❌ Signal message deleted. Use /signal-restore first, then /thread-restore.' });
+      }
 
       // Try existing thread
       const linkId = await getThreadId(tradeId).catch(() => null);
@@ -833,7 +854,7 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
 
-      // Recreate under original channel
+      // Recreate under original channel (always private)
       const channel = await interaction.client.channels.fetch(raw.channelId).catch(()=>null);
       if (!channel?.isTextBased?.()) return safeEditReply(interaction, { content: '❌ Original channel not found.' });
 
@@ -862,7 +883,50 @@ client.on('interactionCreate', async (interaction) => {
       return safeEditReply(interaction, { content: `Restored: <#${thread.id}>` });
     }
 
-    // modals
+    // /signal-restore — restore a soft-deleted signal, then you can /thread-restore
+    if (interaction.isChatInputCommand() && interaction.commandName === 'signal-restore') {
+      if (interaction.user.id !== config.ownerId) {
+        return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
+      }
+
+      await ensureDeferred(interaction);
+
+      const id = interaction.options.getString('id', true);
+
+      const store = await import('./store.js');
+      if (!store.restoreDeletedSignal || !store.getDeletedSignals) {
+        return safeEditReply(interaction, { content: '❌ Update store.js for restore support first.' });
+      }
+
+      const restored = await store.restoreDeletedSignal(id).catch(() => null);
+      if (!restored) {
+        return safeEditReply(interaction, { content: '❌ Not found in deleted signals.' });
+      }
+
+      const signal = normalizeSignal(restored);
+      if (!signal.channelId) {
+        return safeEditReply(interaction, { content: '❌ Cannot restore: missing original channelId.' });
+      }
+
+      // Post a fresh signal message
+      const msgId = await postSignalMessage(signal);
+      signal.messageId = msgId;
+
+      const channel = await client.channels.fetch(signal.channelId);
+      const msg = await channel.messages.fetch(msgId);
+      signal.jumpUrl = msg.url;
+
+      await updateSignal(signal.id, { messageId: signal.messageId, jumpUrl: signal.jumpUrl });
+
+      // Create a fresh private control thread
+      await createControlThread(signal);
+      renameControlThread(signal).catch(() => {});
+      await updateSummary();
+
+      return safeEditReply(interaction, { content: `✅ Signal restored. Message: ${signal.jumpUrl}` });
+    }
+
+    // TP/BE/OUT/etc modals and buttons follow (unchanged from your version)
     if (interaction.isModalSubmit()) {
       const idPart = interaction.customId.split(':').pop();
 
@@ -872,7 +936,7 @@ client.on('interactionCreate', async (interaction) => {
         pendingSignals.delete(idPart);
         if (!stash) return safeEditReply(interaction, { content: '❌ Session expired. Try /signal again.' });
         const asset = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
-        await createSignal({ asset, ...stash }, stash.channelId || interaction.channelId);
+      await createSignal({ asset, ...stash }, stash.channelId || interaction.channelId);
         return safeEditReply(interaction, { content: `✅ Trade signal posted for ${asset}.` });
       }
 
