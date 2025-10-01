@@ -81,33 +81,44 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
   // Status
   lines.push('', '📍 **Status**');
   if (signal.status === 'RUN_VALID') {
-    const hitOrder = ['TP5', 'TP4', 'TP3', 'TP2', 'TP1'];
-    const hits = hitOrder.filter(k => signal.tpHits && signal.tpHits[k]).reverse();
-    lines.push(hits.length ? `Active 🟩 | ${hits.join(', ')} hit` : 'Active 🟩 | Trade running');
-    lines.push(`Valid for re-entry: ${signal.validReentry ? '✅' : '❌'}`);
-  } else {
-  // Highest TP reached, used for "after TPx"
-  const highestTP = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits && signal.tpHits[k]) || null;
-  const afterTP = highestTP ? ` after ${highestTP}` : '';
+    const hitOrder = ['TP5','TP4','TP3','TP2','TP1'];
+    const highestTP = hitOrder.find(k => signal.tpHits && signal.tpHits[k]) || null;
+    const hitsLine = highestTP ? `Active 🟩 | ${highestTP} hit` : 'Active 🟩 | Trade running';
 
-  if (signal.status === 'CLOSED') {
-    if (signal.stoppedInProfit) {
-      // Stopped in profits at stored profit SL (if present)
+    // Tail details for SL → Profit / BE while active
+    let tail = '';
+    if (signal.slProfitSet) {
+      const afterTP = signal.slProfitAfterTP ? ` after ${signal.slProfitAfterTP}` : (highestTP ? ` after ${highestTP}` : '');
       const atPrice = isFinite(Number(signal.slProfitAfter)) ? ` at \`${fmt(signal.slProfitAfter)}\`` : '';
-      lines.push(`Inactive 🟥 | Stopped in profits${afterTP}${atPrice}`);
-    } else {
-      lines.push(`Inactive 🟥 | Fully closed${afterTP}`);
+      tail = ` | SL moved into profits${afterTP}${atPrice}`;
+    } else if (signal.beSet || signal.beMovedAfter) {
+      const afterTP = signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : (highestTP ? ` after ${highestTP}` : '');
+      tail = ` | SL moved to breakeven${afterTP}`;
     }
-  } else if (signal.status === 'STOPPED_BE') {
-    lines.push(`Inactive 🟥 | Stopped breakeven${afterTP}`);
-  } else if (signal.status === 'STOPPED_OUT') {
-    lines.push('Inactive 🟥 | Stopped out');
-  } else {
-    lines.push('Inactive 🟥');
-  }
-  lines.push('Valid for re-entry: ❌');
-}
 
+    lines.push(hitsLine);
+    lines.push(`Valid for re-entry: ${signal.validReentry ? '✅' : '❌'}${tail}`);
+  } else {
+    // Final-state status lines
+    const highestTP = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits && signal.tpHits[k]) || null;
+    const afterTP = highestTP ? ` after ${highestTP}` : '';
+
+    if (signal.status === 'CLOSED') {
+      if (signal.stoppedInProfit) {
+        const atPrice = isFinite(Number(signal.slProfitAfter)) ? ` at \`${fmt(signal.slProfitAfter)}\`` : '';
+        lines.push(`Inactive 🟥 | Stopped in profits${afterTP}${atPrice}`);
+      } else {
+        lines.push(`Inactive 🟥 | Fully closed${afterTP}`);
+      }
+    } else if (signal.status === 'STOPPED_BE') {
+      lines.push(`Inactive 🟥 | Stopped breakeven${afterTP}`);
+    } else if (signal.status === 'STOPPED_OUT') {
+      lines.push('Inactive 🟥 | Stopped out');
+    } else {
+      lines.push('Inactive 🟥');
+    }
+    lines.push('Valid for re-entry: ❌');
+  }
 
   // Max R
   if (signal.maxR != null && isFinite(Number(signal.maxR))) {
@@ -117,38 +128,35 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
   }
 
   // Realized
- const realized = (signal.status !== 'RUN_VALID' && signal.finalR != null)
-  ? Number(signal.finalR)
-  : computeRealized(signal);
+  const realized = (signal.status !== 'RUN_VALID' && signal.finalR != null)
+    ? Number(signal.finalR)
+    : computeRealized(signal);
 
-if (signal.status !== 'RUN_VALID' || realized !== 0) {
-  let tail = '';
-  if (signal.status === 'CLOSED') {
-    tail = signal.stoppedInProfit
-      ? (() => {
-          const highestTP = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits && signal.tpHits[k]) || null;
-          const afterTP = highestTP ? ` after ${highestTP}` : '';
-          const atPrice = isFinite(Number(signal.slProfitAfter)) ? ` at \`${fmt(signal.slProfitAfter)}\`` : '';
-          return ` ( stopped in profits${afterTP}${atPrice} )`;
-        })()
-      : (() => {
-          const highestTP = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits && signal.tpHits[k]) || null;
-          const afterTP = highestTP ? ` after ${highestTP}` : '';
-          return ` ( fully closed${afterTP} )`;
-        })();
-  } else if (signal.status === 'STOPPED_BE') {
-    const highestTP = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits && signal.tpHits[k]) || null;
-    const afterTP = highestTP ? ` after ${highestTP}` : '';
-    tail = realized === 0 ? ` ( stopped breakeven${afterTP} )` : ` ( stopped breakeven${afterTP} )`;
-  } else if (signal.status === 'STOPPED_OUT') {
-    tail = ' ( stopped out )';
-  } else if (signal.status === 'RUN_VALID') {
-    tail = ' so far';
+  if (signal.status !== 'RUN_VALID' || realized !== 0) {
+    let tail = '';
+    if (signal.status === 'CLOSED') {
+      if (signal.stoppedInProfit) {
+        const highestTP = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits && signal.tpHits[k]) || null;
+        const afterTP = highestTP ? ` after ${highestTP}` : '';
+        const atPrice = isFinite(Number(signal.slProfitAfter)) ? ` at \`${fmt(signal.slProfitAfter)}\`` : '';
+        tail = ` ( stopped in profits${afterTP}${atPrice} )`;
+      } else {
+        const highestTP = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits && signal.tpHits[k]) || null;
+        const afterTP = highestTP ? ` after ${highestTP}` : '';
+        tail = ` ( fully closed${afterTP} )`;
+      }
+    } else if (signal.status === 'STOPPED_BE') {
+      const highestTP = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits && signal.tpHits[k]) || null;
+      const afterTP = highestTP ? ` after ${highestTP}` : '';
+      tail = ` ( stopped breakeven${afterTP} )`;
+    } else if (signal.status === 'STOPPED_OUT') {
+      tail = ' ( stopped out )';
+    } else if (signal.status === 'RUN_VALID') {
+      tail = ' so far';
+    }
+
+    lines.push('', '💰 **Realized**', `${realized >= 0 ? '+' : ''}${realized.toFixed(2)}R${tail}`);
   }
-
-  lines.push('', '💰 **Realized**', `${realized >= 0 ? '+' : ''}${realized.toFixed(2)}R${tail}`);
-}
-
 
   if (signal.chartUrl && !signal.chartAttached) {
     lines.push('', `[View chart](${signal.chartUrl})`);
