@@ -465,7 +465,29 @@ function controlRows(signalId) {
 
   return [row1, row2, row3, row4, row5];
 }
+// === Control thread helpers ===
+async function createControlThread(signal) {
+  const channel = await client.channels.fetch(signal.channelId);
+  const initialName = computeThreadName(signal);
+  const thread = await channel.threads.create({
+    name: initialName,
+    type: ChannelType.PrivateThread,
+    invitable: false,
+  });
+  await thread.members.add(config.ownerId).catch(() => {});
+  await setThreadId(signal.id, thread.id);
+  await thread.send({ content: 'Owner Control Panel', components: controlRows(signal.id) }).catch(() => {});
+  return thread.id;
+}
 
+async function deleteControlThread(signalId) {
+  const tid = await getThreadId(signalId).catch(() => null);
+  if (!tid) return;
+  const thread = await client.channels.fetch(tid).catch(() => null);
+  if (thread?.isThread?.()) {
+    await thread.delete().catch(() => {});
+  }
+}
 function makeUpdateTPPricesModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'tpprices')).setTitle('Update TP Prices (TP1–TP5)');
   for (const [cid, label] of [['upd_tp1','TP1'],['upd_tp2','TP2'],['upd_tp3','TP3'],['upd_tp4','TP4'],['upd_tp5','TP5']]) {
