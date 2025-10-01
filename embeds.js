@@ -86,13 +86,28 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
     lines.push(hits.length ? `Active 🟩 | ${hits.join(', ')} hit` : 'Active 🟩 | Trade running');
     lines.push(`Valid for re-entry: ${signal.validReentry ? '✅' : '❌'}`);
   } else {
-    const tag =
-      signal.status === 'CLOSED' ? 'Fully closed' :
-      signal.status === 'STOPPED_BE' ? 'Stopped breakeven' :
-      signal.status === 'STOPPED_OUT' ? 'Stopped out' : 'Inactive';
-    lines.push(`Inactive 🟥 | ${tag}`);
-    lines.push('Valid for re-entry: ❌');
+  // Highest TP reached, used for "after TPx"
+  const highestTP = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits && signal.tpHits[k]) || null;
+  const afterTP = highestTP ? ` after ${highestTP}` : '';
+
+  if (signal.status === 'CLOSED') {
+    if (signal.stoppedInProfit) {
+      // Stopped in profits at stored profit SL (if present)
+      const atPrice = isFinite(Number(signal.slProfitAfter)) ? ` at \`${fmt(signal.slProfitAfter)}\`` : '';
+      lines.push(`Inactive 🟥 | Stopped in profits${afterTP}${atPrice}`);
+    } else {
+      lines.push(`Inactive 🟥 | Fully closed${afterTP}`);
+    }
+  } else if (signal.status === 'STOPPED_BE') {
+    lines.push(`Inactive 🟥 | Stopped breakeven${afterTP}`);
+  } else if (signal.status === 'STOPPED_OUT') {
+    lines.push('Inactive 🟥 | Stopped out');
+  } else {
+    lines.push('Inactive 🟥');
   }
+  lines.push('Valid for re-entry: ❌');
+}
+
 
   // Max R
   if (signal.maxR != null && isFinite(Number(signal.maxR))) {
@@ -102,12 +117,38 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
   }
 
   // Realized
-  const realized = (signal.status !== 'RUN_VALID' && signal.finalR != null)
-    ? Number(signal.finalR)
-    : computeRealized(signal);
-  if (signal.status !== 'RUN_VALID' || realized !== 0) {
-    lines.push('', '💰 **Realized**', `${realized >= 0 ? '+' : ''}${realized.toFixed(2)}R${signal.status === 'RUN_VALID' ? ' so far' : ''}`);
+ const realized = (signal.status !== 'RUN_VALID' && signal.finalR != null)
+  ? Number(signal.finalR)
+  : computeRealized(signal);
+
+if (signal.status !== 'RUN_VALID' || realized !== 0) {
+  let tail = '';
+  if (signal.status === 'CLOSED') {
+    tail = signal.stoppedInProfit
+      ? (() => {
+          const highestTP = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits && signal.tpHits[k]) || null;
+          const afterTP = highestTP ? ` after ${highestTP}` : '';
+          const atPrice = isFinite(Number(signal.slProfitAfter)) ? ` at \`${fmt(signal.slProfitAfter)}\`` : '';
+          return ` ( stopped in profits${afterTP}${atPrice} )`;
+        })()
+      : (() => {
+          const highestTP = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits && signal.tpHits[k]) || null;
+          const afterTP = highestTP ? ` after ${highestTP}` : '';
+          return ` ( fully closed${afterTP} )`;
+        })();
+  } else if (signal.status === 'STOPPED_BE') {
+    const highestTP = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits && signal.tpHits[k]) || null;
+    const afterTP = highestTP ? ` after ${highestTP}` : '';
+    tail = realized === 0 ? ` ( stopped breakeven${afterTP} )` : ` ( stopped breakeven${afterTP} )`;
+  } else if (signal.status === 'STOPPED_OUT') {
+    tail = ' ( stopped out )';
+  } else if (signal.status === 'RUN_VALID') {
+    tail = ' so far';
   }
+
+  lines.push('', '💰 **Realized**', `${realized >= 0 ? '+' : ''}${realized.toFixed(2)}R${tail}`);
+}
+
 
   if (signal.chartUrl && !signal.chartAttached) {
     lines.push('', `[View chart](${signal.chartUrl})`);
