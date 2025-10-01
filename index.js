@@ -1,4 +1,4 @@
-// index.js — JV Signal Bot (risk badge + toggles + full close profit + recap FinalR override)
+// index.js — JV Signal Bot (risk badge + risk toggles + full close profit + recap FinalR override)
 import {
   Client,
   GatewayIntentBits,
@@ -51,7 +51,6 @@ function rAtPrice(direction, entry, slOriginal, price) {
   if (direction === DIR.LONG) { const risk = E - S; if (risk <= 0) return null; return (P - E) / risk; }
   const risk = S - E; if (risk <= 0) return null; return (E - P) / risk;
 }
-
 function computeRRChips(signal) {
   const chips = [];
   for (const key of TP_KEYS) {
@@ -62,6 +61,18 @@ function computeRRChips(signal) {
     chips.push({ key: key.toUpperCase(), r: Number(r.toFixed(2)) });
   }
   return chips;
+}
+function computeRealizedR(signal) {
+  const fills = Array.isArray(signal.fills) ? signal.fills : [];
+  if (!fills.length) return 0;
+  let sum = 0;
+  for (const f of fills) {
+    const pct = Number(f.pct || 0);
+    const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, f.price);
+    if (isNaN(pct) || r === null) continue;
+    sum += (pct * r) / 100;
+  }
+  return Number(sum.toFixed(2));
 }
 
 function normalizeSignal(raw) {
@@ -86,17 +97,20 @@ function normalizeSignal(raw) {
   s.chartUrl = s.chartUrl || null;
   s.chartAttached = !!s.chartAttached;
 
-  // NEW: risk badge label (display-only)
-  s.riskLabel = (typeof s.riskLabel === 'string' ? s.riskLabel : '').trim(); // '', 'half', '1/4', '3/4'
-
   // Flags
   s.beSet = Boolean(s.beSet);
   s.beMovedAfter = s.beMovedAfter || null;
+
   s.slProfitSet = Boolean(s.slProfitSet);
   s.slProfitAfter = s.slProfitAfter || null;
   s.slProfitAfterTP = s.slProfitAfterTP || null;
+
+  // display flags for stopped in profit
   s.stoppedInProfit = Boolean(s.stoppedInProfit);
   s.stoppedInProfitAfterTP = s.stoppedInProfitAfterTP || null;
+
+  // risk badge label (display-only)
+  s.riskLabel = (typeof s.riskLabel === 'string' ? s.riskLabel : '').trim(); // '', 'half', '1/4', '3/4'
 
   s.createdAt = isNum(s.createdAt) ? Number(s.createdAt) : s.createdAt || null;
   return s;
@@ -156,18 +170,7 @@ function computeThreadName(signal) {
 
   const isFinal  = [STATUS.CLOSED, STATUS.STOPPED_BE, STATUS.STOPPED_OUT].includes(signal.status);
   const hasFinal = isNum(signal.finalR);
-  const rValue   = (isFinal && hasFinal) ? Number(signal.finalR) : (function(){
-    const fills = Array.isArray(signal.fills) ? signal.fills : [];
-    if (!fills.length) return 0;
-    let sum = 0;
-    for (const f of fills) {
-      const pct = Number(f.pct || 0);
-      const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, f.price);
-      if (isNaN(pct) || r === null) continue;
-      sum += (pct * r) / 100;
-    }
-    return Number(sum.toFixed(2));
-  })();
+  const rValue   = (isFinal && hasFinal) ? Number(signal.finalR) : computeRealizedR(signal);
   const rTxt     = `${rValue >= 0 ? '+' : ''}${rValue.toFixed(2)}R`;
 
   const latestHit = signal.latestTpHit ||
@@ -278,7 +281,6 @@ async function updateSummary() {
 
       const signals = (await getSignals()).map(normalizeSignal);
 
-      // Exclude anything not valid for re-entry OR with BE/Profit flags
       const candidates = signals.filter(
         s => s.status === STATUS.RUN_VALID && s.validReentry === true && !s.beSet && !s.slProfitSet
       );
@@ -325,10 +327,11 @@ async function updateSummary() {
   }, 600);
 }
 
-// autocomplete
+// autocomplete (/recap id) + (/thread-restore trade) + (/signal-restore id)
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isAutocomplete()) return;
   try {
+    // recap id autocomplete
     if (interaction.commandName === 'recap') {
       const focused = interaction.options.getFocused(true);
       if (focused.name !== 'id') return;
@@ -389,10 +392,11 @@ client.on('interactionCreate', async (interaction) => {
         }
         if (choices.length >= 25) break;
       }
+
       return await interaction.respond(choices);
     }
 
-    // signal-restore id autocomplete
+    // signal-restore id autocomplete (deleted signals)
     if (interaction.commandName === 'signal-restore') {
       const focused = interaction.options.getFocused(true);
       if (focused.name !== 'id') return;
@@ -422,7 +426,6 @@ client.on('interactionCreate', async (interaction) => {
 function btn(id, key) { return `btn:${key}:${id}`; }
 function modal(id, key) { return `modal:${key}:${id}`; }
 
-// control panel rows (<=5 buttons per row)
 function controlRows(signalId) {
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'tp1')).setLabel('🎯 TP1 Hit').setStyle(ButtonStyle.Success),
@@ -463,7 +466,6 @@ function controlRows(signalId) {
   return [row1, row2, row3, row4, row5];
 }
 
-// modal factories
 function makeUpdateTPPricesModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'tpprices')).setTitle('Update TP Prices (TP1–TP5)');
   for (const [cid, label] of [['upd_tp1','TP1'],['upd_tp2','TP2'],['upd_tp3','TP3'],['upd_tp4','TP4'],['upd_tp5','TP5']]) {
@@ -543,6 +545,7 @@ function makeChartModal(id) {
   m.addComponents(new ActionRowBuilder().addComponents(url));
   return m;
 }
+// Set SL → In Profit (custom price)
 function makeSetProfitModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'profit')).setTitle('Set SL → In Profit (Custom)');
   const price = new TextInputBuilder()
@@ -554,6 +557,7 @@ function makeSetProfitModal(id) {
   m.addComponents(new ActionRowBuilder().addComponents(price));
   return m;
 }
+// Finish confirmation
 function makeFinishModal(id){
   const m = new ModalBuilder().setCustomId(modal(id,'finish')).setTitle('Finish & close control thread');
   const inpt = new TextInputBuilder()
@@ -564,6 +568,7 @@ function makeFinishModal(id){
   m.addComponents(new ActionRowBuilder().addComponents(inpt));
   return m;
 }
+// Undo TP modal
 function makeUndoTPModal(id){
   const m = new ModalBuilder().setCustomId(modal(id,'undo:tp')).setTitle('Undo TP Hit');
   const input = new TextInputBuilder()
@@ -575,7 +580,7 @@ function makeUndoTPModal(id){
   m.addComponents(new ActionRowBuilder().addComponents(input));
   return m;
 }
-// NEW: Recap modal with Final R override
+// Recap modal with Final R override
 function makeRecapModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'recap')).setTitle('Post Trade Recap');
   m.addComponents(new ActionRowBuilder().addComponents(
@@ -595,7 +600,7 @@ function makeRecapModal(id) {
   ));
   return m;
 }
-// NEW: Set Risk modal
+// Set Risk modal
 function makeSetRiskModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'risk')).setTitle('Set Risk Badge');
   const choice = new TextInputBuilder()
@@ -607,13 +612,21 @@ function makeSetRiskModal(id) {
   m.addComponents(new ActionRowBuilder().addComponents(choice));
   return m;
 }
-// NEW: Full Close (Profit) modal
+// Full Close (Profit) modal
 function makeFullProfitModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'fullprofit')).setTitle('Fully Close — Profit');
   const price = new TextInputBuilder()
-    .setCustomId('close_price').setLabel('Close Price').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('e.g., 117430');
+    .setCustomId('close_price')
+    .setLabel('Close Price')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder('e.g., 117430');
   const finalR = new TextInputBuilder()
-    .setCustomId('final_r').setLabel('Final R (optional override, non-negative)').setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder('e.g., 1.25');
+    .setCustomId('final_r')
+    .setLabel('Final R (optional override, non-negative)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setPlaceholder('e.g., 1.25');
   m.addComponents(new ActionRowBuilder().addComponents(price));
   m.addComponents(new ActionRowBuilder().addComponents(finalR));
   return m;
@@ -779,18 +792,15 @@ client.on('interactionCreate', async (interaction) => {
       if (period === 'monthly') {
         const signals = (await getSignals()).map(normalizeSignal);
         const now = new Date();
-        the:
-        {
-          const y = now.getUTCFullYear();
-          const m = now.getUTCMonth();
-          const monthly = signals.filter(s => {
-            if (!isNum(s.createdAt)) return false;
-            const d = new Date(Number(s.createdAt));
-            return d.getUTCFullYear() === y && d.getUTCMonth() === m;
-          });
-          const text = renderMonthlyRecap(monthly, y, m);
-          return interaction.reply({ content: text, allowedMentions: { parse: [] } });
-        }
+        const y = now.getUTCFullYear();
+        const m = now.getUTCMonth();
+        const monthly = signals.filter(s => {
+          if (!isNum(s.createdAt)) return false;
+          const d = new Date(Number(s.createdAt));
+          return d.getUTCFullYear() === y && d.getUTCMonth() === m;
+        });
+        const text = renderMonthlyRecap(monthly, y, m);
+        return interaction.reply({ content: text, allowedMentions: { parse: [] } });
       }
 
       if (chosenId) {
@@ -828,16 +838,19 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
-    // /thread-restore — no recap on restore; only control panel
+    // /thread-restore — block if original signal message was deleted; no recap post
     if (interaction.isChatInputCommand() && interaction.commandName === 'thread-restore') {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
       }
+
       await ensureDeferred(interaction);
 
       const tradeId = interaction.options.getString('trade', true);
+
       const raw = await getSignal(tradeId).catch(()=>null);
       if (!raw) return safeEditReply(interaction, { content: '❌ Trade not found. Restore the signal first with /signal-restore.' });
+
       if (!raw.messageId || !raw.channelId) {
         return safeEditReply(interaction, { content: '❌ Signal message deleted. Use /signal-restore first, then /thread-restore.' });
       }
@@ -866,12 +879,14 @@ client.on('interactionCreate', async (interaction) => {
         reason: `Restore thread for trade ${tradeId}`,
       });
       await thread.members.add(interaction.user.id).catch(()=>{});
+
       await setThreadId(tradeId, thread.id);
       await thread.send({ content: 'Owner Control Panel', components: controlRows(sig.id) }).catch(()=>{});
+
       return safeEditReply(interaction, { content: `Restored: <#${thread.id}>` });
     }
 
-    // /signal-restore
+    // /signal-restore — restore a soft-deleted signal, then you can /thread-restore
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal-restore') {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
@@ -904,6 +919,7 @@ client.on('interactionCreate', async (interaction) => {
       signal.jumpUrl = msg.url;
 
       await updateSignal(signal.id, { messageId: signal.messageId, jumpUrl: signal.jumpUrl });
+
       await createControlThread(signal);
       renameControlThread(signal).catch(() => {});
       await updateSummary();
@@ -940,7 +956,7 @@ client.on('interactionCreate', async (interaction) => {
         const confLines   = confs  ? confs.split('\n').map(s => s.trim()).filter(Boolean)  : [];
         const notesLines  = notes  ? notes.split('\n').map(s => s.trim()).filter(Boolean)  : [];
 
-        // NEW: Final R override
+        // Final R override
         const finalROv = (interaction.fields.getTextInputValue('recap_finalr') || '').trim();
         if (finalROv !== '') {
           if (!isNum(finalROv)) {
@@ -1041,7 +1057,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ TP % plan updated.' });
       }
 
-      // trade info — only patch filled fields
+      // trade info — only patch fields the user actually filled
       if (interaction.customId.startsWith('modal:trade:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -1120,7 +1136,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Chart link updated.' });
       }
 
-      // TP modal submit
+      // TP modal submit (records TP hit)
       if (interaction.customId.startsWith('modal:tp:')) {
         await ensureDeferred(interaction);
         const parts = interaction.customId.split(':');
@@ -1210,7 +1226,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Fully closed.' });
       }
 
-      // NEW: full close (profit)
+      // full close (profit)
       if (interaction.customId.startsWith('modal:fullprofit:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -1253,7 +1269,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: `✅ Fully closed in profits at ${price}${Number.isFinite(signal.finalR) ? ` (Final ${signal.finalR.toFixed(2)}R)` : ''}` });
       }
 
-      // stop BE / stop out / stop profit
+      // stop BE / stop out / stop profit with RR override
       if (interaction.customId.startsWith('modal:finalr:')) {
         await ensureDeferred(interaction);
         try {
@@ -1362,7 +1378,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ SL moved into profits.' });
       }
 
-      // finish modal submit
+      // finish modal submit — closes the control thread
       if (interaction.customId.startsWith('modal:finish:')) {
         await ensureDeferred(interaction);
         const id = interaction.customId.split(':').pop();
@@ -1374,7 +1390,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '🏁 Finished. Control thread closed.' });
       }
 
-      // Undo TP
+      // Undo TP (modal submit)
       if (interaction.customId.startsWith('modal:undo:tp:')) {
         await ensureDeferred(interaction);
         const id = interaction.customId.split(':').pop();
@@ -1395,7 +1411,7 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: `↩️ ${keyLine} undone.` });
       }
 
-      // NEW: Set Risk submit
+      // Set Risk submit
       if (interaction.customId.startsWith('modal:risk:')) {
         await ensureDeferred(interaction);
         const id = interaction.customId.split(':').pop();
@@ -1414,7 +1430,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // BUTTONS
+    // buttons
     if (interaction.isButton()) {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use these controls.', flags: MessageFlags.Ephemeral });
@@ -1434,7 +1450,7 @@ client.on('interactionCreate', async (interaction) => {
       if (key === 'upd:maxr')     return interaction.showModal(makeMaxRModal(id));
       if (key === 'upd:chart')    return interaction.showModal(makeChartModal(id));
 
-      // NEW: risk buttons
+      // risk buttons
       if (key === 'risk:set')   return interaction.showModal(makeSetRiskModal(id));
       if (key === 'risk:clear') {
         await ensureDeferred(interaction);
@@ -1460,9 +1476,17 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ SL moved to breakeven.' });
       }
 
-      if (key === 'setprofit') return interaction.showModal(makeSetProfitModal(id));
-      if (key === 'stopprofit') return interaction.showModal(makeFinalRModal(id, 'PROFIT'));
-      if (key === 'finish')     return interaction.showModal(makeFinishModal(id));
+      if (key === 'setprofit') {
+        return interaction.showModal(makeSetProfitModal(id));
+      }
+
+      if (key === 'stopprofit') {
+        return interaction.showModal(makeFinalRModal(id, 'PROFIT'));
+      }
+
+      if (key === 'finish') {
+        return interaction.showModal(makeFinishModal(id));
+      }
 
       if (key === 'undo_menu') {
         const row = new ActionRowBuilder().addComponents(
@@ -1474,7 +1498,9 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: 'Undo actions:', components: [row], flags: MessageFlags.Ephemeral });
       }
 
-      if (key === 'undo:tp')   return interaction.showModal(makeUndoTPModal(id));
+      if (key === 'undo:tp') {
+        return interaction.showModal(makeUndoTPModal(id));
+      }
       if (key === 'undo:be') {
         await ensureDeferred(interaction);
         await updateSignal(id, { beSet:false, beMovedAfter:null });
@@ -1601,7 +1627,6 @@ async function createSignal(payload, channelId) {
     slProfitAfterTP: null,
     stoppedInProfit: false,
     stoppedInProfitAfterTP: null,
-    // keep riskLabel at default '' unless set later via Set Risk
     riskLabel: (payload.riskLabel || '').trim(),
   });
 
