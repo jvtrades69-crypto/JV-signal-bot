@@ -161,6 +161,7 @@ export function renderRecapText(signal, extras = {}, rrChips = []) {
   return lines.join('\n').trimEnd();
 }
 
+// ---- simple monthly recap (kept for compatibility) ----
 export function renderMonthlyRecap(signals, year, monthIdx) {
   const monthName = new Date(Date.UTC(year, monthIdx, 1)).toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
   const closed = (signals || []).filter(s => s && s.status === 'CLOSED' && isFinite(Number(s.finalR)));
@@ -176,6 +177,7 @@ export function renderMonthlyRecap(signals, year, monthIdx) {
   return lines.join('\n');
 }
 
+// ---- recap embed for attachments ----
 export function renderRecapEmbed(signal, { imageUrl, attachmentName, attachmentUrl } = {}) {
   const isFinal = ['CLOSED', 'STOPPED_BE', 'STOPPED_OUT'].includes(signal.status);
   const hasFinal = signal.finalR != null && isFinite(Number(signal.finalR));
@@ -199,4 +201,109 @@ export function renderRecapEmbed(signal, { imageUrl, attachmentName, attachmentU
     embed.image = { url: imageUrl };
   }
   return { embeds: [embed] };
+}
+
+/* ===========================
+   DETAILED TEMPLATES PER SPEC
+   =========================== */
+
+export function renderMonthlyRecapDetailed({ monthName, year, totals, best, worst, allTrades, notes }) {
+  // totals = { total, wins, losses, netR, winRatePct, avgR, bestMaxR }
+  // best = { asset, dirWord, r, jumpUrl, tp: [{label:'TP1', r, pct, note}], maxR }
+  // worst = { asset, dirWord, r, jumpUrl, tpNote, maxR }
+  // allTrades = [{ asset, dirWord, r, ok }]
+  const L = [];
+
+  L.push(`📊 **JV Trades | Monthly Recap (${monthName} ${year})**`, '');
+  L.push(`- Trades: ${totals.total}`);
+  L.push(`- Wins: ${totals.wins} | Losses: ${totals.losses}`);
+  L.push(`- Net: **${Number(totals.netR).toFixed(2)}R**`);
+  L.push(`- Win Rate: ${Number(totals.winRatePct).toFixed(0)}%`);
+  L.push(`- Avg R/Trade: ${Number(totals.avgR).toFixed(2)}`, '');
+
+  // Best
+  L.push(`🏆 **Best Trade** → **$${best.asset} ${best.dirWord} (${Number(best.r).toFixed(2)}R)** → ${best.jumpUrl ? `[View Trade](${best.jumpUrl})` : '[View Trade](#️⃣)'}`);
+  L.push(`🎯 **Take Profit Path**`);
+  if (best.tp && best.tp.length) {
+    for (const t of best.tp) {
+      const note = t.note ? ` ${t.note}` : '';
+      L.push(`- ${t.label} | ${Number(t.r).toFixed(2)}R (${Number(t.pct).toFixed(0)}%)${note}`);
+    }
+  } else {
+    L.push(`- —`);
+  }
+  L.push(`⚖️ **Max R Reached:** ${Number(totals.bestMaxR ?? best.maxR ?? 0).toFixed(2)}R`, '');
+
+  // Worst
+  L.push(`💀 **Worst Trade** → **$${worst.asset} ${worst.dirWord} (${Number(worst.r).toFixed(2)}R)** → ${worst.jumpUrl ? `[View Trade](${worst.jumpUrl})` : '[View Trade](#️⃣)'}`);
+  L.push(`🎯 **Take Profit Path**`);
+  L.push(`- ${worst.tpNote || 'None (Stopped Out ❌)'}`);
+  L.push(`⚖️ **Max R Reached:** ${Number(worst.maxR ?? 0).toFixed(2)}R`, '');
+
+  // All trades
+  L.push(`🧾 **All Trades (summary)**`);
+  if (allTrades && allTrades.length) {
+    allTrades.forEach((t, i) => {
+      L.push(`${i + 1}. $${t.asset} ${t.dirWord} ${Number(t.r).toFixed(2)}R ${t.ok ? '✅' : '❌'}`);
+    });
+  } else {
+    L.push('—');
+  }
+
+  L.push('', `🗒️ **Notes**`);
+  if (notes && notes.length) {
+    notes.forEach(n => L.push(`- ${n}`));
+  } else {
+    L.push('- —');
+  }
+
+  L.push('', '#Crypto #DayTrading #PriceAction');
+  return L.join('\n');
+}
+
+export function renderWeeklyRecapDetailed({ startDateStr, endDateStr, totals, topMoves, allTrades, takeaways, focus }) {
+  // totals = { total, netR, winRatePct, avgR }
+  // topMoves = [{ asset, dirWord, r, jumpUrl }, ...]
+  // allTrades = [{ asset, dirWord, r, ok }]
+  const L = [];
+  L.push(`📈 **JV Trades | Weekly Recap (${startDateStr} → ${endDateStr})**`, '');
+  L.push(`- Trades: ${totals.total}`);
+  L.push(`- Net: **${Number(totals.netR).toFixed(2)}R**`);
+  L.push(`- Win Rate: ${Number(totals.winRatePct).toFixed(0)}%`);
+  L.push(`- Avg R/Trade: ${Number(totals.avgR).toFixed(2)}`, '');
+
+  L.push(`🔥 **Top Moves**`);
+  if (topMoves && topMoves.length) {
+    topMoves.slice(0, 2).forEach(t => {
+      L.push(`- **$${t.asset} ${t.dirWord}** → **${Number(t.r).toFixed(2)}R** → ${t.jumpUrl ? `[View](${t.jumpUrl})` : '[View](#️⃣)'}`);
+    });
+  } else {
+    L.push('- —');
+  }
+
+  L.push('', `🧾 **All Trades (quick list)**`);
+  if (allTrades && allTrades.length) {
+    allTrades.forEach((t, i) => {
+      L.push(`${i + 1}. $${t.asset} ${t.dirWord} ${Number(t.r).toFixed(2)}R ${t.ok ? '✅' : '❌'}`);
+    });
+  } else {
+    L.push('—');
+  }
+
+  L.push('', `🔧 **This Week’s Takeaways**`);
+  if (takeaways && takeaways.length) {
+    takeaways.forEach(n => L.push(`- ${n}`));
+  } else {
+    L.push('- —');
+  }
+
+  L.push('', `🎯 **Focus Next Week**`);
+  if (focus && focus.length) {
+    focus.forEach(n => L.push(`- ${n}`));
+  } else {
+    L.push('- —');
+  }
+
+  L.push('', '#BTC #ETH #SOL #DayTrading');
+  return L.join('\n');
 }
