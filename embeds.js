@@ -36,7 +36,6 @@ function computeRealized(signal) {
 function dirWord(signal) { return signal.direction === 'SHORT' ? 'Short' : 'Long'; }
 function dirDot(signal) { return signal.direction === 'SHORT' ? '🔴' : '🟢'; }
 
-<<<<<<< Updated upstream
 // ---------- titles ----------
 function buildTitle(signal) {
   const riskBadge = (!signal.latestTpHit && signal.riskLabel) ? ` (${signal.riskLabel} risk)` : '';
@@ -45,24 +44,6 @@ function buildTitle(signal) {
   const isFinal = ['CLOSED', 'STOPPED_BE', 'STOPPED_OUT'].includes(signal.status);
   const hasFinal = signal.finalR != null && isFinite(Number(signal.finalR));
   const useR = (isFinal && hasFinal) ? Number(signal.finalR) : computeRealized(signal);
-=======
-// ---- titles ----
-function buildTitle(signal){
-  const dirWord=signal.direction==='SHORT'?'Short':'Long';
-  const circle =signal.direction==='SHORT'?'🔴':'🟢';
-
-// risk badge: show only until first TP is hit
-const riskBadge = (!signal.latestTpHit && signal.riskLabel) ? ` (${signal.riskLabel} risk)` : '';
-const head = `$${String(signal.asset).toUpperCase()} | ${dirWord} ${circle}${riskBadge}`;
-
-
-
-  // Prefer override finalR in final states; else use computed realized
-  const isFinal = signal.status==='CLOSED' || signal.status==='STOPPED_BE' || signal.status==='STOPPED_OUT';
-  const hasFinal = signal.finalR!=null && isFinite(Number(signal.finalR));
-  const { realized }=computeRealized(signal);
-  const useR = (isFinal && hasFinal) ? Number(signal.finalR) : Number(realized);
->>>>>>> Stashed changes
 
   let suffix = '';
   if (signal.status === 'STOPPED_OUT') {
