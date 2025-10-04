@@ -40,7 +40,18 @@ const signalCmd = new SlashCommandBuilder()
   .addStringOption(opt => opt.setName('tp4_pct').setDescription('Planned % at TP4 (0–100)'))
   .addStringOption(opt => opt.setName('tp5_pct').setDescription('Planned % at TP5 (0–100)'))
   .addStringOption(opt => opt.setName('reason').setDescription('Reason (optional)'))
-  .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)'));
+  .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)'))
+  // NEW: risk badge
+  .addStringOption(opt =>
+    opt.setName('risk')
+      .setDescription('half | 1/4 | 3/4 (optional)')
+      .setRequired(false)
+      .addChoices(
+        { name: 'half', value: 'half' },
+        { name: '1/4',  value: '1/4' },
+        { name: '3/4',  value: '3/4' },
+      )
+  );
 
 /* /recap */
 const recapCmd = new SlashCommandBuilder()

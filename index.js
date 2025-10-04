@@ -763,6 +763,8 @@ client.on('interactionCreate', async (interaction) => {
       const tp4_pct = interaction.options.getString('tp4_pct');
       const tp5_pct = interaction.options.getString('tp5_pct');
       const chartAtt  = interaction.options.getAttachment?.('chart');
+      const risk      = interaction.options.getString('risk') || '';
+
 
       if (assetSel === 'OTHER') {
         const pid = nano();
@@ -770,35 +772,41 @@ client.on('interactionCreate', async (interaction) => {
         const input = new TextInputBuilder().setCustomId('asset_value').setLabel('Asset (e.g., PEPE, XRP)').setStyle(TextInputStyle.Short).setRequired(true);
         m.addComponents(new ActionRowBuilder().addComponents(input));
         pendingSignals.set(pid, {
-          direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole,
-          plan: {
-            TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
-            TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
-            TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
-            TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
-            TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
-          },
-          channelId: interaction.channelId,
-          chartUrl: chartAtt?.url || null,
-          chartAttached: !!chartAtt?.url,
-        });
+  direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole,
+  plan: {
+    TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
+    TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
+    TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
+    TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
+    TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
+  },
+  channelId: interaction.channelId,
+  chartUrl: chartAtt?.url || null,
+  chartAttached: !!chartAtt?.url,
+  // NEW
+  riskLabel: risk,
+});
+
         return interaction.showModal(m);
       }
 
       await createSignal({
-        asset: assetSel,
-        direction, entry, sl, tp1, tp2, tp3, tp4, tp5,
-        reason, extraRole,
-        plan: {
-          TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
-          TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
-          TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
-          TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
-          TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
-        },
-        chartUrl: chartAtt?.url || null,
-        chartAttached: !!chartAtt?.url,
-      }, interaction.channelId);
+  asset: assetSel,
+  direction, entry, sl, tp1, tp2, tp3, tp4, tp5,
+  reason, extraRole,
+  plan: {
+    TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
+    TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
+    TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
+    TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
+    TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
+  },
+  chartUrl: chartAtt?.url || null,
+  chartAttached: !!chartAtt?.url,
+  // NEW
+  riskLabel: risk,
+}, interaction.channelId);
+
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
 
