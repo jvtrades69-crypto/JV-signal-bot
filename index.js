@@ -762,8 +762,10 @@ client.on('interactionCreate', async (interaction) => {
       const tp3_pct = interaction.options.getString('tp3_pct');
       const tp4_pct = interaction.options.getString('tp4_pct');
       const tp5_pct = interaction.options.getString('tp5_pct');
-      const chartAtt  = interaction.options.getAttachment?.('chart');
-      const risk      = interaction.options.getString('risk') || '';
+     const chartAtt  = interaction.options.getAttachment?.('chart');
+const risk      = interaction.options.getString('risk') || '';
+const be_at     = interaction.options.getString('be_at') || '';
+
 
 
       if (assetSel === 'OTHER') {
@@ -783,9 +785,10 @@ client.on('interactionCreate', async (interaction) => {
   channelId: interaction.channelId,
   chartUrl: chartAtt?.url || null,
   chartAttached: !!chartAtt?.url,
-  // NEW
   riskLabel: risk,
+  beAt: be_at || null,
 });
+
 
         return interaction.showModal(m);
       }
@@ -803,9 +806,10 @@ client.on('interactionCreate', async (interaction) => {
   },
   chartUrl: chartAtt?.url || null,
   chartAttached: !!chartAtt?.url,
-  // NEW
   riskLabel: risk,
+  beAt: be_at || null,
 }, interaction.channelId);
+
 
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
@@ -1491,20 +1495,31 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (key === 'setbe') {
-        await ensureDeferred(interaction);
-        const sig0 = normalizeSignal(await getSignal(id));
-        if (!sig0) return safeEditReply(interaction, { content: 'Signal not found.' });
-        if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
+  await ensureDeferred(interaction);
+  const sig0 = normalizeSignal(await getSignal(id));
+  if (!sig0) return safeEditReply(interaction, { content: 'Signal not found.' });
+  if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
 
-        const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || null;
-        const patch = { validReentry: false, beSet: true, slProfitSet: false, slProfitAfter: null, slProfitAfterTP: null };
-        if (!sig0.beMovedAfter && highestHit) patch.beMovedAfter = highestHit;
+  const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || null;
 
-        await updateSignal(id, patch);
-        const updated = normalizeSignal(await getSignal(id));
-        await editSignalMessage(updated); await updateSummary();
-        return safeEditReply(interaction, { content: '✅ SL moved to breakeven.' });
-      }
+  const patch = {
+    validReentry: false,
+    beSet: true,
+    beMovedAfter: sig0.beMovedAfter || highestHit || null,
+    slProfitSet: false,
+    slProfitAfter: null,
+    slProfitAfterTP: null,
+    beAt: sig0.beAt || String(sig0.entry), // default to entry if not set
+  };
+
+  await updateSignal(id, patch);
+  const updated = normalizeSignal(await getSignal(id));
+  await editSignalMessage(updated); await updateSummary();
+  return safeEditReply(interaction, {
+    content: `✅ SL → BE set at ${updated.beAt}${patch.beMovedAfter ? ` after ${patch.beMovedAfter}` : ''}.`
+  });
+}
+
 
       if (key === 'setprofit') {
         return interaction.showModal(makeSetProfitModal(id));
