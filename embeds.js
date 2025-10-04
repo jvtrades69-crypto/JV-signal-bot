@@ -80,7 +80,7 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
   lines.push(buildTitle(signal), '', '📊 **Trade Details**');
   lines.push(`- Entry: \`${fmt(signal.entry)}\``);
   lines.push(`- SL: \`${fmt(signal.sl)}\``);
-  // NEW: optional BE plan line
+  // optional BE plan line
   if (signal.beAt) lines.push(`- SL → BE at \`${fmt(signal.beAt)}\``);
 
   // TP lines with % out and R
@@ -135,8 +135,8 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
         lines.push(`Inactive 🟥 | Fully closed${afterTP}`);
       }
     } else if (signal.status === 'STOPPED_BE') {
-      const atBE = isFinite(Number(signal.beAt)) ? ` at \`${fmt(signal.beAt)}\`` : '';
-      lines.push(`Inactive 🟥 | Stopped breakeven${afterTP}${atBE}`);
+      // remove price from final BE line
+      lines.push(`Inactive 🟥 | Stopped breakeven${afterTP}`);
     } else if (signal.status === 'STOPPED_OUT') {
       lines.push('Inactive 🟥 | Stopped out');
     } else {
@@ -173,8 +173,8 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
     } else if (signal.status === 'STOPPED_BE') {
       const highestTP = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits && signal.tpHits[k]) || null;
       const afterTP = highestTP ? ` after ${highestTP}` : '';
-      const atBE = isFinite(Number(signal.beAt)) ? ` at \`${fmt(signal.beAt)}\`` : '';
-      tail = ` ( stopped breakeven${afterTP}${atBE} )`;
+      // remove price from realized BE tail
+      tail = ` ( stopped breakeven${afterTP} )`;
     } else if (signal.status === 'STOPPED_OUT') {
       tail = ' ( stopped out )';
     } else if (signal.status === 'RUN_VALID') {
@@ -302,12 +302,10 @@ export function renderMonthlyRecapDetailed({ monthName, year, totals, best, wors
   } else {
     L.push(`- —`);
   }
-  L.push(`⚖️ **Max R Reached:** ${Number(totals.bestMaxR ?? best.maxR ?? 0).toFixed(2)}R`, '');
 
   L.push(`💀 **Worst Trade** → **$${worst.asset} ${worst.dirWord} (${Number(worst.r).toFixed(2)}R)** → ${worst.jumpUrl ? `[View Trade](${worst.jumpUrl})` : '[View Trade](#️⃣)'}`);
   L.push(`🎯 **Take Profit Path**`);
   L.push(`- ${worst.tpNote || 'None (Stopped Out ❌)'}`);
-  L.push(`⚖️ **Max R Reached:** ${Number(worst.maxR ?? 0).toFixed(2)}R`, '');
 
   L.push(`🧾 **All Trades (summary)**`);
   if (allTrades && allTrades.length) {
