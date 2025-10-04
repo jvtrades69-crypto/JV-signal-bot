@@ -41,7 +41,7 @@ const signalCmd = new SlashCommandBuilder()
   .addStringOption(opt => opt.setName('tp5_pct').setDescription('Planned % at TP5 (0–100)'))
   .addStringOption(opt => opt.setName('reason').setDescription('Reason (optional)'))
   .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)'))
-  // NEW: risk badge
+  // Risk badge
   .addStringOption(opt =>
     opt.setName('risk')
       .setDescription('half | 1/4 | 3/4 (optional)')
@@ -51,6 +51,12 @@ const signalCmd = new SlashCommandBuilder()
         { name: '1/4',  value: '1/4' },
         { name: '3/4',  value: '3/4' },
       )
+  )
+  // NEW: Breakeven plan price
+  .addStringOption(opt =>
+    opt.setName('be_at')
+      .setDescription('Price to move SL → BE (optional)')
+      .setRequired(false)
   );
 
 /* /recap */
