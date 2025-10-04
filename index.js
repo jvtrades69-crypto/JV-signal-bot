@@ -97,13 +97,16 @@ function normalizeSignal(raw) {
   s.chartUrl = s.chartUrl || null;
   s.chartAttached = !!s.chartAttached;
 
-  // Flags
-  s.beSet = Boolean(s.beSet);
-  s.beMovedAfter = s.beMovedAfter || null;
+// Flags
+s.beSet = Boolean(s.beSet);
+s.beMovedAfter = s.beMovedAfter || null;
+// NEW: planned/explicit BE price
+s.beAt = s.beAt || null;
 
-  s.slProfitSet = Boolean(s.slProfitSet);
-  s.slProfitAfter = s.slProfitAfter || null;
-  s.slProfitAfterTP = s.slProfitAfterTP || null;
+s.slProfitSet = Boolean(s.slProfitSet);
+s.slProfitAfter = s.slProfitAfter || null;
+s.slProfitAfterTP = s.slProfitAfterTP || null;
+
 
   // display flags for stopped in profit
   s.stoppedInProfit = Boolean(s.stoppedInProfit);
@@ -1643,37 +1646,40 @@ const pendingSignals = new Map();
 
 async function createSignal(payload, channelId) {
   const signal = normalizeSignal({
-    id: nano(),
-    createdAt: Date.now(),
-    asset: String(payload.asset || '').toUpperCase(),
-    direction: (payload.direction || 'LONG').toUpperCase() === 'SHORT' ? DIR.SHORT : DIR.LONG,
-    entry: payload.entry,
-    sl: payload.sl,
-    tp1: payload.tp1, tp2: payload.tp2, tp3: payload.tp3, tp4: payload.tp4, tp5: payload.tp5,
-    reason: payload.reason || '',
-    extraRole: payload.extraRole || '',
-    plan: payload.plan || { TP1:null, TP2:null, TP3:null, TP4:null, TP5:null },
-    status: STATUS.RUN_VALID,
-    validReentry: true,
-    latestTpHit: null,
-    fills: [],
-    tpHits: { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false },
-    finalR: null,
-    maxR: null,
-    chartUrl: payload.chartUrl || null,
-    chartAttached: !!payload.chartAttached,
-    messageId: null,
-    jumpUrl: null,
-    channelId,
-    beSet: false,
-    beMovedAfter: null,
-    slProfitSet: false,
-    slProfitAfter: null,
-    slProfitAfterTP: null,
-    stoppedInProfit: false,
-    stoppedInProfitAfterTP: null,
-    riskLabel: (payload.riskLabel || '').trim(),
-  });
+  id: nano(),
+  createdAt: Date.now(),
+  asset: String(payload.asset || '').toUpperCase(),
+  direction: (payload.direction || 'LONG').toUpperCase() === 'SHORT' ? DIR.SHORT : DIR.LONG,
+  entry: payload.entry,
+  sl: payload.sl,
+  tp1: payload.tp1, tp2: payload.tp2, tp3: payload.tp3, tp4: payload.tp4, tp5: payload.tp5,
+  reason: payload.reason || '',
+  extraRole: payload.extraRole || '',
+  plan: payload.plan || { TP1:null, TP2:null, TP3:null, TP4:null, TP5:null },
+  status: STATUS.RUN_VALID,
+  validReentry: true,
+  latestTpHit: null,
+  fills: [],
+  tpHits: { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false },
+  finalR: null,
+  maxR: null,
+  chartUrl: payload.chartUrl || null,
+  chartAttached: !!payload.chartAttached,
+  messageId: null,
+  jumpUrl: null,
+  channelId,
+  beSet: false,
+  beMovedAfter: null,
+  // NEW: carry planned BE price through creation if provided
+  beAt: payload.beAt || null,
+  slProfitSet: false,
+  slProfitAfter: null,
+  slProfitAfterTP: null,
+  stoppedInProfit: false,
+  stoppedInProfitAfterTP: null,
+  riskLabel: (payload.riskLabel || '').trim(),
+});
+
 
   await saveSignal(signal);
 
