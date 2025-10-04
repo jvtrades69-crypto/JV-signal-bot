@@ -80,6 +80,8 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
   lines.push(buildTitle(signal), '', '📊 **Trade Details**');
   lines.push(`- Entry: \`${fmt(signal.entry)}\``);
   lines.push(`- SL: \`${fmt(signal.sl)}\``);
+  // NEW: optional BE plan line
+  if (signal.beAt) lines.push(`- SL → BE at \`${fmt(signal.beAt)}\``);
 
   // TP lines with % out and R
   const tpPerc = computeTpPercents(signal);
@@ -115,7 +117,8 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
       tail = ` | SL moved into profits${afterTP}${atPrice}`;
     } else if (signal.beSet || signal.beMovedAfter) {
       const afterTP = signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : (highestTP ? ` after ${highestTP}` : '');
-      tail = ` | SL moved to breakeven${afterTP}`;
+      const atBE   = isFinite(Number(signal.beAt)) ? ` at \`${fmt(signal.beAt)}\`` : '';
+      tail = ` | SL moved to breakeven${afterTP}${atBE}`;
     }
 
     lines.push(hitsLine);
@@ -132,7 +135,8 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
         lines.push(`Inactive 🟥 | Fully closed${afterTP}`);
       }
     } else if (signal.status === 'STOPPED_BE') {
-      lines.push(`Inactive 🟥 | Stopped breakeven${afterTP}`);
+      const atBE = isFinite(Number(signal.beAt)) ? ` at \`${fmt(signal.beAt)}\`` : '';
+      lines.push(`Inactive 🟥 | Stopped breakeven${afterTP}${atBE}`);
     } else if (signal.status === 'STOPPED_OUT') {
       lines.push('Inactive 🟥 | Stopped out');
     } else {
@@ -169,7 +173,8 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
     } else if (signal.status === 'STOPPED_BE') {
       const highestTP = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits && signal.tpHits[k]) || null;
       const afterTP = highestTP ? ` after ${highestTP}` : '';
-      tail = ` ( stopped breakeven${afterTP} )`;
+      const atBE = isFinite(Number(signal.beAt)) ? ` at \`${fmt(signal.beAt)}\`` : '';
+      tail = ` ( stopped breakeven${afterTP}${atBE} )`;
     } else if (signal.status === 'STOPPED_OUT') {
       tail = ' ( stopped out )';
     } else if (signal.status === 'RUN_VALID') {
