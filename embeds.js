@@ -36,6 +36,21 @@ function computeRealized(signal) {
 function dirWord(signal) { return signal.direction === 'SHORT' ? 'Short' : 'Long'; }
 function dirDot(signal) { return signal.direction === 'SHORT' ? '🔴' : '🟢'; }
 
+// Sum executed % per TP from fills; fallback to plan if none executed
+function computeTpPercents(signal){
+  const acc = {TP1:0,TP2:0,TP3:0,TP4:0,TP5:0};
+  for (const f of (signal.fills || [])) {
+    const src = String(f.source || '').toUpperCase();
+    if (acc[src] !== undefined) acc[src] += Number(f.pct || 0);
+  }
+  const plan = signal.plan || {};
+  for (const k of Object.keys(acc)) {
+    if (acc[k] <= 0 && plan[k] != null) acc[k] = Number(plan[k]) || 0;
+    acc[k] = Math.max(0, Math.min(100, Math.round(acc[k])));
+  }
+  return acc;
+}
+
 // ---------- titles ----------
 function buildTitle(signal) {
   const riskBadge = (!signal.latestTpHit && signal.riskLabel) ? ` (${signal.riskLabel} risk)` : '';
@@ -66,12 +81,20 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
   lines.push(`- Entry: \`${fmt(signal.entry)}\``);
   lines.push(`- SL: \`${fmt(signal.sl)}\``);
 
-  for (const key of ['tp1', 'tp2', 'tp3', 'tp4', 'tp5']) {
+  // TP lines with % out and R
+  const tpPerc = computeTpPercents(signal);
+  for (const key of ['tp1','tp2','tp3','tp4','tp5']) {
     const v = signal[key];
     if (v == null || v === '') continue;
     const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, v);
-    const rr = (r != null) ? `${r.toFixed(2)}R` : null;
-    lines.push(rr ? `- ${key.toUpperCase()}: \`${fmt(v)}\` (${rr})` : `- ${key.toUpperCase()}: \`${fmt(v)}\``);
+    const rrTxt = (r != null) ? `${r.toFixed(2)}R` : null;
+    const label = key.toUpperCase();
+    const pct = tpPerc[label];
+
+    if (pct > 0 && rrTxt)      lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
+    else if (pct > 0)          lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out)`);
+    else if (rrTxt)            lines.push(`- ${label}: \`${fmt(v)}\` (${rrTxt})`);
+    else                       lines.push(`- ${label}: \`${fmt(v)}\``);
   }
 
   if (signal.reason && String(signal.reason).trim()) {
@@ -85,7 +108,6 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
     const highestTP = hitOrder.find(k => signal.tpHits && signal.tpHits[k]) || null;
     const hitsLine = highestTP ? `Active 🟩 | ${highestTP} hit` : 'Active 🟩 | Trade running';
 
-    // Tail details for SL → Profit / BE while active
     let tail = '';
     if (signal.slProfitSet) {
       const afterTP = signal.slProfitAfterTP ? ` after ${signal.slProfitAfterTP}` : (highestTP ? ` after ${highestTP}` : '');
@@ -99,7 +121,6 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
     lines.push(hitsLine);
     lines.push(`Valid for re-entry: ${signal.validReentry ? '✅' : '❌'}${tail}`);
   } else {
-    // Final-state status lines
     const highestTP = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits && signal.tpHits[k]) || null;
     const afterTP = highestTP ? ` after ${highestTP}` : '';
 
@@ -257,10 +278,6 @@ export function renderRecapEmbed(signal, { imageUrl, attachmentName, attachmentU
    =========================== */
 
 export function renderMonthlyRecapDetailed({ monthName, year, totals, best, worst, allTrades, notes }) {
-  // totals = { total, wins, losses, netR, winRatePct, avgR, bestMaxR }
-  // best = { asset, dirWord, r, jumpUrl, tp: [{label:'TP1', r, pct, note}], maxR }
-  // worst = { asset, dirWord, r, jumpUrl, tpNote, maxR }
-  // allTrades = [{ asset, dirWord, r, ok }]
   const L = [];
 
   L.push(`📊 **JV Trades | Monthly Recap (${monthName} ${year})**`, '');
@@ -270,7 +287,6 @@ export function renderMonthlyRecapDetailed({ monthName, year, totals, best, wors
   L.push(`- Win Rate: ${Number(totals.winRatePct).toFixed(0)}%`);
   L.push(`- Avg R/Trade: ${Number(totals.avgR).toFixed(2)}`, '');
 
-  // Best
   L.push(`🏆 **Best Trade** → **$${best.asset} ${best.dirWord} (${Number(best.r).toFixed(2)}R)** → ${best.jumpUrl ? `[View Trade](${best.jumpUrl})` : '[View Trade](#️⃣)'}`);
   L.push(`🎯 **Take Profit Path**`);
   if (best.tp && best.tp.length) {
@@ -283,13 +299,11 @@ export function renderMonthlyRecapDetailed({ monthName, year, totals, best, wors
   }
   L.push(`⚖️ **Max R Reached:** ${Number(totals.bestMaxR ?? best.maxR ?? 0).toFixed(2)}R`, '');
 
-  // Worst
   L.push(`💀 **Worst Trade** → **$${worst.asset} ${worst.dirWord} (${Number(worst.r).toFixed(2)}R)** → ${worst.jumpUrl ? `[View Trade](${worst.jumpUrl})` : '[View Trade](#️⃣)'}`);
   L.push(`🎯 **Take Profit Path**`);
   L.push(`- ${worst.tpNote || 'None (Stopped Out ❌)'}`);
   L.push(`⚖️ **Max R Reached:** ${Number(worst.maxR ?? 0).toFixed(2)}R`, '');
 
-  // All trades
   L.push(`🧾 **All Trades (summary)**`);
   if (allTrades && allTrades.length) {
     allTrades.forEach((t, i) => {
@@ -311,9 +325,6 @@ export function renderMonthlyRecapDetailed({ monthName, year, totals, best, wors
 }
 
 export function renderWeeklyRecapDetailed({ startDateStr, endDateStr, totals, topMoves, allTrades, takeaways, focus }) {
-  // totals = { total, netR, winRatePct, avgR }
-  // topMoves = [{ asset, dirWord, r, jumpUrl }, ...]
-  // allTrades = [{ asset, dirWord, r, ok }]
   const L = [];
   L.push(`📈 **JV Trades | Weekly Recap (${startDateStr} → ${endDateStr})**`, '');
   L.push(`- Trades: ${totals.total}`);
