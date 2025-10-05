@@ -876,9 +876,37 @@ const be_at     = interaction.options.getString('be_at') || '';
 }
 
 
-      if (period === 'trade' && chosenId) {
-  return interaction.showModal(makeRecapModal(chosenId));
+     // For trade recap, always show a picker first (no manual ID needed)
+if (period === 'trade') {
+  const all = (await getSignals()).map(normalizeSignal);
+  all.sort((a, b) => {
+    if (a.messageId && b.messageId) {
+      const A = BigInt(a.messageId), B = BigInt(b.messageId);
+      if (A === B) return 0;
+      return (B > A) ? 1 : -1;
+    }
+    return Number(b.createdAt || 0) - Number(a.createdAt || 0);
+  });
+  const items = all.slice(0, 5);
+  if (!items.length) {
+    return interaction.reply({ content: '❌ No trades found to recap.', flags: MessageFlags.Ephemeral });
+  }
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId('recap:pick')
+    .setPlaceholder('Select a trade to recap')
+    .addOptions(items.map(s => ({
+      label: `$${s.asset} ${s.direction === 'SHORT' ? 'Short' : 'Long'} • ${s.status}`,
+      description: `id:${s.id}`,
+      value: s.id,
+    })));
+  const row = new ActionRowBuilder().addComponents(menu);
+  return interaction.reply({
+    content: 'Pick a trade to recap:',
+    components: [row],
+    flags: MessageFlags.Ephemeral,
+  });
 }
+
 
 
       if (period === 'trade') {
