@@ -826,53 +826,91 @@ const be_at     = interaction.options.getString('be_at') || '';
       const period   = interaction.options.getString?.('period') || null;
       const chosenId = interaction.options.getString?.('id')     || null;
 
-      if (period === 'monthly') {
-        const signals = (await getSignals()).map(normalizeSignal);
-        const now = new Date();
-        const y = now.getUTCFullYear();
-        const m = now.getUTCMonth();
-        const monthly = signals.filter(s => {
-          if (!isNum(s.createdAt)) return false;
-          const d = new Date(Number(s.createdAt));
-          return d.getUTCFullYear() === y && d.getUTCMonth() === m;
-        });
-        const text = renderMonthlyRecap(monthly, y, m);
-        return interaction.reply({ content: text, allowedMentions: { parse: [] } });
-      }
+      if (period === 'weekly') {
+  // Current week in UTC: Monday 00:00 → Sunday 23:59
+  const now = new Date();
+  const day = now.getUTCDay(); // 0..6
+  const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - ((day + 6) % 7)));
+  monday.setUTCHours(0,0,0,0);
+  const sunday = new Date(monday); sunday.setUTCDate(monday.getUTCDate() + 6); sunday.setUTCHours(23,59,59,999);
 
-      if (chosenId) {
-        return interaction.showModal(makeRecapModal(chosenId));
-      }
+  const signals = (await getSignals()).map(normalizeSignal);
+  const weekly = signals.filter(s => isNum(s.createdAt) && s.createdAt >= monday.getTime() && s.createdAt <= sunday.getTime());
 
-      const all = (await getSignals()).map(normalizeSignal);
-      all.sort((a, b) => {
-        if (a.messageId && b.messageId) {
-          const A = BigInt(a.messageId), B = BigInt(b.messageId);
-          if (A === B) return 0;
-          return (B > A) ? 1 : -1;
-        }
-        return Number(b.createdAt || 0) - Number(a.createdAt || 0);
-      });
-      const items = all.slice(0, 5);
-      if (!items.length) {
-        return interaction.reply({ content: '❌ No trades found to recap.', flags: MessageFlags.Ephemeral });
-      }
+  const total = weekly.length;
+  const finals = weekly.filter(s => s.status !== 'RUN_VALID');
+  const netR = finals.reduce((a,s)=> a + (isNum(s.finalR)? Number(s.finalR):0), 0);
+  const wins = finals.filter(s => isNum(s.finalR) && Number(s.finalR) > 0).length;
+  const winRatePct = total ? Math.round((wins/total)*100) : 0;
+  const avgR = total ? netR / total : 0;
 
-      const menu = new StringSelectMenuBuilder()
-        .setCustomId('recap:pick')
-        .setPlaceholder('Select a trade to recap')
-        .addOptions(items.map(s => ({
-          label: `$${s.asset} ${s.direction === 'SHORT' ? 'Short' : 'Long'} • ${s.status}`,
-          description: `id:${s.id}`,
-          value: s.id,
-        })));
+  const sorted = finals.filter(s => isNum(s.finalR))
+                       .sort((a,b)=> Math.abs(Number(b.finalR||0)) - Math.abs(Number(a.finalR||0)));
+  const topMoves = sorted.slice(0,2).map(s => ({
+    asset: s.asset,
+    dirWord: (s.direction === 'SHORT' ? 'Short' : 'Long'),
+    r: Number(s.finalR || 0),
+    jumpUrl: s.jumpUrl || null
+  }));
 
-      const row = new ActionRowBuilder().addComponents(menu);
-      return interaction.reply({
-        content: 'Pick a trade to recap:',
-        components: [row],
-        flags: MessageFlags.Ephemeral,
-      });
+  const allTrades = finals.map(s => ({
+    asset: s.asset,
+    dirWord: (s.direction === 'SHORT' ? 'Short' : 'Long'),
+    r: Number(s.finalR || 0),
+    ok: Number(s.finalR || 0) > 0
+  }));
+
+  const startDateStr = monday.toISOString().slice(0,10);
+  const endDateStr   = sunday.toISOString().slice(0,10);
+
+  const text = renderWeeklyRecapDetailed({
+    startDateStr, endDateStr,
+    totals: { total, netR, winRatePct, avgR },
+    topMoves,
+    allTrades,
+    takeaways: [],
+    focus: []
+  });
+
+  return interaction.reply({ content: text, allowedMentions: { parse: [] } });
+}
+
+
+      if (period === 'trade' && chosenId) {
+  return interaction.showModal(makeRecapModal(chosenId));
+}
+
+
+      if (period === 'trade') {
+  const all = (await getSignals()).map(normalizeSignal);
+  all.sort((a, b) => {
+    if (a.messageId && b.messageId) {
+      const A = BigInt(a.messageId), B = BigInt(b.messageId);
+      if (A === B) return 0;
+      return (B > A) ? 1 : -1;
+    }
+    return Number(b.createdAt || 0) - Number(a.createdAt || 0);
+  });
+  const items = all.slice(0, 5);
+  if (!items.length) {
+    return interaction.reply({ content: '❌ No trades found to recap.', flags: MessageFlags.Ephemeral });
+  }
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId('recap:pick')
+    .setPlaceholder('Select a trade to recap')
+    .addOptions(items.map(s => ({
+      label: `$${s.asset} ${s.direction === 'SHORT' ? 'Short' : 'Long'} • ${s.status}`,
+      description: `id:${s.id}`,
+      value: s.id,
+    })));
+  const row = new ActionRowBuilder().addComponents(menu);
+  return interaction.reply({
+    content: 'Pick a trade to recap:',
+    components: [row],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
     }
 
     // /thread-restore — block if original signal message was deleted; no recap post

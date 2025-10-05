@@ -52,7 +52,7 @@ const signalCmd = new SlashCommandBuilder()
         { name: '3/4',  value: '3/4' },
       )
   )
-  // NEW: Breakeven plan price
+  // Breakeven plan price
   .addStringOption(opt =>
     opt.setName('be_at')
       .setDescription('Price to move SL → BE (optional)')
@@ -65,13 +65,17 @@ const recapCmd = new SlashCommandBuilder()
   .setDescription('Show recap of trades.')
   .addStringOption(opt =>
     opt.setName('period')
-      .setDescription('Recap period')
-      .setRequired(false)
-      .addChoices({ name: 'Monthly', value: 'monthly' })
+      .setDescription('Recap type')
+      .setRequired(true)
+      .addChoices(
+        { name: 'Monthly',     value: 'monthly' },
+        { name: 'Weekly',      value: 'weekly'  },
+        { name: 'Trade Recap', value: 'trade'   },
+      )
   )
   .addStringOption(opt =>
     opt.setName('id')
-      .setDescription('Signal ID to recap (autocomplete)')
+      .setDescription('Signal ID to recap (autocomplete; only for Trade Recap)')
       .setRequired(false)
       .setAutocomplete(true)
   );
