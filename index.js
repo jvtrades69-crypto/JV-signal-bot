@@ -20,7 +20,7 @@ import {
   getThreadId, setThreadId
 } from './store.js';
 import {
-  renderSignalText, renderSummaryText, renderRecapText, renderMonthlyRecap, renderRecapEmbed
+  renderSignalText, renderSummaryText, renderRecapText, renderMonthlyRecap, renderRecapEmbed, renderWeeklyRecapDetailed
 } from './embeds.js';
 
 const nano = customAlphabet('1234567890abcdef', 10);
@@ -97,16 +97,14 @@ function normalizeSignal(raw) {
   s.chartUrl = s.chartUrl || null;
   s.chartAttached = !!s.chartAttached;
 
-// Flags
-s.beSet = Boolean(s.beSet);
-s.beMovedAfter = s.beMovedAfter || null;
-// NEW: planned/explicit BE price
-s.beAt = s.beAt || null;
+  // Flags
+  s.beSet = Boolean(s.beSet);
+  s.beMovedAfter = s.beMovedAfter || null;
+  s.beAt = s.beAt || null;
 
-s.slProfitSet = Boolean(s.slProfitSet);
-s.slProfitAfter = s.slProfitAfter || null;
-s.slProfitAfterTP = s.slProfitAfterTP || null;
-
+  s.slProfitSet = Boolean(s.slProfitSet);
+  s.slProfitAfter = s.slProfitAfter || null;
+  s.slProfitAfterTP = s.slProfitAfterTP || null;
 
   // display flags for stopped in profit
   s.stoppedInProfit = Boolean(s.stoppedInProfit);
@@ -765,11 +763,9 @@ client.on('interactionCreate', async (interaction) => {
       const tp3_pct = interaction.options.getString('tp3_pct');
       const tp4_pct = interaction.options.getString('tp4_pct');
       const tp5_pct = interaction.options.getString('tp5_pct');
-     const chartAtt  = interaction.options.getAttachment?.('chart');
-const risk      = interaction.options.getString('risk') || '';
-const be_at     = interaction.options.getString('be_at') || '';
-
-
+      const chartAtt  = interaction.options.getAttachment?.('chart');
+      const risk      = interaction.options.getString('risk') || '';
+      const be_at     = interaction.options.getString('be_at') || '';
 
       if (assetSel === 'OTHER') {
         const pid = nano();
@@ -777,42 +773,39 @@ const be_at     = interaction.options.getString('be_at') || '';
         const input = new TextInputBuilder().setCustomId('asset_value').setLabel('Asset (e.g., PEPE, XRP)').setStyle(TextInputStyle.Short).setRequired(true);
         m.addComponents(new ActionRowBuilder().addComponents(input));
         pendingSignals.set(pid, {
-  direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole,
-  plan: {
-    TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
-    TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
-    TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
-    TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
-    TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
-  },
-  channelId: interaction.channelId,
-  chartUrl: chartAtt?.url || null,
-  chartAttached: !!chartAtt?.url,
-  riskLabel: risk,
-  beAt: be_at || null,
-});
-
-
+          direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole,
+          plan: {
+            TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
+            TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
+            TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
+            TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
+            TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
+          },
+          channelId: interaction.channelId,
+          chartUrl: chartAtt?.url || null,
+          chartAttached: !!chartAtt?.url,
+          riskLabel: risk,
+          beAt: be_at || null,
+        });
         return interaction.showModal(m);
       }
 
       await createSignal({
-  asset: assetSel,
-  direction, entry, sl, tp1, tp2, tp3, tp4, tp5,
-  reason, extraRole,
-  plan: {
-    TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
-    TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
-    TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
-    TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
-    TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
-  },
-  chartUrl: chartAtt?.url || null,
-  chartAttached: !!chartAtt?.url,
-  riskLabel: risk,
-  beAt: be_at || null,
-}, interaction.channelId);
-
+        asset: assetSel,
+        direction, entry, sl, tp1, tp2, tp3, tp4, tp5,
+        reason, extraRole,
+        plan: {
+          TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
+          TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
+          TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
+          TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
+          TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
+        },
+        chartUrl: chartAtt?.url || null,
+        chartAttached: !!chartAtt?.url,
+        riskLabel: risk,
+        beAt: be_at || null,
+      }, interaction.channelId);
 
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
@@ -824,94 +817,107 @@ const be_at     = interaction.options.getString('be_at') || '';
       }
 
       const period   = interaction.options.getString?.('period') || null;
-      const chosenId = interaction.options.getString?.('id')     || null;
 
+      // monthly
+      if (period === 'monthly') {
+        const signals = (await getSignals()).map(normalizeSignal);
+        const now = new Date();
+        const y = now.getUTCFullYear();
+        const m = now.getUTCMonth();
+        const monthly = signals.filter(s => {
+          if (!isNum(s.createdAt)) return false;
+          const d = new Date(Number(s.createdAt));
+          return d.getUTCFullYear() === y && d.getUTCMonth() === m;
+        });
+        const text = renderMonthlyRecap(monthly, y, m);
+        return interaction.reply({ content: text, allowedMentions: { parse: [] } });
+      }
+
+      // weekly
       if (period === 'weekly') {
-  // Current week in UTC: Monday 00:00 → Sunday 23:59
-  const now = new Date();
-  const day = now.getUTCDay(); // 0..6
-  const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - ((day + 6) % 7)));
-  monday.setUTCHours(0,0,0,0);
-  const sunday = new Date(monday); sunday.setUTCDate(monday.getUTCDate() + 6); sunday.setUTCHours(23,59,59,999);
+        const now = new Date();
+        const day = now.getUTCDay(); // 0..6
+        const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - ((day + 6) % 7)));
+        monday.setUTCHours(0,0,0,0);
+        const sunday = new Date(monday); sunday.setUTCDate(monday.getUTCDate() + 6); sunday.setUTCHours(23,59,59,999);
 
-  const signals = (await getSignals()).map(normalizeSignal);
-  const weekly = signals.filter(s => isNum(s.createdAt) && s.createdAt >= monday.getTime() && s.createdAt <= sunday.getTime());
+        const signals = (await getSignals()).map(normalizeSignal);
+        const weekly = signals.filter(s => isNum(s.createdAt) && s.createdAt >= monday.getTime() && s.createdAt <= sunday.getTime());
 
-  const total = weekly.length;
-  const finals = weekly.filter(s => s.status !== 'RUN_VALID');
-  const netR = finals.reduce((a,s)=> a + (isNum(s.finalR)? Number(s.finalR):0), 0);
-  const wins = finals.filter(s => isNum(s.finalR) && Number(s.finalR) > 0).length;
-  const winRatePct = total ? Math.round((wins/total)*100) : 0;
-  const avgR = total ? netR / total : 0;
+        const total = weekly.length;
+        const finals = weekly.filter(s => s.status !== 'RUN_VALID');
+        const netR = finals.reduce((a,s)=> a + (isNum(s.finalR)? Number(s.finalR):0), 0);
+        const wins = finals.filter(s => isNum(s.finalR) && Number(s.finalR) > 0).length;
+        const winRatePct = total ? Math.round((wins/total)*100) : 0;
+        const avgR = total ? netR/total : 0;
 
-  const sorted = finals.filter(s => isNum(s.finalR))
-                       .sort((a,b)=> Math.abs(Number(b.finalR||0)) - Math.abs(Number(a.finalR||0)));
-  const topMoves = sorted.slice(0,2).map(s => ({
-    asset: s.asset,
-    dirWord: (s.direction === 'SHORT' ? 'Short' : 'Long'),
-    r: Number(s.finalR || 0),
-    jumpUrl: s.jumpUrl || null
-  }));
+        const sorted = finals.filter(s => isNum(s.finalR))
+                             .sort((a,b)=> Math.abs(Number(b.finalR||0)) - Math.abs(Number(a.finalR||0)));
+        const topMoves = sorted.slice(0,2).map(s => ({
+          asset: s.asset,
+          dirWord: (s.direction === 'SHORT' ? 'Short' : 'Long'),
+          r: Number(s.finalR || 0),
+          jumpUrl: s.jumpUrl || null
+        }));
 
-  const allTrades = finals.map(s => ({
-    asset: s.asset,
-    dirWord: (s.direction === 'SHORT' ? 'Short' : 'Long'),
-    r: Number(s.finalR || 0),
-    ok: Number(s.finalR || 0) > 0
-  }));
+        const allTrades = finals.map(s => ({
+          asset: s.asset,
+          dirWord: (s.direction === 'SHORT' ? 'Short' : 'Long'),
+          r: Number(s.finalR || 0),
+          ok: Number(s.finalR || 0) > 0
+        }));
 
-  const startDateStr = monday.toISOString().slice(0,10);
-  const endDateStr   = sunday.toISOString().slice(0,10);
+        const startDateStr = monday.toISOString().slice(0,10);
+        const endDateStr   = sunday.toISOString().slice(0,10);
 
-  const text = renderWeeklyRecapDetailed({
-    startDateStr, endDateStr,
-    totals: { total, netR, winRatePct, avgR },
-    topMoves,
-    allTrades,
-    takeaways: [],
-    focus: []
-  });
+        const text = renderWeeklyRecapDetailed({
+          startDateStr, endDateStr,
+          totals: { total, netR, winRatePct, avgR },
+          topMoves,
+          allTrades,
+          takeaways: [],
+          focus: []
+        });
 
-  return interaction.reply({ content: text, allowedMentions: { parse: [] } });
-}
+        return interaction.reply({ content: text, allowedMentions: { parse: [] } });
+      }
 
+      // trade: always show picker
+      if (period === 'trade') {
+        const all = (await getSignals()).map(normalizeSignal);
+        all.sort((a, b) => {
+          if (a.messageId && b.messageId) {
+            const A = BigInt(a.messageId), B = BigInt(b.messageId);
+            if (A === B) return 0;
+            return (B > A) ? 1 : -1;
+          }
+          return Number(b.createdAt || 0) - Number(a.createdAt || 0);
+        });
+        const items = all.slice(0, 5);
+        if (!items.length) {
+          return interaction.reply({ content: '❌ No trades found to recap.', flags: MessageFlags.Ephemeral });
+        }
+        const menu = new StringSelectMenuBuilder()
+          .setCustomId('recap:pick')
+          .setPlaceholder('Select a trade to recap')
+          .addOptions(items.map(s => ({
+            label: `$${s.asset} ${s.direction === 'SHORT' ? 'Short' : 'Long'} • ${s.status}`,
+            description: `id:${s.id}`,
+            value: s.id,
+          })));
+        const row = new ActionRowBuilder().addComponents(menu);
+        return interaction.reply({
+          content: 'Pick a trade to recap:',
+          components: [row],
+          flags: MessageFlags.Ephemeral,
+        });
+      }
 
-     // For trade recap, always show a picker first (no manual ID needed)
-if (period === 'trade') {
-  const all = (await getSignals()).map(normalizeSignal);
-  all.sort((a, b) => {
-    if (a.messageId && b.messageId) {
-      const A = BigInt(a.messageId), B = BigInt(b.messageId);
-      if (A === B) return 0;
-      return (B > A) ? 1 : -1;
-    }
-    return Number(b.createdAt || 0) - Number(a.createdAt || 0);
-  });
-  const items = all.slice(0, 5);
-  if (!items.length) {
-    return interaction.reply({ content: '❌ No trades found to recap.', flags: MessageFlags.Ephemeral });
-  }
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId('recap:pick')
-    .setPlaceholder('Select a trade to recap')
-    .addOptions(items.map(s => ({
-      label: `$${s.asset} ${s.direction === 'SHORT' ? 'Short' : 'Long'} • ${s.status}`,
-      description: `id:${s.id}`,
-      value: s.id,
-    })));
-  const row = new ActionRowBuilder().addComponents(menu);
-  return interaction.reply({
-    content: 'Pick a trade to recap:',
-    components: [row],
-    flags: MessageFlags.Ephemeral,
-  });
-}
-
-// Fallback if period was missing/unknown
-return interaction.reply({
-  content: 'Pick one: `/recap period: monthly`, `/recap period: weekly`, or `/recap period: trade`.',
-  flags: MessageFlags.Ephemeral,
-});
+      // fallback
+      return interaction.reply({
+        content: 'Pick one: `/recap period: monthly`, `/recap period: weekly`, or `/recap period: trade`.',
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
     // /thread-restore — block if original signal message was deleted; no recap post
@@ -1042,8 +1048,7 @@ return interaction.reply({
           signal = normalizeSignal(await getSignal(id));
         }
 
-        const rrChips = computeRRChips(signal);
-        const recapText = renderRecapText(signal, { reasonLines, confLines, notesLines, showBasics:false }, rrChips);
+        const recapText = renderRecapText(signal, { reasonLines, confLines, notesLines, showBasics:false }, []);
 
         const channel = await client.channels.fetch(interaction.channelId);
         const recent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
@@ -1059,7 +1064,6 @@ return interaction.reply({
         let files = [];
         let attachmentName = null;
         let attachmentUrl = null;
-
         if (userAtt) {
           try {
             if (typeof fetch === 'function') {
@@ -1068,25 +1072,19 @@ return interaction.reply({
               attachmentName = userAtt.name || 'chart.png';
               files = [ new AttachmentBuilder(buf, { name: attachmentName }) ];
               attachmentUrl = userAtt.url;
-            } else {
-              files = [];
             }
-          } catch {
-            files = [];
-          }
+          } catch {}
         }
 
         const embedPack = renderRecapEmbed(signal, {
-          roleId: '1382603857657331792',
-          notesLines,
           attachmentName,
           attachmentUrl,
           imageUrl: chart || undefined,
         });
 
         await channel.send({
-          content: `${recapText}\n\n<@&1382603857657331792>`,
-          allowedMentions: { roles: ['1382603857657331792'] },
+          content: recapText,
+          allowedMentions: { parse: [] },
           embeds: embedPack.embeds,
           files
         });
@@ -1533,35 +1531,35 @@ return interaction.reply({
         await updateSignal(id, { riskLabel: '' });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated); await updateSummary();
-        return safeEditReply(interaction, { content: '⚖️ Risk badge cleared.' });
+        return interaction.reply({ content: '⚖️ Risk badge cleared.', flags: MessageFlags.Ephemeral });
       }
 
       if (key === 'setbe') {
-  await ensureDeferred(interaction);
-  const sig0 = normalizeSignal(await getSignal(id));
-  if (!sig0) return safeEditReply(interaction, { content: 'Signal not found.' });
-  if (!isNum(sig0.entry)) return safeEditReply(interaction, { content: '❌ Entry must be set to move SL to BE.' });
+        await ensureDeferred(interaction);
+        const sig0 = normalizeSignal(await getSignal(id));
+        if (!sig0) return interaction.reply({ content: 'Signal not found.', flags: MessageFlags.Ephemeral });
+        if (!isNum(sig0.entry)) return interaction.reply({ content: '❌ Entry must be set to move SL to BE.', flags: MessageFlags.Ephemeral });
 
-  const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || null;
+        const highestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => sig0.tpHits?.[k]) || null;
 
-  const patch = {
-    validReentry: false,
-    beSet: true,
-    beMovedAfter: sig0.beMovedAfter || highestHit || null,
-    slProfitSet: false,
-    slProfitAfter: null,
-    slProfitAfterTP: null,
-    beAt: sig0.beAt || String(sig0.entry), // default to entry if not set
-  };
+        const patch = {
+          validReentry: false,
+          beSet: true,
+          beMovedAfter: sig0.beMovedAfter || highestHit || null,
+          slProfitSet: false,
+          slProfitAfter: null,
+          slProfitAfterTP: null,
+          beAt: sig0.beAt || String(sig0.entry),
+        };
 
-  await updateSignal(id, patch);
-  const updated = normalizeSignal(await getSignal(id));
-  await editSignalMessage(updated); await updateSummary();
-  return safeEditReply(interaction, {
-    content: `✅ SL → BE set at ${updated.beAt}${patch.beMovedAfter ? ` after ${patch.beMovedAfter}` : ''}.`
-  });
-}
-
+        await updateSignal(id, patch);
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated); await updateSummary();
+        return interaction.reply({
+          content: `✅ SL → BE set at ${updated.beAt}${patch.beMovedAfter ? ` after ${patch.beMovedAfter}` : ''}.`,
+          flags: MessageFlags.Ephemeral
+        });
+      }
 
       if (key === 'setprofit') {
         return interaction.showModal(makeSetProfitModal(id));
@@ -1593,28 +1591,28 @@ return interaction.reply({
         await updateSignal(id, { beSet:false, beMovedAfter:null });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated); await updateSummary();
-        return safeEditReply(interaction, { content: '↩️ Undid SL → BE.' });
+        return interaction.reply({ content: '↩️ Undid SL → BE.', flags: MessageFlags.Ephemeral });
       }
       if (key === 'undo:profit') {
         await ensureDeferred(interaction);
         await updateSignal(id, { slProfitSet:false, slProfitAfter:null, slProfitAfterTP:null, stoppedInProfit:false, stoppedInProfitAfterTP:null });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated); await updateSummary();
-        return safeEditReply(interaction, { content: '↩️ Undid SL → Profit.' });
+        return interaction.reply({ content: '↩️ Undid SL → Profit.', flags: MessageFlags.Ephemeral });
       }
       if (key === 'undo:reopen') {
         await ensureDeferred(interaction);
         let signal = normalizeSignal(await getSignal(id));
-        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
+        if (!signal) return interaction.reply({ content: 'Signal not found.', flags: MessageFlags.Ephemeral });
 
         if (![STATUS.CLOSED, STATUS.STOPPED_BE, STATUS.STOPPED_OUT].includes(signal.status)) {
-          return safeEditReply(interaction, { content: 'ℹ️ Trade is already active.' });
+          return interaction.reply({ content: 'ℹ️ Trade is already active.', flags: MessageFlags.Ephemeral });
         }
         const fills = (signal.fills || []).filter(f => !['FINAL_CLOSE','STOP_BE','STOP_OUT','STOP_PROFIT','FINAL_CLOSE_PROFIT'].includes(String(f.source).toUpperCase()));
         await updateSignal(id, { fills, status: STATUS.RUN_VALID, validReentry: true, stoppedInProfit:false, stoppedInProfitAfterTP:null });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated); await updateSummary();
-        return safeEditReply(interaction, { content: '↩️ Reopened trade.' });
+        return interaction.reply({ content: '↩️ Reopened trade.', flags: MessageFlags.Ephemeral });
       }
 
       if (key === 'del') {
@@ -1626,7 +1624,7 @@ return interaction.reply({
           await deleteSignal(id).catch(() => {});
           await updateSummary().catch(() => {});
         }
-        return safeEditReply(interaction, { content: '🗑️ Signal deleted.' });
+        return interaction.reply({ content: '🗑️ Signal deleted.', flags: MessageFlags.Ephemeral });
       }
 
       if (['tp1','tp2','tp3','tp4','tp5'].includes(key)) {
@@ -1685,40 +1683,39 @@ const pendingSignals = new Map();
 
 async function createSignal(payload, channelId) {
   const signal = normalizeSignal({
-  id: nano(),
-  createdAt: Date.now(),
-  asset: String(payload.asset || '').toUpperCase(),
-  direction: (payload.direction || 'LONG').toUpperCase() === 'SHORT' ? DIR.SHORT : DIR.LONG,
-  entry: payload.entry,
-  sl: payload.sl,
-  tp1: payload.tp1, tp2: payload.tp2, tp3: payload.tp3, tp4: payload.tp4, tp5: payload.tp5,
-  reason: payload.reason || '',
-  extraRole: payload.extraRole || '',
-  plan: payload.plan || { TP1:null, TP2:null, TP3:null, TP4:null, TP5:null },
-  status: STATUS.RUN_VALID,
-  validReentry: true,
-  latestTpHit: null,
-  fills: [],
-  tpHits: { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false },
-  finalR: null,
-  maxR: null,
-  chartUrl: payload.chartUrl || null,
-  chartAttached: !!payload.chartAttached,
-  messageId: null,
-  jumpUrl: null,
-  channelId,
-  beSet: false,
-  beMovedAfter: null,
-  // NEW: carry planned BE price through creation if provided
-  beAt: payload.beAt || null,
-  slProfitSet: false,
-  slProfitAfter: null,
-  slProfitAfterTP: null,
-  stoppedInProfit: false,
-  stoppedInProfitAfterTP: null,
-  riskLabel: (payload.riskLabel || '').trim(),
-});
-
+    id: nano(),
+    createdAt: Date.now(),
+    asset: String(payload.asset || '').toUpperCase(),
+    direction: (payload.direction || 'LONG').toUpperCase() === 'SHORT' ? DIR.SHORT : DIR.LONG,
+    entry: payload.entry,
+    sl: payload.sl,
+    tp1: payload.tp1, tp2: payload.tp2, tp3: payload.tp3, tp4: payload.tp4, tp5: payload.tp5,
+    reason: payload.reason || '',
+    extraRole: payload.extraRole || '',
+    plan: payload.plan || { TP1:null, TP2:null, TP3:null, TP4:null, TP5:null },
+    status: STATUS.RUN_VALID,
+    validReentry: true,
+    latestTpHit: null,
+    fills: [],
+    tpHits: { TP1:false, TP2:false, TP3:false, TP4:false, TP5:false },
+    finalR: null,
+    maxR: null,
+    chartUrl: payload.chartUrl || null,
+    chartAttached: !!payload.chartAttached,
+    messageId: null,
+    jumpUrl: null,
+    channelId,
+    beSet: false,
+    beMovedAfter: null,
+    // planned BE price (optional)
+    beAt: payload.beAt || null,
+    slProfitSet: false,
+    slProfitAfter: null,
+    slProfitAfterTP: null,
+    stoppedInProfit: false,
+    stoppedInProfitAfterTP: null,
+    riskLabel: (payload.riskLabel || '').trim(),
+  });
 
   await saveSignal(signal);
 

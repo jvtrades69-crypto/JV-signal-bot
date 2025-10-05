@@ -41,7 +41,6 @@ const signalCmd = new SlashCommandBuilder()
   .addStringOption(opt => opt.setName('tp5_pct').setDescription('Planned % at TP5 (0–100)'))
   .addStringOption(opt => opt.setName('reason').setDescription('Reason (optional)'))
   .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)'))
-  // Risk badge
   .addStringOption(opt =>
     opt.setName('risk')
       .setDescription('half | 1/4 | 3/4 (optional)')
@@ -52,7 +51,6 @@ const signalCmd = new SlashCommandBuilder()
         { name: '3/4',  value: '3/4' },
       )
   )
-  // Breakeven plan price
   .addStringOption(opt =>
     opt.setName('be_at')
       .setDescription('Price to move SL → BE (optional)')
@@ -75,7 +73,7 @@ const recapCmd = new SlashCommandBuilder()
   )
   .addStringOption(opt =>
     opt.setName('id')
-      .setDescription('Signal ID to recap (autocomplete; only for Trade Recap)')
+      .setDescription('Signal ID to recap (autocomplete; ignored for trade picker)')
       .setRequired(false)
       .setAutocomplete(true)
   );
