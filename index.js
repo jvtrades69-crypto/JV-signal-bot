@@ -452,13 +452,15 @@ function controlRows(signalId) {
     new ButtonBuilder().setCustomId(btn(signalId,'setbe')).setLabel('🟨 Set SL → BE').setStyle(ButtonStyle.Secondary),
   );
 
-  const row4 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(btn(signalId,'setprofit')).setLabel('🟩 Set SL → In Profit').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'fullprofit')).setLabel('🏁 Full Close (Profit)').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(btn(signalId,'undo_menu')).setLabel('↩ Undo…').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'risk:set')).setLabel('⚖️ Set Risk…').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'risk:clear')).setLabel('⚖️ Clear Risk').setStyle(ButtonStyle.Secondary),
-  );
+ const row4 = new ActionRowBuilder().addComponents(
+  new ButtonBuilder().setCustomId(btn(signalId,'setprofit')).setLabel('🟩 Set SL → In Profit').setStyle(ButtonStyle.Secondary),
+  new ButtonBuilder().setCustomId(btn(signalId,'fullprofit')).setLabel('🏁 Full Close (Profit)').setStyle(ButtonStyle.Success),
+  new ButtonBuilder().setCustomId(btn(signalId,'trigger:be')).setLabel('⚙️ Set BE Trigger').setStyle(ButtonStyle.Secondary),
+  new ButtonBuilder().setCustomId(btn(signalId,'undo_menu')).setLabel('↩ Undo…').setStyle(ButtonStyle.Secondary),
+  new ButtonBuilder().setCustomId(btn(signalId,'risk:set')).setLabel('⚖️ Set Risk…').setStyle(ButtonStyle.Secondary),
+  new ButtonBuilder().setCustomId(btn(signalId,'risk:clear')).setLabel('⚖️ Clear Risk').setStyle(ButtonStyle.Secondary),
+);
+
 
   const row5 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'finish')).setLabel('🏁 Finish').setStyle(ButtonStyle.Secondary),
@@ -568,7 +570,19 @@ function makeChartModal(id) {
   m.addComponents(new ActionRowBuilder().addComponents(url));
   return m;
 }
-// Set SL → In Profit (custom price)
+// BE Trigger modal (plan) + Set SL → In Profit (custom price)
+function makeSetBeTriggerModal(id){
+  const m = new ModalBuilder().setCustomId(modal(id,'be_trigger')).setTitle('Set BE Trigger (plan)');
+  const price = new TextInputBuilder()
+    .setCustomId('be_trigger_price')
+    .setLabel('Trigger price (empty to clear)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setPlaceholder('e.g., 119320');
+  m.addComponents(new ActionRowBuilder().addComponents(price));
+  return m;
+}
+
 function makeSetProfitModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'profit')).setTitle('Set SL → In Profit (Custom)');
   const price = new TextInputBuilder()
@@ -1092,7 +1106,23 @@ client.on('interactionCreate', async (interaction) => {
         return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
       }
 
-      // TP prices
+      // BE Trigger modal submit
+if (interaction.customId.startsWith('modal:be_trigger:')) {
+  await ensureDeferred(interaction);
+  const id = idPart;
+  const priceRaw = (interaction.fields.getTextInputValue('be_trigger_price') || '').trim();
+  const patch = {};
+  if (priceRaw === '') patch.beAt = null;
+  else if (isNum(priceRaw)) patch.beAt = String(priceRaw);
+  else return safeEditReply(interaction, { content:'❌ Price must be a number or empty to clear.' });
+
+  await updateSignal(id, patch);
+  const updated = normalizeSignal(await getSignal(id));
+  await editSignalMessage(updated); await updateSummary();
+  return safeEditReply(interaction, { content: patch.beAt ? `✅ BE trigger set at ${updated.beAt}.` : '✅ BE trigger cleared.' });
+}
+// TP prices
+
       if (interaction.customId.startsWith('modal:tpprices:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -1523,6 +1553,8 @@ client.on('interactionCreate', async (interaction) => {
       if (key === 'stopped')      return interaction.showModal(makeFinalRModal(id, 'OUT'));
       if (key === 'upd:maxr')     return interaction.showModal(makeMaxRModal(id));
       if (key === 'upd:chart')    return interaction.showModal(makeChartModal(id));
+if (key === 'trigger:be')   return interaction.showModal(makeSetBeTriggerModal(id));
+
 
       // risk buttons
       if (key === 'risk:set')   return interaction.showModal(makeSetRiskModal(id));
