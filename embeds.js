@@ -115,11 +115,11 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
       const afterTP = signal.slProfitAfterTP ? ` after ${signal.slProfitAfterTP}` : (highestTP ? ` after ${highestTP}` : '');
       const atPrice = isFinite(Number(signal.slProfitAfter)) ? ` at \`${fmt(signal.slProfitAfter)}\`` : '';
       tail = ` | SL moved into profits${afterTP}${atPrice}`;
-    } else if (signal.beSet || signal.beMovedAfter) {
-      const afterTP = signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : (highestTP ? ` after ${highestTP}` : '');
-      const atBE   = isFinite(Number(signal.beAt)) ? ` at \`${fmt(signal.beAt)}\`` : '';
-      tail = ` | SL moved to breakeven${afterTP}${atBE}`;
-    }
+  } else if (signal.beSet || signal.beMovedAfter) {
+  const afterTP = signal.beMovedAfter ? ` after ${signal.beMovedAfter}` : (highestTP ? ` after ${highestTP}` : '');
+  tail = ` | SL moved to breakeven${afterTP}`;
+}
+
 
     lines.push(hitsLine);
     lines.push(`Valid for re-entry: ${signal.validReentry ? '✅' : '❌'}${tail}`);
