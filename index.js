@@ -907,6 +907,12 @@ if (period === 'trade') {
   });
 }
 
+// Fallback if period was missing/unknown
+return interaction.reply({
+  content: 'Pick one: `/recap period: monthly`, `/recap period: weekly`, or `/recap period: trade`.',
+  flags: MessageFlags.Ephemeral,
+});
+
 
 
       if (period === 'trade') {
