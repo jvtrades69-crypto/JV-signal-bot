@@ -80,23 +80,27 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
   lines.push(buildTitle(signal), '', '📊 **Trade Details**');
   lines.push(`- Entry: \`${fmt(signal.entry)}\``);
   lines.push(`- SL: \`${fmt(signal.sl)}\``);
-  if (signal.beAt) lines.push(`- SL → BE at \`${fmt(signal.beAt)}\``); // plan line
 
-  // TP lines with % out and R
-  const tpPerc = computeTpPercents(signal);
-  for (const key of ['tp1','tp2','tp3','tp4','tp5']) {
-    const v = signal[key];
-    if (v == null || v === '') continue;
-    const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, v);
-    const rrTxt = (r != null) ? `${r.toFixed(2)}R` : null;
-    const label = key.toUpperCase();
-    const pct = tpPerc[label];
+// TP lines with % out and R
+const tpPerc = computeTpPercents(signal);
+for (const key of ['tp1','tp2','tp3','tp4','tp5']) {
+  const v = signal[key];
+  if (v == null || v === '') continue;
+  const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, v);
+  const rrTxt = (r != null) ? `${r.toFixed(2)}R` : null;
+  const label = key.toUpperCase();
+  const pct = tpPerc[label];
 
-    if (pct > 0 && rrTxt)      lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
-    else if (pct > 0)          lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out)`);
-    else if (rrTxt)            lines.push(`- ${label}: \`${fmt(v)}\` (${rrTxt})`);
-    else                       lines.push(`- ${label}: \`${fmt(v)}\``);
-  }
+  if (pct > 0 && rrTxt)      lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
+  else if (pct > 0)          lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out)`);
+  else if (rrTxt)            lines.push(`- ${label}: \`${fmt(v)}\` (${rrTxt})`);
+  else                       lines.push(`- ${label}: \`${fmt(v)}\``);
+}
+// BE plan line must appear after TP lines
+if (signal.beAt) {
+  lines.push(`- Stops to breakeven at \`${fmt(signal.beAt)}\``);
+}
+
 
   if (signal.reason && String(signal.reason).trim()) {
     lines.push('', '📝 **Reasoning**', String(signal.reason).trim());
@@ -127,13 +131,21 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
     const afterTP = highestTP ? ` after ${highestTP}` : '';
 
     if (signal.status === 'CLOSED') {
-      if (signal.stoppedInProfit) {
-        const atPrice = isFinite(Number(signal.slProfitAfter)) ? ` at \`${fmt(signal.slProfitAfter)}\`` : '';
-        lines.push(`Inactive 🟥 | Stopped in profits${afterTP}${atPrice}`);
-      } else {
-        lines.push(`Inactive 🟥 | Fully closed${afterTP}`);
-      }
-    } else if (signal.status === 'STOPPED_BE') {
+  if (signal.stoppedInProfit) {
+    const atPrice = isFinite(Number(signal.slProfitAfter)) ? ` at \`${fmt(signal.slProfitAfter)}\`` : '';
+    lines.push(`Inactive 🟥 | Stopped in profits${afterTP}${atPrice}`);
+  } else {
+    // show final close price if available
+    const fills = Array.isArray(signal.fills) ? signal.fills : [];
+    const finalFill = [...fills].reverse().find(f => {
+      const src = String(f.source || '').toUpperCase();
+      return src === 'FINAL_CLOSE' || src === 'FINAL_CLOSE_PROFIT';
+    });
+    const priceTail = finalFill && isFinite(Number(finalFill.price)) ? ` at \`${fmt(finalFill.price)}\`` : '';
+    lines.push(`Inactive 🟥 | Fully closed${afterTP}${priceTail}`);
+  }
+}
+ else if (signal.status === 'STOPPED_BE') {
       // final BE without price
       lines.push(`Inactive 🟥 | Stopped breakeven${afterTP}`);
     } else if (signal.status === 'STOPPED_OUT') {
