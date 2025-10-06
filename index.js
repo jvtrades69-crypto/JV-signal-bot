@@ -429,13 +429,15 @@ function controlRows(signalId) {
     new ButtonBuilder().setCustomId(btn(signalId,'upd:maxr')).setLabel('📈 Set Max R').setStyle(ButtonStyle.Secondary),
   );
 
-  const row3 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(btn(signalId,'upd:trade')).setLabel('✏️ Update Trade Info').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'upd:roles')).setLabel('✏️ Update Role Mention').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'upd:chart')).setLabel('🖼️ Set/Replace Chart Link').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'stopprofit')).setLabel('🟧 Stopped In Profit').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId(btn(signalId,'stopbe')).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
-  );
+const row3 = new ActionRowBuilder().addComponents(
+  new ButtonBuilder().setCustomId(btn(signalId,'upd:trade')).setLabel('✏️ Update Trade Info').setStyle(ButtonStyle.Secondary),
+  new ButtonBuilder().setCustomId(btn(signalId,'upd:roles')).setLabel('✏️ Update Role Mention').setStyle(ButtonStyle.Secondary),
+  new ButtonBuilder().setCustomId(btn(signalId,'upd:chart')).setLabel('🖼️ Set/Replace Chart Link').setStyle(ButtonStyle.Secondary),
+  new ButtonBuilder().setCustomId(btn(signalId,'fullclose')).setLabel('✅ Fully Close').setStyle(ButtonStyle.Primary),
+  new ButtonBuilder().setCustomId(btn(signalId,'stopprofit')).setLabel('🟧 Stopped In Profit').setStyle(ButtonStyle.Danger),
+  new ButtonBuilder().setCustomId(btn(signalId,'stopbe')).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
+);
+
 
   const row4 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'stopped')).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
@@ -532,14 +534,23 @@ function makeUpdateRolesModal(id) {
 }
 function makeFullCloseModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'full')).setTitle('Fully Close Position');
-  const price = new TextInputBuilder().setCustomId('close_price').setLabel('Close Price').setStyle(TextInputStyle.Short).setRequired(true);
-  const pct = new TextInputBuilder().setCustomId('close_pct').setLabel('Close % (default = remaining)').setStyle(TextInputStyle.Short).setRequired(false);
-  const finalR = new TextInputBuilder().setCustomId('final_r').setLabel('Final R (optional)').setPlaceholder('e.g., 0, -0.5, -1 — overrides calc').setStyle(TextInputStyle.Short).setRequired(false);
+  const price = new TextInputBuilder()
+    .setCustomId('close_price')
+    .setLabel('Close Price')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder('e.g., 117430');
+  const finalR = new TextInputBuilder()
+    .setCustomId('final_r')
+    .setLabel('Final R override (optional)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setPlaceholder('e.g., 1.25 or -0.50');
   m.addComponents(new ActionRowBuilder().addComponents(price));
-  m.addComponents(new ActionRowBuilder().addComponents(pct));
   m.addComponents(new ActionRowBuilder().addComponents(finalR));
   return m;
 }
+
 function makeFinalRModal(id, kind) {
   const m = new ModalBuilder().setCustomId(modal(id, `finalr:${kind}`)).setTitle(
     kind === 'BE' ? 'Stopped Breakeven' : kind === 'OUT' ? 'Stopped Out' : 'Stopped In Profit'
@@ -1239,42 +1250,66 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       // full close
-      if (interaction.customId.startsWith('modal:full:')) {
-        await ensureDeferred(interaction);
-        const id = idPart;
-        let signal = normalizeSignal(await getSignal(id));
-        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
+if (interaction.customId.startsWith('modal:full:')) {
+  await ensureDeferred(interaction);
+  const id = idPart;
+  let signal = normalizeSignal(await getSignal(id));
+  if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
-        const finalRStr = interaction.fields.getTextInputValue('final_r')?.trim();
-        const hasFinalR = finalRStr !== undefined && finalRStr !== '';
-        if (hasFinalR && !isNum(finalRStr)) {
-          return safeEditReply(interaction, { content: '❌ Final R must be a number if provided.' });
-        }
+  // Required: close price
+  const priceStr = (interaction.fields.getTextInputValue('close_price') || '').trim();
+  if (!isNum(priceStr)) return safeEditReply(interaction, { content: '❌ Close Price must be a number.' });
+  const price = Number(priceStr);
 
-        if (hasFinalR) {
-          signal.finalR = Number(finalRStr);
-        } else {
-          const price = Number(interaction.fields.getTextInputValue('close_price')?.trim());
-          if (!isNum(price)) return safeEditReply(interaction, { content: '❌ Close Price must be a number.' });
+  // Optional: Final R override
+  const finalRStr = (interaction.fields.getTextInputValue('final_r') || '').trim();
+  if (finalRStr !== '' && !isNum(finalRStr)) {
+    return safeEditReply(interaction, { content: '❌ Final R must be a number if provided.' });
+  }
 
-          const currentPct = (signal.fills || []).reduce((acc, f) => acc + Number(f.pct || 0), 0);
-          let pctStr = interaction.fields.getTextInputValue('close_pct')?.trim();
-          let pct = isNum(pctStr) ? Number(pctStr) : Math.max(0, 100 - currentPct);
-          if (pct < 0 || pct > 100) pct = Math.max(0, Math.min(100, pct));
-          if (pct > 0) signal.fills.push({ pct, price, source: 'FINAL_CLOSE' });
-        }
+  // Close remaining size at price
+  const currentPct = (Array.isArray(signal.fills) ? signal.fills : []).reduce((a, f) => a + Number(f.pct || 0), 0);
+  const remaining  = Math.max(0, 100 - currentPct);
+  if (remaining > 0) {
+    signal.fills = Array.isArray(signal.fills) ? signal.fills : [];
+    signal.fills.push({ pct: remaining, price, source: 'FINAL_CLOSE' });
+  }
 
-        const latest = signal.latestTpHit || TP_KEYS.find(k => signal[k] !== null)?.toUpperCase() || null;
-        signal.status = STATUS.CLOSED;
-        signal.validReentry = false;
-        signal.latestTpHit = latest;
+  // Latest TP context = highest hit
+  const latestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits?.[k]) || null;
 
-        await updateSignal(id, { fills: signal.fills, status: signal.status, validReentry: false, latestTpHit: latest, ...(hasFinalR ? { finalR: signal.finalR } : {}) });
-        const updated = normalizeSignal(await getSignal(id));
-        await editSignalMessage(updated);
-        await updateSummary();
-        return safeEditReply(interaction, { content: '✅ Fully closed.' });
-      }
+  // Clear running flags and close
+  signal.status = STATUS.CLOSED;
+  signal.validReentry = false;
+  signal.latestTpHit = latestHit;
+  signal.beSet = false;
+  signal.beMovedAfter = null;
+  signal.slProfitSet = false;
+  signal.slProfitAfter = null;
+  signal.slProfitAfterTP = null;
+  if (finalRStr !== '') signal.finalR = Number(finalRStr);
+
+  await updateSignal(id, {
+    fills: signal.fills,
+    status: signal.status,
+    validReentry: false,
+    latestTpHit: signal.latestTpHit,
+    beSet: signal.beSet,
+    beMovedAfter: signal.beMovedAfter,
+    slProfitSet: signal.slProfitSet,
+    slProfitAfter: signal.slProfitAfter,
+    slProfitAfterTP: signal.slProfitAfterTP,
+    ...(finalRStr !== '' ? { finalR: signal.finalR } : {}),
+  });
+
+  const updated = normalizeSignal(await getSignal(id));
+  await editSignalMessage(updated);
+  await updateSummary();
+
+  const suffix = latestHit ? ` after ${latestHit}` : '';
+  return safeEditReply(interaction, { content: `✅ Fully closed${suffix} at ${price}.` });
+}
+
 
       // full close (profit)
       if (interaction.customId.startsWith('modal:fullprofit:')) {
