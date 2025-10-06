@@ -1,4 +1,4 @@
-// index.js — JV Signal Bot (risk badge + risk toggles + full close profit + recap FinalR override)
+// index.js — JV Signal Bot (risk badge + risk toggles + full close profit + recap FinalR override + BE trigger + weekly/monthly/trade recap)
 import {
   Client,
   GatewayIntentBits,
@@ -20,7 +20,8 @@ import {
   getThreadId, setThreadId
 } from './store.js';
 import {
-  renderSignalText, renderSummaryText, renderRecapText, renderMonthlyRecap, renderRecapEmbed, renderWeeklyRecapDetailed
+  renderSignalText, renderSummaryText, renderRecapText, renderMonthlyRecap,
+  renderRecapEmbed, renderWeeklyRecapDetailed
 } from './embeds.js';
 
 const nano = customAlphabet('1234567890abcdef', 10);
@@ -50,17 +51,6 @@ function rAtPrice(direction, entry, slOriginal, price) {
   const E = Number(entry), S = Number(slOriginal), P = Number(price);
   if (direction === DIR.LONG) { const risk = E - S; if (risk <= 0) return null; return (P - E) / risk; }
   const risk = S - E; if (risk <= 0) return null; return (E - P) / risk;
-}
-function computeRRChips(signal) {
-  const chips = [];
-  for (const key of TP_KEYS) {
-    const tpVal = toNumOrNull(signal[key]);
-    if (tpVal === null) continue;
-    const r = rAtPrice(signal.direction, signal.entry, signal.sl, tpVal);
-    if (r === null) continue;
-    chips.push({ key: key.toUpperCase(), r: Number(r.toFixed(2)) });
-  }
-  return chips;
 }
 function computeRealizedR(signal) {
   const fills = Array.isArray(signal.fills) ? signal.fills : [];
@@ -100,7 +90,7 @@ function normalizeSignal(raw) {
   // Flags
   s.beSet = Boolean(s.beSet);
   s.beMovedAfter = s.beMovedAfter || null;
-  s.beAt = s.beAt || null;
+  s.beAt = s.beAt || null; // planned BE trigger (fixed)
 
   s.slProfitSet = Boolean(s.slProfitSet);
   s.slProfitAfter = s.slProfitAfter || null;
@@ -164,7 +154,7 @@ async function safeEditReply(interaction, payload) {
   }
 }
 
-// computeThreadName — ASSET dir ±x.xxR, tpN hit
+// thread title
 function computeThreadName(signal) {
   const asset = String(signal.asset || '').toUpperCase();
   const dir   = signal.direction === DIR.SHORT ? 'short' : 'long';
@@ -199,8 +189,7 @@ async function renameControlThread(signal) {
 // posting live signal
 async function postSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
-  const rrChips = computeRRChips(signal);
-  const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
+  const text = renderSignalText(normalizeSignal(signal));
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
 
   const payload = {
@@ -221,8 +210,7 @@ async function editSignalMessage(signal) {
   const msg = await channel.messages.fetch(signal.messageId).catch(() => null);
   if (!msg) return false;
 
-  const rrChips = computeRRChips(signal);
-  const text = renderSignalText(normalizeSignal(signal), rrChips, isSlMovedToBE(signal));
+  const text = renderSignalText(normalizeSignal(signal));
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
 
   const editPayload = {
@@ -259,17 +247,15 @@ async function hardPurgeChannel(channelId) {
 
       const young = batch.filter(m => (Date.now() - m.createdTimestamp) < 14 * 24 * 60 * 60 * 1000);
       if (young.size) {
-        try { await channel.bulkDelete(young, true); } catch (e) { console.error('purge bulkDelete:', e); }
+        try { await channel.bulkDelete(young, true); } catch {}
       }
       const oldies = batch.filter(m => !young.has(m.id));
       for (const m of oldies.values()) {
-        try { await m.delete(); } catch (e) { console.error('purge single delete:', e); }
+        try { await m.delete(); } catch {}
       }
       if (batch.size < 100) break;
     }
-  } catch (e) {
-    console.error('hardPurgeChannel outer error:', e);
-  }
+  } catch {}
 }
 
 async function updateSummary() {
@@ -282,6 +268,7 @@ async function updateSummary() {
 
       const signals = (await getSignals()).map(normalizeSignal);
 
+      // Exclude anything not valid for re-entry OR with BE/Profit flags
       const candidates = signals.filter(
         s => s.status === STATUS.RUN_VALID && s.validReentry === true && !s.beSet && !s.slProfitSet
       );
@@ -318,7 +305,7 @@ async function updateSummary() {
         }
       } else {
         await hardPurgeChannel(config.currentTradesChannelId);
-        await summaryChannel.send({ content, allowedMentions: { parse: [] } }).catch(e => console.error('summary send failed:', e));
+        await summaryChannel.send({ content, allowedMentions: { parse: [] } }).catch(() => {});
       }
     } catch (e) {
       console.error('updateSummary error:', e);
@@ -432,65 +419,42 @@ function controlRows(signalId) {
     new ButtonBuilder().setCustomId(btn(signalId,'tp1')).setLabel('🎯 TP1 Hit').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(btn(signalId,'tp2')).setLabel('🎯 TP2 Hit').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(btn(signalId,'tp3')).setLabel('🎯 TP3 Hit').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(btn(signalId,'tp4')).setLabel('🎯 TP4 Hit').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(btn(signalId,'tp5')).setLabel('🎯 TP5 Hit').setStyle(ButtonStyle.Success),
   );
 
   const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(btn(signalId,'tp4')).setLabel('🎯 TP4 Hit').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(btn(signalId,'tp5')).setLabel('🎯 TP5 Hit').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:tpprices')).setLabel('✏️ Update TP Prices').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:plan')).setLabel('✏️ Update TP % Plan').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:maxr')).setLabel('📈 Set Max R').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'upd:trade')).setLabel('✏️ Update Trade Info').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'upd:roles')).setLabel('✏️ Update Role Mention').setStyle(ButtonStyle.Secondary),
   );
 
   const row3 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(btn(signalId,'upd:trade')).setLabel('✏️ Update Trade Info').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'upd:roles')).setLabel('✏️ Update Role Mention').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(btn(signalId,'upd:chart')).setLabel('🖼️ Set/Replace Chart Link').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'stopped')).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(btn(signalId,'stopprofit')).setLabel('🟧 Stopped In Profit').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(btn(signalId,'stopbe')).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId(btn(signalId,'setbe')).setLabel('🟨 Set SL → BE').setStyle(ButtonStyle.Secondary),
   );
 
- const row4 = new ActionRowBuilder().addComponents(
-  new ButtonBuilder().setCustomId(btn(signalId,'setprofit')).setLabel('🟩 Set SL → In Profit').setStyle(ButtonStyle.Secondary),
-  new ButtonBuilder().setCustomId(btn(signalId,'fullprofit')).setLabel('🏁 Full Close (Profit)').setStyle(ButtonStyle.Success),
-  new ButtonBuilder().setCustomId(btn(signalId,'trigger:be')).setLabel('⚙️ Set BE Trigger').setStyle(ButtonStyle.Secondary),
-  new ButtonBuilder().setCustomId(btn(signalId,'undo_menu')).setLabel('↩ Undo…').setStyle(ButtonStyle.Secondary),
-  new ButtonBuilder().setCustomId(btn(signalId,'risk:set')).setLabel('⚖️ Set Risk…').setStyle(ButtonStyle.Secondary),
-  new ButtonBuilder().setCustomId(btn(signalId,'risk:clear')).setLabel('⚖️ Clear Risk').setStyle(ButtonStyle.Secondary),
-);
-
+  const row4 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(btn(signalId,'stopped')).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(btn(signalId,'setbe')).setLabel('🟨 Set SL → BE').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'setprofit')).setLabel('🟩 Set SL → In Profit').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'trigger:be')).setLabel('⚙️ Set BE Trigger').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'undo_menu')).setLabel('↩ Undo…').setStyle(ButtonStyle.Secondary),
+  );
 
   const row5 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'finish')).setLabel('🏁 Finish').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'risk:set')).setLabel('⚖️ Set Risk…').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'risk:clear')).setLabel('⚖️ Clear Risk').setStyle(ButtonStyle.Secondary),
   );
 
   return [row1, row2, row3, row4, row5];
 }
-// === Control thread helpers ===
-async function createControlThread(signal) {
-  const channel = await client.channels.fetch(signal.channelId);
-  const initialName = computeThreadName(signal);
-  const thread = await channel.threads.create({
-    name: initialName,
-    type: ChannelType.PrivateThread,
-    invitable: false,
-  });
-  await thread.members.add(config.ownerId).catch(() => {});
-  await setThreadId(signal.id, thread.id);
-  await thread.send({ content: 'Owner Control Panel', components: controlRows(signal.id) }).catch(() => {});
-  return thread.id;
-}
 
-async function deleteControlThread(signalId) {
-  const tid = await getThreadId(signalId).catch(() => null);
-  if (!tid) return;
-  const thread = await client.channels.fetch(tid).catch(() => null);
-  if (thread?.isThread?.()) {
-    await thread.delete().catch(() => {});
-  }
-}
+// Modals
 function makeUpdateTPPricesModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'tpprices')).setTitle('Update TP Prices (TP1–TP5)');
   for (const [cid, label] of [['upd_tp1','TP1'],['upd_tp2','TP2'],['upd_tp3','TP3'],['upd_tp4','TP4'],['upd_tp5','TP5']]) {
@@ -570,7 +534,7 @@ function makeChartModal(id) {
   m.addComponents(new ActionRowBuilder().addComponents(url));
   return m;
 }
-// BE Trigger modal (plan) + Set SL → In Profit (custom price)
+// BE Trigger modal (plan)
 function makeSetBeTriggerModal(id){
   const m = new ModalBuilder().setCustomId(modal(id,'be_trigger')).setTitle('Set BE Trigger (plan)');
   const price = new TextInputBuilder()
@@ -582,7 +546,7 @@ function makeSetBeTriggerModal(id){
   m.addComponents(new ActionRowBuilder().addComponents(price));
   return m;
 }
-
+// Set SL → In Profit (custom price)
 function makeSetProfitModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'profit')).setTitle('Set SL → In Profit (Custom)');
   const price = new TextInputBuilder()
@@ -617,7 +581,7 @@ function makeUndoTPModal(id){
   m.addComponents(new ActionRowBuilder().addComponents(input));
   return m;
 }
-// Recap modal with Final R override
+// Recap modal
 function makeRecapModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'recap')).setTitle('Post Trade Recap');
   m.addComponents(new ActionRowBuilder().addComponents(
@@ -746,8 +710,8 @@ client.on('interactionCreate', async (interaction) => {
   try {
     if (!tryClaimInteraction(interaction)) return;
 
-    // recap picker
-    if (interaction.isStringSelectMenu && interaction.isStringSelectMenu() && interaction.customId === 'recap:pick') {
+    // recap picker -> modal
+    if (interaction.isStringSelectMenu && interaction.customId === 'recap:pick') {
       const id = interaction.values?.[0];
       if (!id) {
         return interaction.reply({ content: '❌ Invalid selection.', flags: MessageFlags.Ephemeral });
@@ -820,46 +784,36 @@ client.on('interactionCreate', async (interaction) => {
         riskLabel: risk,
         beAt: be_at || null,
       }, interaction.channelId);
-
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
 
-    // /recap
+    // /recap (monthly/weekly/trade)
     if (interaction.isChatInputCommand() && interaction.commandName === 'recap') {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
       }
+      const period = interaction.options.getString('period') || '';
 
-      const period   = interaction.options.getString?.('period') || null;
-
-      // monthly
       if (period === 'monthly') {
         const signals = (await getSignals()).map(normalizeSignal);
-        const now = new Date();
-        const y = now.getUTCFullYear();
-        const m = now.getUTCMonth();
-        const monthly = signals.filter(s => {
-          if (!isNum(s.createdAt)) return false;
-          const d = new Date(Number(s.createdAt));
-          return d.getUTCFullYear() === y && d.getUTCMonth() === m;
-        });
+        const now = new Date(); const y = now.getUTCFullYear(); const m = now.getUTCMonth();
+        const monthly = signals.filter(s => isNum(s.createdAt) && (new Date(Number(s.createdAt))).getUTCFullYear()===y && (new Date(Number(s.createdAt))).getUTCMonth()===m);
         const text = renderMonthlyRecap(monthly, y, m);
         return interaction.reply({ content: text, allowedMentions: { parse: [] } });
       }
 
-      // weekly
       if (period === 'weekly') {
         const now = new Date();
-        const day = now.getUTCDay(); // 0..6
+        const day = now.getUTCDay();
         const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - ((day + 6) % 7)));
         monday.setUTCHours(0,0,0,0);
-        const sunday = new Date(monday); sunday.setUTCDate(monday.getUTCDate() + 6); sunday.setUTCHours(23,59,59,999);
+        const sunday = new Date(monday); sunday.setUTCDate(monday.getUTCDate()+6); sunday.setUTCHours(23,59,59,999);
 
         const signals = (await getSignals()).map(normalizeSignal);
         const weekly = signals.filter(s => isNum(s.createdAt) && s.createdAt >= monday.getTime() && s.createdAt <= sunday.getTime());
 
         const total = weekly.length;
-        const finals = weekly.filter(s => s.status !== 'RUN_VALID');
+        const finals = weekly.filter(s => s.status !== STATUS.RUN_VALID);
         const netR = finals.reduce((a,s)=> a + (isNum(s.finalR)? Number(s.finalR):0), 0);
         const wins = finals.filter(s => isNum(s.finalR) && Number(s.finalR) > 0).length;
         const winRatePct = total ? Math.round((wins/total)*100) : 0;
@@ -868,73 +822,33 @@ client.on('interactionCreate', async (interaction) => {
         const sorted = finals.filter(s => isNum(s.finalR))
                              .sort((a,b)=> Math.abs(Number(b.finalR||0)) - Math.abs(Number(a.finalR||0)));
         const topMoves = sorted.slice(0,2).map(s => ({
-          asset: s.asset,
-          dirWord: (s.direction === 'SHORT' ? 'Short' : 'Long'),
-          r: Number(s.finalR || 0),
-          jumpUrl: s.jumpUrl || null
+          asset: s.asset, dirWord: (s.direction==='SHORT'?'Short':'Long'), r: Number(s.finalR||0), jumpUrl: s.jumpUrl || null
         }));
+        const allTrades = finals.map(s => ({ asset:s.asset, dirWord:(s.direction==='SHORT'?'Short':'Long'), r:Number(s.finalR||0), ok:Number(s.finalR||0)>0 }));
+        const startDateStr = monday.toISOString().slice(0,10); const endDateStr = sunday.toISOString().slice(0,10);
 
-        const allTrades = finals.map(s => ({
-          asset: s.asset,
-          dirWord: (s.direction === 'SHORT' ? 'Short' : 'Long'),
-          r: Number(s.finalR || 0),
-          ok: Number(s.finalR || 0) > 0
-        }));
-
-        const startDateStr = monday.toISOString().slice(0,10);
-        const endDateStr   = sunday.toISOString().slice(0,10);
-
-        const text = renderWeeklyRecapDetailed({
-          startDateStr, endDateStr,
-          totals: { total, netR, winRatePct, avgR },
-          topMoves,
-          allTrades,
-          takeaways: [],
-          focus: []
-        });
-
-        return interaction.reply({ content: text, allowedMentions: { parse: [] } });
+        const text = renderWeeklyRecapDetailed({ startDateStr, endDateStr, totals:{ total, netR, winRatePct, avgR }, topMoves, allTrades, takeaways:[], focus:[] });
+        return interaction.reply({ content: text, allowedMentions:{ parse:[] } });
       }
 
-      // trade: always show picker
       if (period === 'trade') {
         const all = (await getSignals()).map(normalizeSignal);
-        all.sort((a, b) => {
-          if (a.messageId && b.messageId) {
-            const A = BigInt(a.messageId), B = BigInt(b.messageId);
-            if (A === B) return 0;
-            return (B > A) ? 1 : -1;
-          }
-          return Number(b.createdAt || 0) - Number(a.createdAt || 0);
+        all.sort((a,b)=> {
+          if (a.messageId && b.messageId) { const A=BigInt(a.messageId),B=BigInt(b.messageId); if (A===B) return 0; return (B>A)?1:-1; }
+          return Number(b.createdAt||0)-Number(a.createdAt||0);
         });
-        const items = all.slice(0, 5);
-        if (!items.length) {
-          return interaction.reply({ content: '❌ No trades found to recap.', flags: MessageFlags.Ephemeral });
-        }
-        const menu = new StringSelectMenuBuilder()
-          .setCustomId('recap:pick')
-          .setPlaceholder('Select a trade to recap')
-          .addOptions(items.map(s => ({
-            label: `$${s.asset} ${s.direction === 'SHORT' ? 'Short' : 'Long'} • ${s.status}`,
-            description: `id:${s.id}`,
-            value: s.id,
-          })));
+        const items = all.slice(0,5);
+        if (!items.length) return interaction.reply({ content:'❌ No trades found to recap.', flags: MessageFlags.Ephemeral });
+        const menu = new StringSelectMenuBuilder().setCustomId('recap:pick').setPlaceholder('Select a trade to recap')
+          .addOptions(items.map(s => ({ label:`$${s.asset} ${s.direction==='SHORT'?'Short':'Long'} • ${s.status}`, description:`id:${s.id}`, value:s.id })));
         const row = new ActionRowBuilder().addComponents(menu);
-        return interaction.reply({
-          content: 'Pick a trade to recap:',
-          components: [row],
-          flags: MessageFlags.Ephemeral,
-        });
+        return interaction.reply({ content:'Pick a trade to recap:', components:[row], flags: MessageFlags.Ephemeral });
       }
 
-      // fallback
-      return interaction.reply({
-        content: 'Pick one: `/recap period: monthly`, `/recap period: weekly`, or `/recap period: trade`.',
-        flags: MessageFlags.Ephemeral,
-      });
+      return interaction.reply({ content:'Pick one: `/recap period: monthly`, `/recap period: weekly`, or `/recap period: trade`.', flags: MessageFlags.Ephemeral });
     }
 
-    // /thread-restore — block if original signal message was deleted; no recap post
+    // /thread-restore — block if original signal message was deleted
     if (interaction.isChatInputCommand() && interaction.commandName === 'thread-restore') {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
@@ -1062,32 +976,33 @@ client.on('interactionCreate', async (interaction) => {
           signal = normalizeSignal(await getSignal(id));
         }
 
+        // Compose text
         const recapText = renderRecapText(signal, { reasonLines, confLines, notesLines, showBasics:false }, []);
 
+        // Attach image automatically if user posted one recently and no URL provided
         const channel = await client.channels.fetch(interaction.channelId);
         const recent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
-        let userAtt = null;
-        if (recent && recent.size) {
-          for (const m of recent.values()) {
-            if (m.author?.id !== interaction.user.id) continue;
-            const att = m.attachments?.first();
-            if (att && att.contentType && att.contentType.startsWith('image/')) { userAtt = att; break; }
-          }
-        }
-
         let files = [];
         let attachmentName = null;
         let attachmentUrl = null;
-        if (userAtt) {
-          try {
-            if (typeof fetch === 'function') {
-              const res = await fetch(userAtt.url);
-              const buf = Buffer.from(await res.arrayBuffer());
-              attachmentName = userAtt.name || 'chart.png';
-              files = [ new AttachmentBuilder(buf, { name: attachmentName }) ];
-              attachmentUrl = userAtt.url;
+
+        if (!chart && recent && recent.size) {
+          for (const m of recent.values()) {
+            if (m.author?.id !== interaction.user.id) continue;
+            const att = m.attachments?.first();
+            if (att && att.contentType && att.contentType.startsWith('image/')) {
+              try {
+                if (typeof fetch === 'function') {
+                  const res = await fetch(att.url);
+                  const buf = Buffer.from(await res.arrayBuffer());
+                  attachmentName = att.name || 'chart.png';
+                  files = [ new AttachmentBuilder(buf, { name: attachmentName }) ];
+                  attachmentUrl = att.url;
+                }
+              } catch {}
+              break;
             }
-          } catch {}
+          }
         }
 
         const embedPack = renderRecapEmbed(signal, {
@@ -1107,22 +1022,22 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       // BE Trigger modal submit
-if (interaction.customId.startsWith('modal:be_trigger:')) {
-  await ensureDeferred(interaction);
-  const id = idPart;
-  const priceRaw = (interaction.fields.getTextInputValue('be_trigger_price') || '').trim();
-  const patch = {};
-  if (priceRaw === '') patch.beAt = null;
-  else if (isNum(priceRaw)) patch.beAt = String(priceRaw);
-  else return safeEditReply(interaction, { content:'❌ Price must be a number or empty to clear.' });
+      if (interaction.customId.startsWith('modal:be_trigger:')) {
+        await ensureDeferred(interaction);
+        const id = idPart;
+        const priceRaw = (interaction.fields.getTextInputValue('be_trigger_price') || '').trim();
+        const patch = {};
+        if (priceRaw === '') patch.beAt = null;
+        else if (isNum(priceRaw)) patch.beAt = String(priceRaw);
+        else return safeEditReply(interaction, { content:'❌ Price must be a number or empty to clear.' });
 
-  await updateSignal(id, patch);
-  const updated = normalizeSignal(await getSignal(id));
-  await editSignalMessage(updated); await updateSummary();
-  return safeEditReply(interaction, { content: patch.beAt ? `✅ BE trigger set at ${updated.beAt}.` : '✅ BE trigger cleared.' });
-}
-// TP prices
+        await updateSignal(id, patch);
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated); await updateSummary();
+        return safeEditReply(interaction, { content: patch.beAt ? `✅ BE trigger set at ${updated.beAt}.` : '✅ BE trigger cleared.' });
+      }
 
+      // TP prices
       if (interaction.customId.startsWith('modal:tpprices:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -1553,8 +1468,7 @@ if (interaction.customId.startsWith('modal:be_trigger:')) {
       if (key === 'stopped')      return interaction.showModal(makeFinalRModal(id, 'OUT'));
       if (key === 'upd:maxr')     return interaction.showModal(makeMaxRModal(id));
       if (key === 'upd:chart')    return interaction.showModal(makeChartModal(id));
-if (key === 'trigger:be')   return interaction.showModal(makeSetBeTriggerModal(id));
-
+      if (key === 'trigger:be')   return interaction.showModal(makeSetBeTriggerModal(id));
 
       // risk buttons
       if (key === 'risk:set')   return interaction.showModal(makeSetRiskModal(id));
@@ -1739,7 +1653,7 @@ async function createSignal(payload, channelId) {
     channelId,
     beSet: false,
     beMovedAfter: null,
-    // planned BE price (optional)
+    // planned BE price (optional; fixed display)
     beAt: payload.beAt || null,
     slProfitSet: false,
     slProfitAfter: null,
