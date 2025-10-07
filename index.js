@@ -435,7 +435,6 @@ const row3 = new ActionRowBuilder().addComponents(
   new ButtonBuilder().setCustomId(btn(signalId,'upd:chart')).setLabel('🖼️ Set/Replace Chart Link').setStyle(ButtonStyle.Secondary),
   new ButtonBuilder().setCustomId(btn(signalId,'fullclose')).setLabel('✅ Fully Close').setStyle(ButtonStyle.Primary),
   new ButtonBuilder().setCustomId(btn(signalId,'stopprofit')).setLabel('🟧 Stopped In Profit').setStyle(ButtonStyle.Danger),
-  new ButtonBuilder().setCustomId(btn(signalId,'stopbe')).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
 );
 
 
@@ -448,10 +447,11 @@ const row3 = new ActionRowBuilder().addComponents(
   );
 
   const row5 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(btn(signalId,'finish')).setLabel('🏁 Finish').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'risk:set')).setLabel('⚖️ Set Risk…').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(btn(signalId,'risk:clear')).setLabel('⚖️ Clear Risk').setStyle(ButtonStyle.Secondary),
-  );
+  new ButtonBuilder().setCustomId(btn(signalId,'stopbe')).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
+  new ButtonBuilder().setCustomId(btn(signalId,'finish')).setLabel('🏁 Finish').setStyle(ButtonStyle.Secondary),
+  new ButtonBuilder().setCustomId(btn(signalId,'risk:set')).setLabel('⚖️ Set Risk…').setStyle(ButtonStyle.Secondary),
+  new ButtonBuilder().setCustomId(btn(signalId,'risk:clear')).setLabel('⚖️ Clear Risk').setStyle(ButtonStyle.Secondary),
+);
 
   return [row1, row2, row3, row4, row5];
 }
