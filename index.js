@@ -346,49 +346,28 @@ client.on('interactionCreate', async (interaction) => {
       return await interaction.respond(opts);
     }
 
-// thread-restore trade autocomplete — ONLY trades in this guild whose signal message EXISTS, no active control thread, newest-first by messageId
+// thread-restore trade autocomplete — simple, fast list of recent trades (no network checks)
 if (interaction.commandName === 'thread-restore') {
   const focused = interaction.options.getFocused?.(true);
-const q = String(
-  (focused && focused.name === 'trade' ? focused.value : interaction.options.getString?.('trade')) || ''
-).toLowerCase();
-  // Pull and prefilter by guild + basic fields
-  const all = (await getSignals())
-  .map(normalizeSignal)
-  .filter(s => s.channelId && s.messageId);
+  const q = String(
+    (focused && focused.name === 'trade' ? focused.value : interaction.options.getString?.('trade')) || ''
+  ).toLowerCase();
 
+  const all = (await getSignals()).map(normalizeSignal);
 
-  // Sort newest-first by snowflake if present, else createdAt
+  // newest-first by messageId if present, else createdAt
   all.sort((a, b) => {
     if (a.messageId && b.messageId) {
       const A = BigInt(a.messageId), B = BigInt(b.messageId);
-      if (A === B) return 0;
-      return B > A ? 1 : -1;
+      return A === B ? 0 : (B > A ? 1 : -1);
     }
     return Number(b.createdAt || 0) - Number(a.createdAt || 0);
   });
 
   const choices = [];
   for (const s of all) {
-    // Channel must be in this guild and fetchable
-    let ch = null;
-    try {
-      ch = await interaction.client.channels.fetch(s.channelId);
-      if (!ch?.isTextBased?.()) continue;
-      if (ch.guildId && interaction.guildId && ch.guildId !== interaction.guildId) continue;
-    } catch { continue; }
-
-    // Skip if a valid control thread already exists
-    const linkId = await getThreadId(s.id).catch(() => null);
-    if (linkId) {
-      try {
-        const thr = await interaction.client.channels.fetch(linkId);
-        if (thr?.isThread?.()) continue;
-      } catch {}
-    }
-
     const name = `${computeThreadName(s)} • id:${s.id}`.slice(0, 100);
-    if (!q || name.toLowerCase().includes(q)) {
+    if (!q || name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q)) {
       choices.push({ name, value: s.id });
     }
     if (choices.length >= 25) break;
