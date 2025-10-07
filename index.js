@@ -354,8 +354,8 @@ if (interaction.commandName === 'thread-restore') {
 
   // Pull and prefilter by guild + basic fields
   const all = (await getSignals())
-    .map(normalizeSignal)
-    .filter(s => s.channelId && s.messageId); // allow any status
+  .map(normalizeSignal)
+  .filter(s => s.channelId && s.messageId); // any status
 
 
   // Sort newest-first by snowflake if present, else createdAt
