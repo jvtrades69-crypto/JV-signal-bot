@@ -904,16 +904,18 @@ client.on('interactionCreate', async (interaction) => {
 
 
       const linkId = await getThreadId(tradeId).catch(() => null);
-      if (linkId) {
-        try {
-          const thread = await interaction.client.channels.fetch(linkId);
-          if (thread) {
-            if (thread.archived) await thread.setArchived(false);
-            await thread.members.add(interaction.user.id).catch(()=>{});
-            return safeEditReply(interaction, { content: `Thread already exists: <#${thread.id}>` });
-          }
-        } catch {}
-      }
+if (linkId) {
+  try {
+    const thread = await interaction.client.channels.fetch(linkId);
+    if (thread) {
+      if (thread.archived) await thread.setArchived(false);
+      await thread.members.add(interaction.user.id).catch(()=>{});
+      const sig = normalizeSignal(raw);
+      await thread.send({ content: 'Owner Control Panel', components: controlRows(sig.id) }).catch(()=>{});
+      return safeEditReply(interaction, { content: `✅ Panel posted to existing thread: <#${thread.id}>` });
+    }
+  } catch {}
+}
 
       const channel = await interaction.client.channels.fetch(raw.channelId).catch(()=>null);
       if (!channel?.isTextBased?.()) return safeEditReply(interaction, { content: '❌ Original channel not found.' });
