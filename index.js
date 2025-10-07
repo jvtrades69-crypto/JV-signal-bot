@@ -346,37 +346,46 @@ client.on('interactionCreate', async (interaction) => {
       return await interaction.respond(opts);
     }
 
-// thread-restore trade autocomplete — ONLY trades whose original signal message STILL EXISTS
+// thread-restore trade autocomplete — ONLY trades in this guild whose signal message EXISTS, no active control thread, newest-first by messageId
 if (interaction.commandName === 'thread-restore') {
   const focused = interaction.options.getFocused(true);
   if (focused.name !== 'trade') return;
   const q = String(focused.value || '').toLowerCase();
 
-  const all = (await getSignals()).map(normalizeSignal)
-    .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+  // Pull and prefilter by guild + basic fields
+  const all = (await getSignals())
+    .map(normalizeSignal)
+    .filter(s => s.channelId && s.messageId && s.status === STATUS.RUN_VALID); // active only
+
+  // Sort newest-first by snowflake if present, else createdAt
+  all.sort((a, b) => {
+    if (a.messageId && b.messageId) {
+      const A = BigInt(a.messageId), B = BigInt(b.messageId);
+      if (A === B) return 0;
+      return B > A ? 1 : -1;
+    }
+    return Number(b.createdAt || 0) - Number(a.createdAt || 0);
+  });
 
   const choices = [];
   for (const s of all) {
-    if (!s.channelId || !s.messageId) continue; // must have stored messageId
-
-    // channel must be fetchable
+    // Channel must be in this guild and fetchable
     let ch = null;
     try {
       ch = await interaction.client.channels.fetch(s.channelId);
       if (!ch?.isTextBased?.()) continue;
+      if (ch.guildId && interaction.guildId && ch.guildId !== interaction.guildId) continue;
     } catch { continue; }
 
-    // include ONLY if the original signal message can be fetched (exists)
+    // Include ONLY if the original signal message can be fetched (exists)
     let messageAlive = false;
     try {
       await ch.messages.fetch(s.messageId);
       messageAlive = true;
-    } catch {
-      messageAlive = false;
-    }
+    } catch { messageAlive = false; }
     if (!messageAlive) continue;
 
-    // skip if a valid control thread already exists
+    // Skip if a valid control thread already exists
     const linkId = await getThreadId(s.id).catch(() => null);
     if (linkId) {
       try {
