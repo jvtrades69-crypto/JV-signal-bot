@@ -346,7 +346,7 @@ client.on('interactionCreate', async (interaction) => {
       return await interaction.respond(opts);
     }
 
-    // thread-restore trade autocomplete — any trade with a valid channel and no active thread
+// thread-restore trade autocomplete — ONLY trades whose original signal message is missing
 if (interaction.commandName === 'thread-restore') {
   const focused = interaction.options.getFocused(true);
   if (focused.name !== 'trade') return;
@@ -359,15 +359,29 @@ if (interaction.commandName === 'thread-restore') {
   for (const s of all) {
     if (!s.channelId) continue;
 
-    // Channel must exist; original message not required
-    let channelOk = false;
+    // Check channel exists
+    let channelOk = false, messageAlive = false;
+    let ch = null;
     try {
-      const ch = await interaction.client.channels.fetch(s.channelId);
+      ch = await interaction.client.channels.fetch(s.channelId);
       channelOk = !!ch?.isTextBased?.();
     } catch {}
     if (!channelOk) continue;
 
-    // Skip if a valid thread already exists
+    // Only include if original message is missing or unfetchable
+    if (s.messageId) {
+      try {
+        await ch.messages.fetch(s.messageId);
+        messageAlive = true;
+      } catch {
+        messageAlive = false;
+      }
+    } else {
+      messageAlive = false; // no messageId -> definitely missing
+    }
+    if (messageAlive) continue; // skip those that still have the message
+
+    // Skip if a valid control thread already exists
     const linkId = await getThreadId(s.id).catch(() => null);
     if (linkId) {
       try {
@@ -385,6 +399,7 @@ if (interaction.commandName === 'thread-restore') {
 
   return await interaction.respond(choices);
 }
+
 
 
     // signal-restore id autocomplete (deleted signals)
