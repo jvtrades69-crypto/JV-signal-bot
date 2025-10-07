@@ -346,7 +346,7 @@ client.on('interactionCreate', async (interaction) => {
       return await interaction.respond(opts);
     }
 
-// thread-restore trade autocomplete — ONLY trades whose original signal message is missing
+// thread-restore trade autocomplete — ONLY trades whose original signal message STILL EXISTS
 if (interaction.commandName === 'thread-restore') {
   const focused = interaction.options.getFocused(true);
   if (focused.name !== 'trade') return;
@@ -357,31 +357,26 @@ if (interaction.commandName === 'thread-restore') {
 
   const choices = [];
   for (const s of all) {
-    if (!s.channelId) continue;
+    if (!s.channelId || !s.messageId) continue; // must have stored messageId
 
-    // Check channel exists
-    let channelOk = false, messageAlive = false;
+    // channel must be fetchable
     let ch = null;
     try {
       ch = await interaction.client.channels.fetch(s.channelId);
-      channelOk = !!ch?.isTextBased?.();
-    } catch {}
-    if (!channelOk) continue;
+      if (!ch?.isTextBased?.()) continue;
+    } catch { continue; }
 
-    // Only include if original message is missing or unfetchable
-    if (s.messageId) {
-      try {
-        await ch.messages.fetch(s.messageId);
-        messageAlive = true;
-      } catch {
-        messageAlive = false;
-      }
-    } else {
-      messageAlive = false; // no messageId -> definitely missing
+    // include ONLY if the original signal message can be fetched (exists)
+    let messageAlive = false;
+    try {
+      await ch.messages.fetch(s.messageId);
+      messageAlive = true;
+    } catch {
+      messageAlive = false;
     }
-    if (messageAlive) continue; // skip those that still have the message
+    if (!messageAlive) continue;
 
-    // Skip if a valid control thread already exists
+    // skip if a valid control thread already exists
     const linkId = await getThreadId(s.id).catch(() => null);
     if (linkId) {
       try {
@@ -399,6 +394,7 @@ if (interaction.commandName === 'thread-restore') {
 
   return await interaction.respond(choices);
 }
+
 
 
 
