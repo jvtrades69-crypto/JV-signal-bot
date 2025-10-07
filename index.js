@@ -378,14 +378,6 @@ if (interaction.commandName === 'thread-restore') {
       if (ch.guildId && interaction.guildId && ch.guildId !== interaction.guildId) continue;
     } catch { continue; }
 
-    // Include ONLY if the original signal message can be fetched (exists)
-    let messageAlive = false;
-    try {
-      await ch.messages.fetch(s.messageId);
-      messageAlive = true;
-    } catch { messageAlive = false; }
-    if (!messageAlive) continue;
-
     // Skip if a valid control thread already exists
     const linkId = await getThreadId(s.id).catch(() => null);
     if (linkId) {
