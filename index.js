@@ -346,43 +346,46 @@ client.on('interactionCreate', async (interaction) => {
       return await interaction.respond(opts);
     }
 
-    // thread-restore trade autocomplete — only trades with live signal msg and missing thread
-    if (interaction.commandName === 'thread-restore') {
-      const focused = interaction.options.getFocused(true);
-      if (focused.name !== 'trade') return;
-      const q = String(focused.value || '').toLowerCase();
+    // thread-restore trade autocomplete — any trade with a valid channel and no active thread
+if (interaction.commandName === 'thread-restore') {
+  const focused = interaction.options.getFocused(true);
+  if (focused.name !== 'trade') return;
+  const q = String(focused.value || '').toLowerCase();
 
-      const all = (await getSignals()).map(normalizeSignal)
-        .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+  const all = (await getSignals()).map(normalizeSignal)
+    .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
 
-      const choices = [];
-      for (const s of all) {
-        if (!s.channelId || !s.messageId) continue;
-        let messageAlive = false;
-        try {
-          const ch = await interaction.client.channels.fetch(s.channelId);
-          await ch.messages.fetch(s.messageId);
-          messageAlive = true;
-        } catch {}
-        if (!messageAlive) continue;
+  const choices = [];
+  for (const s of all) {
+    if (!s.channelId) continue;
 
-        const linkId = await getThreadId(s.id).catch(() => null);
-        if (linkId) {
-          try {
-            const thr = await interaction.client.channels.fetch(linkId);
-            if (thr?.isThread?.()) continue;
-          } catch {}
-        }
+    // Channel must exist; original message not required
+    let channelOk = false;
+    try {
+      const ch = await interaction.client.channels.fetch(s.channelId);
+      channelOk = !!ch?.isTextBased?.();
+    } catch {}
+    if (!channelOk) continue;
 
-        const name = `${computeThreadName(s)} • id:${s.id}`.slice(0, 100);
-        if (!q || name.toLowerCase().includes(q)) {
-          choices.push({ name, value: s.id });
-        }
-        if (choices.length >= 25) break;
-      }
-
-      return await interaction.respond(choices);
+    // Skip if a valid thread already exists
+    const linkId = await getThreadId(s.id).catch(() => null);
+    if (linkId) {
+      try {
+        const thr = await interaction.client.channels.fetch(linkId);
+        if (thr?.isThread?.()) continue;
+      } catch {}
     }
+
+    const name = `${computeThreadName(s)} • id:${s.id}`.slice(0, 100);
+    if (!q || name.toLowerCase().includes(q)) {
+      choices.push({ name, value: s.id });
+    }
+    if (choices.length >= 25) break;
+  }
+
+  return await interaction.respond(choices);
+}
+
 
     // signal-restore id autocomplete (deleted signals)
     if (interaction.commandName === 'signal-restore') {
@@ -903,9 +906,10 @@ client.on('interactionCreate', async (interaction) => {
       const raw = await getSignal(tradeId).catch(()=>null);
       if (!raw) return safeEditReply(interaction, { content: '❌ Trade not found. Restore the signal first with /signal-restore.' });
 
-      if (!raw.messageId || !raw.channelId) {
-        return safeEditReply(interaction, { content: '❌ Signal message deleted. Use /signal-restore first, then /thread-restore.' });
-      }
+      if (!raw.channelId) {
+  return safeEditReply(interaction, { content: '❌ Original channel missing on this trade.' });
+}
+
 
       const linkId = await getThreadId(tradeId).catch(() => null);
       if (linkId) {
