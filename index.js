@@ -348,10 +348,10 @@ client.on('interactionCreate', async (interaction) => {
 
 // thread-restore trade autocomplete — ONLY trades in this guild whose signal message EXISTS, no active control thread, newest-first by messageId
 if (interaction.commandName === 'thread-restore') {
-  const focused = interaction.options.getFocused(true);
-  if (focused.name !== 'trade') return;
-  const q = String(focused.value || '').toLowerCase();
-
+  const focused = interaction.options.getFocused?.(true);
+const q = String(
+  (focused && focused.name === 'trade' ? focused.value : interaction.options.getString?.('trade')) || ''
+).toLowerCase();
   // Pull and prefilter by guild + basic fields
   const all = (await getSignals())
   .map(normalizeSignal)
