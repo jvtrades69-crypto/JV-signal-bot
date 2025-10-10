@@ -21,7 +21,7 @@ import {
 } from './store.js';
 import {
   renderSignalText, renderSummaryText, renderRecapText, renderMonthlyRecap,
-  renderRecapEmbed, renderWeeklyRecapDetailed
+  renderRecapEmbed, renderWeeklyRecapDetailed, fmt
 } from './embeds.js';
 
 const nano = customAlphabet('1234567890abcdef', 10);
@@ -186,6 +186,73 @@ async function renameControlThread(signal) {
   } catch {}
 }
 
+// ----- CONTROL-THREAD SNAPSHOT (rolling plain-text preview up to Reasoning) -----
+async function buildSnapshotText(signal) {
+  const lines = [];
+  const dirWord = signal.direction === DIR.SHORT ? 'Short' : 'Long';
+  const dirDot  = signal.direction === DIR.SHORT ? '🔴' : '🟢';
+  const riskTag = signal.riskLabel ? ` (${signal.riskLabel} risk)` : '';
+
+  lines.push(`$${String(signal.asset).toUpperCase()} | ${dirWord} ${dirDot}${riskTag}`, '');
+  lines.push('📊 Trade Details');
+  lines.push(`- Entry: ${fmt(signal.entry)}`);
+  lines.push(`- SL: ${fmt(signal.sl)}`);
+
+  const tpKeys = ['tp1','tp2','tp3','tp4','tp5'];
+  for (const key of tpKeys) {
+    const v = signal[key];
+    if (v == null || v === '') continue;
+    const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, v);
+    const rrTxt = (r != null) ? `${r.toFixed(2)}R` : null;
+
+    let pct = 0;
+    const src = key.toUpperCase();
+    if (Array.isArray(signal.fills)) {
+      pct = signal.fills.filter(f => String(f.source).toUpperCase() === src)
+                        .reduce((a,f)=> a + Number(f.pct||0), 0);
+    }
+    if (pct <= 0 && signal.plan && isNum(signal.plan[src])) pct = Number(signal.plan[src]||0);
+
+    if (pct > 0 && rrTxt)      lines.push(`- ${src}: ${fmt(v)} (${pct}% out | ${rrTxt})`);
+    else if (pct > 0)          lines.push(`- ${src}: ${fmt(v)} (${pct}% out)`);
+    else if (rrTxt)            lines.push(`- ${src}: ${fmt(v)} (${rrTxt})`);
+    else                       lines.push(`- ${src}: ${fmt(v)}`);
+  }
+
+  if (signal.beAt) lines.push(`- Stops to breakeven at ${fmt(signal.beAt)}`);
+
+  if (signal.reason && String(signal.reason).trim()) {
+    lines.push('', '📝 Reasoning');
+    const rsn = String(signal.reason).trim().split('\n').map(s=>s.trim()).filter(Boolean);
+    for (const line of rsn) lines.push(`- ${line}`);
+  }
+
+  return lines.join('\n');
+}
+
+async function postSnapshot(signal) {
+  try {
+    const threadId = await getThreadId(signal.id).catch(() => null);
+    if (!threadId) return;
+    const thread = await client.channels.fetch(threadId).catch(() => null);
+    if (!thread || !thread.isThread?.()) return;
+
+    const recent = await thread.messages.fetch({ limit: 25 }).catch(() => null);
+    if (recent && recent.size) {
+      for (const m of recent.values()) {
+        if (m.author?.id === client.user.id &&
+            m.content?.includes('📊 Trade Details') &&
+            !m.content?.includes('Owner Control Panel')) {
+          try { await m.delete(); } catch {}
+        }
+      }
+    }
+
+    const text = await buildSnapshotText(signal);
+    await thread.send({ content: text, allowedMentions: { parse: [] } });
+  } catch {}
+}
+
 // posting live signal
 async function postSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
@@ -346,38 +413,35 @@ client.on('interactionCreate', async (interaction) => {
       return await interaction.respond(opts);
     }
 
-// thread-restore trade autocomplete — simple, fast list of recent trades (no network checks)
-if (interaction.commandName === 'thread-restore') {
-  const focused = interaction.options.getFocused?.(true);
-  const q = String(
-    (focused && focused.name === 'trade' ? focused.value : interaction.options.getString?.('trade')) || ''
-  ).toLowerCase();
+    // thread-restore trade autocomplete — simple, fast list of recent trades (no network checks)
+    if (interaction.commandName === 'thread-restore') {
+      const focused = interaction.options.getFocused?.(true);
+      const q = String(
+        (focused && focused.name === 'trade' ? focused.value : interaction.options.getString?.('trade')) || ''
+      ).toLowerCase();
 
-  const all = (await getSignals()).map(normalizeSignal);
+      const all = (await getSignals()).map(normalizeSignal);
 
-  // newest-first by messageId if present, else createdAt
-  all.sort((a, b) => {
-    if (a.messageId && b.messageId) {
-      const A = BigInt(a.messageId), B = BigInt(b.messageId);
-      return A === B ? 0 : (B > A ? 1 : -1);
+      // newest-first by messageId if present, else createdAt
+      all.sort((a, b) => {
+        if (a.messageId && b.messageId) {
+          const A = BigInt(a.messageId), B = BigInt(b.messageId);
+          return A === B ? 0 : (B > A ? 1 : -1);
+        }
+        return Number(b.createdAt || 0) - Number(a.createdAt || 0);
+      });
+
+      const choices = [];
+      for (const s of all) {
+        const name = `${computeThreadName(s)} • id:${s.id}`.slice(0, 100);
+        if (!q || name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q)) {
+          choices.push({ name, value: s.id });
+        }
+        if (choices.length >= 25) break;
+      }
+
+      return await interaction.respond(choices);
     }
-    return Number(b.createdAt || 0) - Number(a.createdAt || 0);
-  });
-
-  const choices = [];
-  for (const s of all) {
-    const name = `${computeThreadName(s)} • id:${s.id}`.slice(0, 100);
-    if (!q || name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q)) {
-      choices.push({ name, value: s.id });
-    }
-    if (choices.length >= 25) break;
-  }
-
-  return await interaction.respond(choices);
-}
-
-
-
 
     // signal-restore id autocomplete (deleted signals)
     if (interaction.commandName === 'signal-restore') {
@@ -424,14 +488,13 @@ function controlRows(signalId) {
     new ButtonBuilder().setCustomId(btn(signalId,'upd:maxr')).setLabel('📈 Set Max R').setStyle(ButtonStyle.Secondary),
   );
 
-const row3 = new ActionRowBuilder().addComponents(
-  new ButtonBuilder().setCustomId(btn(signalId,'upd:trade')).setLabel('✏️ Update Trade Info').setStyle(ButtonStyle.Secondary),
-  new ButtonBuilder().setCustomId(btn(signalId,'upd:roles')).setLabel('✏️ Update Role Mention').setStyle(ButtonStyle.Secondary),
-  new ButtonBuilder().setCustomId(btn(signalId,'upd:chart')).setLabel('🖼️ Set/Replace Chart Link').setStyle(ButtonStyle.Secondary),
-  new ButtonBuilder().setCustomId(btn(signalId,'fullclose')).setLabel('✅ Fully Close').setStyle(ButtonStyle.Primary),
-  new ButtonBuilder().setCustomId(btn(signalId,'stopprofit')).setLabel('🟧 Stopped In Profit').setStyle(ButtonStyle.Danger),
-);
-
+  const row3 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(btn(signalId,'upd:trade')).setLabel('✏️ Update Trade Info').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'upd:roles')).setLabel('✏️ Update Role Mention').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'upd:chart')).setLabel('🖼️ Set/Replace Chart Link').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'fullclose')).setLabel('✅ Fully Close').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(btn(signalId,'stopprofit')).setLabel('🟧 Stopped In Profit').setStyle(ButtonStyle.Danger),
+  );
 
   const row4 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(btn(signalId,'stopped')).setLabel('🔴 Stopped Out').setStyle(ButtonStyle.Danger),
@@ -442,11 +505,11 @@ const row3 = new ActionRowBuilder().addComponents(
   );
 
   const row5 = new ActionRowBuilder().addComponents(
-  new ButtonBuilder().setCustomId(btn(signalId,'stopbe')).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
-  new ButtonBuilder().setCustomId(btn(signalId,'finish')).setLabel('🏁 Finish').setStyle(ButtonStyle.Secondary),
-  new ButtonBuilder().setCustomId(btn(signalId,'risk:set')).setLabel('⚖️ Set Risk…').setStyle(ButtonStyle.Secondary),
-  new ButtonBuilder().setCustomId(btn(signalId,'risk:clear')).setLabel('⚖️ Clear Risk').setStyle(ButtonStyle.Secondary),
-);
+    new ButtonBuilder().setCustomId(btn(signalId,'stopbe')).setLabel('🟥 Stopped BE').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(btn(signalId,'finish')).setLabel('🏁 Finish').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'risk:set')).setLabel('⚖️ Set Risk…').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(signalId,'risk:clear')).setLabel('⚖️ Clear Risk').setStyle(ButtonStyle.Secondary),
+  );
 
   return [row1, row2, row3, row4, row5];
 }
@@ -481,8 +544,7 @@ async function deleteControlThread(signalId) {
   } catch {}
 }
 
-
-// Modals
+// Modals (unchanged builders below)
 function makeUpdateTPPricesModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'tpprices')).setTitle('Update TP Prices (TP1–TP5)');
   for (const [cid, label] of [['upd_tp1','TP1'],['upd_tp2','TP2'],['upd_tp3','TP3'],['upd_tp4','TP4'],['upd_tp5','TP5']]) {
@@ -545,7 +607,6 @@ function makeFullCloseModal(id) {
   m.addComponents(new ActionRowBuilder().addComponents(finalR));
   return m;
 }
-
 function makeFinalRModal(id, kind) {
   const m = new ModalBuilder().setCustomId(modal(id, `finalr:${kind}`)).setTitle(
     kind === 'BE' ? 'Stopped Breakeven' : kind === 'OUT' ? 'Stopped Out' : 'Stopped In Profit'
@@ -899,23 +960,22 @@ client.on('interactionCreate', async (interaction) => {
       if (!raw) return safeEditReply(interaction, { content: '❌ Trade not found. Restore the signal first with /signal-restore.' });
 
       if (!raw.channelId) {
-  return safeEditReply(interaction, { content: '❌ Original channel missing on this trade.' });
-}
-
+        return safeEditReply(interaction, { content: '❌ Original channel missing on this trade.' });
+      }
 
       const linkId = await getThreadId(tradeId).catch(() => null);
-if (linkId) {
-  try {
-    const thread = await interaction.client.channels.fetch(linkId);
-    if (thread) {
-      if (thread.archived) await thread.setArchived(false);
-      await thread.members.add(interaction.user.id).catch(()=>{});
-      const sig = normalizeSignal(raw);
-      await thread.send({ content: 'Owner Control Panel', components: controlRows(sig.id) }).catch(()=>{});
-      return safeEditReply(interaction, { content: `✅ Panel posted to existing thread: <#${thread.id}>` });
-    }
-  } catch {}
-}
+      if (linkId) {
+        try {
+          const thread = await interaction.client.channels.fetch(linkId);
+          if (thread) {
+            if (thread.archived) await thread.setArchived(false);
+            await thread.members.add(interaction.user.id).catch(()=>{});
+            const sig = normalizeSignal(raw);
+            await thread.send({ content: 'Owner Control Panel', components: controlRows(sig.id) }).catch(()=>{});
+            return safeEditReply(interaction, { content: `✅ Panel posted to existing thread: <#${thread.id}>` });
+          }
+        } catch {}
+      }
 
       const channel = await interaction.client.channels.fetch(raw.channelId).catch(()=>null);
       if (!channel?.isTextBased?.()) return safeEditReply(interaction, { content: '❌ Original channel not found.' });
@@ -1073,7 +1133,9 @@ if (linkId) {
 
         await updateSignal(id, patch);
         const updated = normalizeSignal(await getSignal(id));
-        await editSignalMessage(updated); await updateSummary();
+        await editSignalMessage(updated);
+        await postSnapshot(updated);
+        await updateSummary();
         return safeEditReply(interaction, { content: patch.beAt ? `✅ BE trigger set at ${updated.beAt}.` : '✅ BE trigger cleared.' });
       }
 
@@ -1092,6 +1154,7 @@ if (linkId) {
         await updateSignal(id, { ...patch });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
+        await postSnapshot(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ TP prices updated.' });
       }
@@ -1112,6 +1175,7 @@ if (linkId) {
         await updateSignal(id, { plan: patchPlan });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
+        await postSnapshot(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ TP % plan updated.' });
       }
@@ -1144,6 +1208,7 @@ if (linkId) {
         const updated = normalizeSignal(await getSignal(id));
         if (isSlMovedToBE(updated)) { await updateSignal(id, { validReentry: false }); }
         await editSignalMessage(updated);
+        await postSnapshot(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Trade info updated.' });
       }
@@ -1159,6 +1224,7 @@ if (linkId) {
         await updateSignal(id, { extraRole: rolesRaw });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
+        await postSnapshot(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Role mentions updated.' });
       }
@@ -1174,6 +1240,7 @@ if (linkId) {
         await updateSignal(id, { maxR: Number(raw) });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
+        await postSnapshot(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Max R updated.' });
       }
@@ -1191,6 +1258,7 @@ if (linkId) {
         await updateSignal(id, { chartUrl: url, chartAttached: false });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
+        await postSnapshot(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ Chart link updated.' });
       }
@@ -1243,71 +1311,72 @@ if (linkId) {
 
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
+        await postSnapshot(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${hasPct && pct > 0 ? ` (${pct}%).` : '.'}` });
       }
 
       // full close
-if (interaction.customId.startsWith('modal:full:')) {
-  await ensureDeferred(interaction);
-  const id = idPart;
-  let signal = normalizeSignal(await getSignal(id));
-  if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
+      if (interaction.customId.startsWith('modal:full:')) {
+        await ensureDeferred(interaction);
+        const id = idPart;
+        let signal = normalizeSignal(await getSignal(id));
+        if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
-  // Required: close price
-  const priceStr = (interaction.fields.getTextInputValue('close_price') || '').trim();
-  if (!isNum(priceStr)) return safeEditReply(interaction, { content: '❌ Close Price must be a number.' });
-  const price = Number(priceStr);
+        // Required: close price
+        const priceStr = (interaction.fields.getTextInputValue('close_price') || '').trim();
+        if (!isNum(priceStr)) return safeEditReply(interaction, { content: '❌ Close Price must be a number.' });
+        const price = Number(priceStr);
 
-  // Optional: Final R override
-  const finalRStr = (interaction.fields.getTextInputValue('final_r') || '').trim();
-  if (finalRStr !== '' && !isNum(finalRStr)) {
-    return safeEditReply(interaction, { content: '❌ Final R must be a number if provided.' });
-  }
+        // Optional: Final R override
+        const finalRStr = (interaction.fields.getTextInputValue('final_r') || '').trim();
+        if (finalRStr !== '' && !isNum(finalRStr)) {
+          return safeEditReply(interaction, { content: '❌ Final R must be a number if provided.' });
+        }
 
-  // Close remaining size at price
-  const currentPct = (Array.isArray(signal.fills) ? signal.fills : []).reduce((a, f) => a + Number(f.pct || 0), 0);
-  const remaining  = Math.max(0, 100 - currentPct);
-  if (remaining > 0) {
-    signal.fills = Array.isArray(signal.fills) ? signal.fills : [];
-    signal.fills.push({ pct: remaining, price, source: 'FINAL_CLOSE' });
-  }
+        // Close remaining size at price
+        const currentPct = (Array.isArray(signal.fills) ? signal.fills : []).reduce((a, f) => a + Number(f.pct || 0), 0);
+        const remaining  = Math.max(0, 100 - currentPct);
+        if (remaining > 0) {
+          signal.fills = Array.isArray(signal.fills) ? signal.fills : [];
+          signal.fills.push({ pct: remaining, price, source: 'FINAL_CLOSE' });
+        }
 
-  // Latest TP context = highest hit
-  const latestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits?.[k]) || null;
+        // Latest TP context = highest hit
+        const latestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits?.[k]) || null;
 
-  // Clear running flags and close
-  signal.status = STATUS.CLOSED;
-  signal.validReentry = false;
-  signal.latestTpHit = latestHit;
-  signal.beSet = false;
-  signal.beMovedAfter = null;
-  signal.slProfitSet = false;
-  signal.slProfitAfter = null;
-  signal.slProfitAfterTP = null;
-  if (finalRStr !== '') signal.finalR = Number(finalRStr);
+        // Clear running flags and close
+        signal.status = STATUS.CLOSED;
+        signal.validReentry = false;
+        signal.latestTpHit = latestHit;
+        signal.beSet = false;
+        signal.beMovedAfter = null;
+        signal.slProfitSet = false;
+        signal.slProfitAfter = null;
+        signal.slProfitAfterTP = null;
+        if (finalRStr !== '') signal.finalR = Number(finalRStr);
 
-  await updateSignal(id, {
-    fills: signal.fills,
-    status: signal.status,
-    validReentry: false,
-    latestTpHit: signal.latestTpHit,
-    beSet: signal.beSet,
-    beMovedAfter: signal.beMovedAfter,
-    slProfitSet: signal.slProfitSet,
-    slProfitAfter: signal.slProfitAfter,
-    slProfitAfterTP: signal.slProfitAfterTP,
-    ...(finalRStr !== '' ? { finalR: signal.finalR } : {}),
-  });
+        await updateSignal(id, {
+          fills: signal.fills,
+          status: signal.status,
+          validReentry: false,
+          latestTpHit: signal.latestTpHit,
+          beSet: signal.beSet,
+          beMovedAfter: signal.beMovedAfter,
+          slProfitSet: signal.slProfitSet,
+          slProfitAfter: signal.slProfitAfter,
+          slProfitAfterTP: signal.slProfitAfterTP,
+          ...(finalRStr !== '' ? { finalR: signal.finalR } : {}),
+        });
 
-  const updated = normalizeSignal(await getSignal(id));
-  await editSignalMessage(updated);
-  await updateSummary();
+        const updated = normalizeSignal(await getSignal(id));
+        await editSignalMessage(updated);
+        await postSnapshot(updated);
+        await updateSummary();
 
-  const suffix = latestHit ? ` after ${latestHit}` : '';
-  return safeEditReply(interaction, { content: `✅ Fully closed${suffix} at ${price}.` });
-}
-
+        const suffix = latestHit ? ` after ${latestHit}` : '';
+        return safeEditReply(interaction, { content: `✅ Fully closed${suffix} at ${price}.` });
+      }
 
       // full close (profit)
       if (interaction.customId.startsWith('modal:fullprofit:')) {
@@ -1348,6 +1417,7 @@ if (interaction.customId.startsWith('modal:full:')) {
 
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
+        await postSnapshot(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: `✅ Fully closed in profits at ${price}${Number.isFinite(signal.finalR) ? ` (Final ${signal.finalR.toFixed(2)}R)` : ''}` });
       }
@@ -1420,6 +1490,7 @@ if (interaction.customId.startsWith('modal:full:')) {
 
           const updated = normalizeSignal(await getSignal(id));
           await editSignalMessage(updated);
+          await postSnapshot(updated);
           await updateSummary();
           const msg = kind === 'BE' ? '✅ Stopped at breakeven.' : kind === 'OUT' ? '✅ Stopped out.' : '✅ Stopped in profit.';
           return safeEditReply(interaction, { content: msg });
@@ -1457,6 +1528,7 @@ if (interaction.customId.startsWith('modal:full:')) {
 
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
+        await postSnapshot(updated);
         await updateSummary();
         return safeEditReply(interaction, { content: '✅ SL moved into profits.' });
       }
@@ -1490,7 +1562,9 @@ if (interaction.customId.startsWith('modal:full:')) {
 
         await updateSignal(id, { fills: signal.fills, tpHits: signal.tpHits, latestTpHit: signal.latestTpHit });
         const updated = normalizeSignal(await getSignal(id));
-        await editSignalMessage(updated); await updateSummary();
+        await editSignalMessage(updated);
+        await postSnapshot(updated);
+        await updateSummary();
         return safeEditReply(interaction, { content: `↩️ ${keyLine} undone.` });
       }
 
@@ -1508,7 +1582,9 @@ if (interaction.customId.startsWith('modal:full:')) {
 
         await updateSignal(id, { riskLabel });
         const updated = normalizeSignal(await getSignal(id));
-        await editSignalMessage(updated); await updateSummary();
+        await editSignalMessage(updated);
+        await postSnapshot(updated);
+        await updateSummary();
         return safeEditReply(interaction, { content: `⚖️ Risk badge set to ${riskLabel}.` });
       }
     }
@@ -1540,7 +1616,9 @@ if (interaction.customId.startsWith('modal:full:')) {
         await ensureDeferred(interaction);
         await updateSignal(id, { riskLabel: '' });
         const updated = normalizeSignal(await getSignal(id));
-        await editSignalMessage(updated); await updateSummary();
+        await editSignalMessage(updated);
+        await postSnapshot(updated);
+        await updateSummary();
         return interaction.reply({ content: '⚖️ Risk badge cleared.', flags: MessageFlags.Ephemeral });
       }
 
@@ -1564,7 +1642,9 @@ if (interaction.customId.startsWith('modal:full:')) {
 
         await updateSignal(id, patch);
         const updated = normalizeSignal(await getSignal(id));
-        await editSignalMessage(updated); await updateSummary();
+        await editSignalMessage(updated);
+        await postSnapshot(updated);
+        await updateSummary();
         return interaction.reply({
           content: `✅ SL → BE set at ${updated.beAt}${patch.beMovedAfter ? ` after ${patch.beMovedAfter}` : ''}.`,
           flags: MessageFlags.Ephemeral
@@ -1600,14 +1680,18 @@ if (interaction.customId.startsWith('modal:full:')) {
         await ensureDeferred(interaction);
         await updateSignal(id, { beSet:false, beMovedAfter:null });
         const updated = normalizeSignal(await getSignal(id));
-        await editSignalMessage(updated); await updateSummary();
+        await editSignalMessage(updated);
+        await postSnapshot(updated);
+        await updateSummary();
         return interaction.reply({ content: '↩️ Undid SL → BE.', flags: MessageFlags.Ephemeral });
       }
       if (key === 'undo:profit') {
         await ensureDeferred(interaction);
         await updateSignal(id, { slProfitSet:false, slProfitAfter:null, slProfitAfterTP:null, stoppedInProfit:false, stoppedInProfitAfterTP:null });
         const updated = normalizeSignal(await getSignal(id));
-        await editSignalMessage(updated); await updateSummary();
+        await editSignalMessage(updated);
+        await postSnapshot(updated);
+        await updateSummary();
         return interaction.reply({ content: '↩️ Undid SL → Profit.', flags: MessageFlags.Ephemeral });
       }
       if (key === 'undo:reopen') {
@@ -1621,7 +1705,9 @@ if (interaction.customId.startsWith('modal:full:')) {
         const fills = (signal.fills || []).filter(f => !['FINAL_CLOSE','STOP_BE','STOP_OUT','STOP_PROFIT','FINAL_CLOSE_PROFIT'].includes(String(f.source).toUpperCase()));
         await updateSignal(id, { fills, status: STATUS.RUN_VALID, validReentry: true, stoppedInProfit:false, stoppedInProfitAfterTP:null });
         const updated = normalizeSignal(await getSignal(id));
-        await editSignalMessage(updated); await updateSummary();
+        await editSignalMessage(updated);
+        await postSnapshot(updated);
+        await updateSummary();
         return interaction.reply({ content: '↩️ Reopened trade.', flags: MessageFlags.Ephemeral });
       }
 
@@ -1641,37 +1727,33 @@ if (interaction.customId.startsWith('modal:full:')) {
         const sig = normalizeSignal(await getSignal(id));
         if (!sig) return interaction.reply({ content: 'Signal not found.', flags: MessageFlags.Ephemeral });
 
-        const tpUpper = key.toUpperCase();
-        if (sig.tpHits?.[tpUpper]) {
-          return interaction.reply({ content: `${tpUpper} already recorded.`, flags: MessageFlags.Ephemeral });
-        }
-
-        const planPct = sig.plan?.[tpUpper];
+        const planPct = sig.plan?.[key.toUpperCase()];
         const tpPrice = sig[key];
 
         if (isNum(planPct) && Number(planPct) > 0 && isNum(tpPrice)) {
-          const already = (sig.fills || []).some(f => String(f.source).toUpperCase() === tpUpper);
-          if (!already) sig.fills.push({ pct: Number(planPct), price: Number(tpPrice), source: tpUpper });
+          const already = (sig.fills || []).some(f => String(f.source).toUpperCase() === key.toUpperCase());
+          if (!already) sig.fills.push({ pct: Number(planPct), price: Number(tpPrice), source: key.toUpperCase() });
         }
 
-        sig.latestTpHit = tpUpper;
-        sig.tpHits[tpUpper] = true;
+        sig.latestTpHit = key.toUpperCase();
+        sig.tpHits[key.toUpperCase()] = true;
 
         const extra = {};
-        if (sig.beSet && !sig.beMovedAfter && tpUpper === 'TP1') {
+        if (sig.beSet && !sig.beMovedAfter && key.toUpperCase() === 'TP1') {
           sig.beMovedAfter = 'TP1';
           extra.beMovedAfter = 'TP1';
         }
         if (sig.slProfitSet && !sig.slProfitAfterTP) {
-          sig.slProfitAfterTP = tpUpper;
-          extra.slProfitAfterTP = tpUpper;
+          sig.slProfitAfterTP = key.toUpperCase();
+          extra.slProfitAfterTP = key.toUpperCase();
         }
 
         await updateSignal(id, { fills: sig.fills, latestTpHit: sig.latestTpHit, tpHits: sig.tpHits, ...extra });
         await editSignalMessage(sig);
+        await postSnapshot(sig);
         await updateSummary();
         await ensureDeferred(interaction);
-        return safeEditReply(interaction, { content: `✅ ${tpUpper} recorded${isNum(planPct) && Number(planPct) > 0 ? ` (${planPct}%).` : '.'}` });
+        return safeEditReply(interaction, { content: `✅ ${key.toUpperCase()} recorded${isNum(planPct) && Number(planPct) > 0 ? ` (${planPct}%).` : '.'}` });
       }
 
       return interaction.reply({ content: 'Unknown action.', flags: MessageFlags.Ephemeral });
