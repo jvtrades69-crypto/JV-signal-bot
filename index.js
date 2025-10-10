@@ -971,7 +971,8 @@ client.on('interactionCreate', async (interaction) => {
             if (thread.archived) await thread.setArchived(false);
             await thread.members.add(interaction.user.id).catch(()=>{});
             const sig = normalizeSignal(raw);
-            await thread.send({ content: 'Owner Control Panel', components: controlRows(sig.id) }).catch(()=>{});
+await thread.send({ content: 'Owner Control Panel', components: controlRows(sig.id) }).catch(()=>{});
+await postSnapshot(sig);
             return safeEditReply(interaction, { content: `✅ Panel posted to existing thread: <#${thread.id}>` });
           }
         } catch {}
@@ -992,6 +993,7 @@ client.on('interactionCreate', async (interaction) => {
 
       await setThreadId(tradeId, thread.id);
       await thread.send({ content: 'Owner Control Panel', components: controlRows(sig.id) }).catch(()=>{});
+await postSnapshot(sig);
 
       return safeEditReply(interaction, { content: `Restored: <#${thread.id}>` });
     }
@@ -1029,10 +1031,10 @@ client.on('interactionCreate', async (interaction) => {
       signal.jumpUrl = msg.url;
 
       await updateSignal(signal.id, { messageId: signal.messageId, jumpUrl: signal.jumpUrl });
-
-      await createControlThread(signal);
-      renameControlThread(signal).catch(() => {});
-      await updateSummary();
+await createControlThread(signal);
+await postSnapshot(signal);
+renameControlThread(signal).catch(() => {});
+await updateSummary();
 
       return safeEditReply(interaction, { content: `✅ Signal restored. Message: ${signal.jumpUrl}` });
     }
@@ -1047,7 +1049,7 @@ client.on('interactionCreate', async (interaction) => {
         pendingSignals.delete(idPart);
         if (!stash) return safeEditReply(interaction, { content: '❌ Session expired. Try /signal again.' });
         const asset = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
-        await createSignal({ asset, ...stash }, stash.channelId || interaction.channelId);
+          await createSignal({ asset, ...stash }, stash.channelId || interaction.channelId);
         return safeEditReply(interaction, { content: `✅ Trade signal posted for ${asset}.` });
       }
 
@@ -1818,10 +1820,12 @@ async function createSignal(payload, channelId) {
   const msg = await channel.messages.fetch(msgId);
   signal.jumpUrl = msg.url;
 
-  await updateSignal(signal.id, { messageId: signal.messageId, jumpUrl: signal.jumpUrl });
+await updateSignal(signal.id, { messageId: signal.messageId, jumpUrl: signal.jumpUrl });
+
   await createControlThread(signal);
-  renameControlThread(signal).catch(() => {});
-  await updateSummary();
+await postSnapshot(signal);
+renameControlThread(signal).catch(() => {});
+await updateSummary();
 
   return signal;
 }
