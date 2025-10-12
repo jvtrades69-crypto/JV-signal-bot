@@ -253,6 +253,19 @@ async function postSnapshot(signal) {
   } catch {}
 }
 
+// ===== Reason Modal (bullets) =====
+function makeReasonModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'reason')).setTitle('Set Trade Reason (bullets)');
+  m.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder()
+      .setCustomId('reason_lines')
+      .setLabel('One point per line')
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(true)
+  ));
+  return m;
+}
+
 // posting live signal
 async function postSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
@@ -843,13 +856,16 @@ client.on('interactionCreate', async (interaction) => {
       const risk      = interaction.options.getString('risk') || '';
       const be_at     = interaction.options.getString('be_at') || '';
 
+      // If user chose OTHER asset -> ask for asset first (existing flow)
       if (assetSel === 'OTHER') {
         const pid = nano();
         const m = new ModalBuilder().setCustomId(modal(pid,'asset')).setTitle('Enter custom asset');
         const input = new TextInputBuilder().setCustomId('asset_value').setLabel('Asset (e.g., PEPE, XRP)').setStyle(TextInputStyle.Short).setRequired(true);
         m.addComponents(new ActionRowBuilder().addComponents(input));
+        // stash all fields (maybe reason is empty; we'll collect it next)
         pendingSignals.set(pid, {
-          direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole,
+          direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason: reason || '',
+          extraRole,
           plan: {
             TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
             TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
@@ -864,6 +880,30 @@ client.on('interactionCreate', async (interaction) => {
           beAt: be_at || null,
         });
         return interaction.showModal(m);
+      }
+
+      // If asset known but reason missing -> open Reason modal
+      if (!reason || !reason.trim()) {
+        const pid = nano();
+        pendingSignals.set(pid, {
+          asset: assetSel,
+          direction, entry, sl, tp1, tp2, tp3, tp4, tp5,
+          reason: '',
+          extraRole,
+          plan: {
+            TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
+            TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
+            TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
+            TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
+            TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
+          },
+          channelId: interaction.channelId,
+          chartUrl: chartAtt?.url || null,
+          chartAttached: !!chartAtt?.url,
+          riskLabel: risk,
+          beAt: be_at || null,
+        });
+        return interaction.showModal(makeReasonModal(pid));
       }
 
       await createSignal({
@@ -971,8 +1011,8 @@ client.on('interactionCreate', async (interaction) => {
             if (thread.archived) await thread.setArchived(false);
             await thread.members.add(interaction.user.id).catch(()=>{});
             const sig = normalizeSignal(raw);
-await thread.send({ content: 'Owner Control Panel', components: controlRows(sig.id) }).catch(()=>{});
-await postSnapshot(sig);
+            await thread.send({ content: 'Owner Control Panel', components: controlRows(sig.id) }).catch(()=>{});
+            await postSnapshot(sig);
             return safeEditReply(interaction, { content: `✅ Panel posted to existing thread: <#${thread.id}>` });
           }
         } catch {}
@@ -993,7 +1033,7 @@ await postSnapshot(sig);
 
       await setThreadId(tradeId, thread.id);
       await thread.send({ content: 'Owner Control Panel', components: controlRows(sig.id) }).catch(()=>{});
-await postSnapshot(sig);
+      await postSnapshot(sig);
 
       return safeEditReply(interaction, { content: `Restored: <#${thread.id}>` });
     }
@@ -1031,10 +1071,10 @@ await postSnapshot(sig);
       signal.jumpUrl = msg.url;
 
       await updateSignal(signal.id, { messageId: signal.messageId, jumpUrl: signal.jumpUrl });
-await createControlThread(signal);
-await postSnapshot(signal);
-renameControlThread(signal).catch(() => {});
-await updateSummary();
+      await createControlThread(signal);
+      await postSnapshot(signal);
+      renameControlThread(signal).catch(() => {});
+      await updateSummary();
 
       return safeEditReply(interaction, { content: `✅ Signal restored. Message: ${signal.jumpUrl}` });
     }
@@ -1043,13 +1083,39 @@ await updateSummary();
     if (interaction.isModalSubmit()) {
       const idPart = interaction.customId.split(':').pop();
 
+      // ===== Asset modal -> if reason missing, open Reason modal next =====
       if (interaction.customId.startsWith('modal:asset:')) {
+        await ensureDeferred(interaction);
+        const stash0 = pendingSignals.get(idPart);
+        pendingSignals.delete(idPart);
+        if (!stash0) return safeEditReply(interaction, { content: '❌ Session expired. Try /signal again.' });
+        const asset = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
+
+        if (!stash0.reason || !String(stash0.reason).trim()) {
+          pendingSignals.set(idPart, { ...stash0, asset });
+          return interaction.showModal(makeReasonModal(idPart));
+        }
+
+        await createSignal({ asset, ...stash0 }, stash0.channelId || interaction.channelId);
+        return safeEditReply(interaction, { content: `✅ Trade signal posted for ${asset}.` });
+      }
+
+      // ===== Reason modal submit =====
+      if (interaction.customId.startsWith('modal:reason:')) {
         await ensureDeferred(interaction);
         const stash = pendingSignals.get(idPart);
         pendingSignals.delete(idPart);
         if (!stash) return safeEditReply(interaction, { content: '❌ Session expired. Try /signal again.' });
-        const asset = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
-          await createSignal({ asset, ...stash }, stash.channelId || interaction.channelId);
+
+        const raw = (interaction.fields.getTextInputValue('reason_lines') || '').trim();
+        const lines = raw.split('\n').map(s => s.trim()).filter(Boolean);
+        const reasonText = lines.join('\n');
+
+        const payload = { ...stash, reason: reasonText };
+        const asset = payload.asset;
+        if (!asset) return safeEditReply(interaction, { content: '❌ Missing asset.' });
+
+        await createSignal(payload, payload.channelId || interaction.channelId);
         return safeEditReply(interaction, { content: `✅ Trade signal posted for ${asset}.` });
       }
 
@@ -1820,12 +1886,12 @@ async function createSignal(payload, channelId) {
   const msg = await channel.messages.fetch(msgId);
   signal.jumpUrl = msg.url;
 
-await updateSignal(signal.id, { messageId: signal.messageId, jumpUrl: signal.jumpUrl });
+  await updateSignal(signal.id, { messageId: signal.messageId, jumpUrl: signal.jumpUrl });
 
   await createControlThread(signal);
-await postSnapshot(signal);
-renameControlThread(signal).catch(() => {});
-await updateSummary();
+  await postSnapshot(signal);
+  renameControlThread(signal).catch(() => {});
+  await updateSummary();
 
   return signal;
 }
