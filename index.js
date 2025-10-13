@@ -843,6 +843,39 @@ client.on('interactionCreate', async (interaction) => {
       const risk      = interaction.options.getString('risk') || '';
       const be_at     = interaction.options.getString('be_at') || '';
 
+// NEW: if no reason was typed in the slash form, open a modal to collect it
+if (!reason) {
+  const pid = nano();
+  const m = new ModalBuilder().setCustomId(modal(pid,'reason')).setTitle('Enter Trade Reason');
+  m.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder()
+      .setCustomId('reason_value')
+      .setLabel('Reason (bullets, one per line)')
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(false)
+  ));
+  pendingSignals.set(pid, {
+    asset: assetSel,
+    direction, entry, sl, tp1, tp2, tp3, tp4, tp5,
+    extraRole,
+    reason: '',
+    plan: {
+      TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
+      TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
+      TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
+      TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
+      TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
+    },
+    channelId: interaction.channelId,
+    chartUrl: chartAtt?.url || null,
+    chartAttached: !!chartAtt?.url,
+    riskLabel: risk,
+    beAt: be_at || null,
+  });
+  return interaction.showModal(m);
+}
+
+
       if (assetSel === 'OTHER') {
         const pid = nano();
         const m = new ModalBuilder().setCustomId(modal(pid,'asset')).setTitle('Enter custom asset');
@@ -1043,15 +1076,44 @@ await updateSummary();
     if (interaction.isModalSubmit()) {
       const idPart = interaction.customId.split(':').pop();
 
-      if (interaction.customId.startsWith('modal:asset:')) {
-        await ensureDeferred(interaction);
-        const stash = pendingSignals.get(idPart);
-        pendingSignals.delete(idPart);
-        if (!stash) return safeEditReply(interaction, { content: '❌ Session expired. Try /signal again.' });
-        const asset = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
-          await createSignal({ asset, ...stash }, stash.channelId || interaction.channelId);
-        return safeEditReply(interaction, { content: `✅ Trade signal posted for ${asset}.` });
-      }
+      // NEW: reason modal submit (top-level, not nested)
+if (interaction.customId.startsWith('modal:reason:')) {
+  await ensureDeferred(interaction);
+  const stash = pendingSignals.get(idPart);
+  pendingSignals.delete(idPart);
+  if (!stash) return safeEditReply(interaction, { content: '❌ Session expired. Try /signal again.' });
+
+  const reasonTxt = (interaction.fields.getTextInputValue('reason_value') || '').trim();
+
+  // If user also picked asset = OTHER, chain to asset modal next
+  if ((stash.asset || '') === 'OTHER') {
+    const pid2 = nano();
+    const m2 = new ModalBuilder().setCustomId(modal(pid2,'asset')).setTitle('Enter custom asset');
+    const input2 = new TextInputBuilder()
+      .setCustomId('asset_value')
+      .setLabel('Asset (e.g., PEPE, XRP)')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true);
+    m2.addComponents(new ActionRowBuilder().addComponents(input2));
+    pendingSignals.set(pid2, { ...stash, reason: reasonTxt });
+    return interaction.showModal(m2);
+  }
+
+  await createSignal({ ...stash, reason: reasonTxt }, stash.channelId || interaction.channelId);
+  return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
+}
+
+// Asset modal submit (unchanged)
+if (interaction.customId.startsWith('modal:asset:')) {
+  await ensureDeferred(interaction);
+  const stash = pendingSignals.get(idPart);
+  pendingSignals.delete(idPart);
+  if (!stash) return safeEditReply(interaction, { content: '❌ Session expired. Try /signal again.' });
+  const asset = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
+  await createSignal({ asset, ...stash }, stash.channelId || interaction.channelId);
+  return safeEditReply(interaction, { content: `✅ Trade signal posted for ${asset}.` });
+}
+
 
       if (interaction.customId.startsWith('modal:recap:')) {
         await ensureDeferred(interaction);
