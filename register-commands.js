@@ -39,7 +39,7 @@ const signalCmd = new SlashCommandBuilder()
   .addStringOption(opt => opt.setName('tp3_pct').setDescription('Planned % at TP3 (0–100)'))
   .addStringOption(opt => opt.setName('tp4_pct').setDescription('Planned % at TP4 (0–100)'))
   .addStringOption(opt => opt.setName('tp5_pct').setDescription('Planned % at TP5 (0–100)'))
-  .addStringOption(opt => opt.setName('reason').setDescription('Reason (optional)'))
+  /* reason moved to modal — option removed */
   .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)'))
   .addStringOption(opt =>
     opt.setName('risk')
