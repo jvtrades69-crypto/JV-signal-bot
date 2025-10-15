@@ -843,8 +843,8 @@ client.on('interactionCreate', async (interaction) => {
       const risk      = interaction.options.getString('risk') || '';
       const be_at     = interaction.options.getString('be_at') || '';
 
-// NEW: if no reason was typed in the slash form, open a modal to collect it
-if (!reason) {
+// Open modal only when the /signal reason option equals "modal"
+if (reason === 'modal') {
   const pid = nano();
   const m = new ModalBuilder().setCustomId(modal(pid,'reason')).setTitle('Enter Trade Reason');
   m.addComponents(new ActionRowBuilder().addComponents(
