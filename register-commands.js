@@ -121,9 +121,13 @@ async function main() {
     throw new Error('Missing token/clientId/guildId in config.js.');
   }
   const rest = new REST({ version: '10' }).setToken(token);
-  console.log('🔧 Registering application commands (guild)…');
-  await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
-  console.log('✅ Successfully registered guild commands.');
+  console.log('🧹 Clearing global commands…');
+await rest.put(Routes.applicationCommands(clientId), { body: [] });
+
+console.log('🔧 Registering application commands (guild)…');
+await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
+console.log('✅ Successfully registered guild commands.');
+
 }
 
 main().catch(err => {
