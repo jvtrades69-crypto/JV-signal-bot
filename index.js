@@ -34,8 +34,14 @@ process.on('unhandledRejection', (err) => console.error('unhandledRejection:', e
 process.on('uncaughtException',  (err) => console.error('uncaughtException:', err));
 
 // utils
-const isNum = (v) => v !== undefined && v !== null && v !== '' && !isNaN(Number(v));
-const toNumOrNull = (v) => (isNum(v) ? Number(v) : null);
+const _parseNum = (v) => {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(String(v).replace(/[,_\s]/g, '')); // allow 4,083.5 / 31 313 131
+  return Number.isFinite(n) ? n : null;
+};
+const isNum = (v) => _parseNum(v) !== null;
+const toNumOrNull = (v) => _parseNum(v);
+
 
 const DIR = { LONG: 'LONG', SHORT: 'SHORT' };
 const STATUS = {
