@@ -843,8 +843,8 @@ client.on('interactionCreate', async (interaction) => {
       const risk      = interaction.options.getString('risk') || '';
       const be_at     = interaction.options.getString('be_at') || '';
 
-// Open modal only when the /signal reason option equals "modal"
-if (reason === 'modal') {
+// ALWAYS open Reason modal
+{
   const pid = nano();
   const m = new ModalBuilder().setCustomId(modal(pid,'reason')).setTitle('Enter Trade Reason');
   m.addComponents(new ActionRowBuilder().addComponents(
