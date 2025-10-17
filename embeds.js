@@ -280,11 +280,18 @@ export function renderRecapEmbed(signal, { imageUrl, attachmentName, attachmentU
   if (signal.jumpUrl) {
     embed.fields.push({ name: 'Signal', value: `[View original signal](${signal.jumpUrl})`, inline: false });
   }
-  if (attachmentName && attachmentUrl) {
+// Prefer an explicit URL if provided…
+if (imageUrl) {
+  embed.image = { url: imageUrl };
+} else if (attachmentName) {
+  // …otherwise show the uploaded file
+  embed.image = { url: `attachment://${attachmentName}` };
+  // keep a link field too if we have the source URL
+  if (attachmentUrl) {
     embed.fields.push({ name: 'Chart', value: `[${attachmentName}](${attachmentUrl})`, inline: false });
-  } else if (imageUrl) {
-    embed.image = { url: imageUrl };
   }
+}
+
   return { embeds: [embed] };
 }
 
