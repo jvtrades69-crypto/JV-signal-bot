@@ -40,11 +40,11 @@ const signalCmd = new SlashCommandBuilder()
   .addStringOption(opt => opt.setName('tp4_pct').setDescription('Planned % at TP4 (0–100)'))
   .addStringOption(opt => opt.setName('tp5_pct').setDescription('Planned % at TP5 (0–100)'))
   .addStringOption(opt =>
-  opt.setName('reason')
-    .setDescription('Open reason modal (optional)')
-    .setRequired(false)
-    .addChoices({ name: 'Fill via modal', value: 'modal' })
-)
+    opt.setName('reason')
+      .setDescription('Open reason modal (optional)')
+      .setRequired(false)
+      .addChoices({ name: 'Fill via modal', value: 'modal' })
+  )
   .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)'))
   .addStringOption(opt =>
     opt.setName('risk')
@@ -81,6 +81,12 @@ const recapCmd = new SlashCommandBuilder()
       .setDescription('Signal ID to recap (autocomplete; ignored for trade picker)')
       .setRequired(false)
       .setAutocomplete(true)
+  )
+  // NEW: allow attaching a chart image directly on /recap
+  .addAttachmentOption(opt =>
+    opt.setName('chart')
+      .setDescription('Attach chart image for the recap (optional)')
+      .setRequired(false)
   );
 
 /* /thread-restore */
@@ -121,13 +127,13 @@ async function main() {
     throw new Error('Missing token/clientId/guildId in config.js.');
   }
   const rest = new REST({ version: '10' }).setToken(token);
+
   console.log('🧹 Clearing global commands…');
-await rest.put(Routes.applicationCommands(clientId), { body: [] });
+  await rest.put(Routes.applicationCommands(clientId), { body: [] });
 
-console.log('🔧 Registering application commands (guild)…');
-await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
-console.log('✅ Successfully registered guild commands.');
-
+  console.log('🔧 Registering application commands (guild)…');
+  await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
+  console.log('✅ Successfully registered guild commands.');
 }
 
 main().catch(err => {
