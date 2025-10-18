@@ -1146,47 +1146,99 @@ if (interaction.customId.startsWith('modal:asset:')) {
           signal = normalizeSignal(await getSignal(id));
         }
 
-        // Compose text
-        const recapText = renderRecapText(signal, { reasonLines, confLines, notesLines, showBasics:false }, []);
+// ----- Build recap text in the "nice" style (single message) -----
+const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
+const dirDot  = signal.direction === 'SHORT' ? '🔴' : '🟢';
 
-        // Attach image automatically if user posted one recently and no URL provided
-        const channel = await client.channels.fetch(interaction.channelId);
-        const recent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
-        let files = [];
-        let attachmentName = null;
-        let attachmentUrl = null;
+// result R
+const isFinal = ['CLOSED','STOPPED_BE','STOPPED_OUT'].includes(signal.status);
+const hasFinal = signal.finalR != null && Number.isFinite(Number(signal.finalR));
+const useR = (isFinal && hasFinal) ? Number(signal.finalR) : (()=>{
+  // same calc as in embeds renderers
+  const fills = Array.isArray(signal.fills) ? signal.fills : [];
+  if (!fills.length) return 0;
+  let sum = 0;
+  for (const f of fills) {
+    const pct = Number(f.pct || 0);
+    const r   = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, f.price);
+    if (Number.isNaN(pct) || r === null) continue;
+    sum += (pct * r) / 100;
+  }
+  return Number(sum.toFixed(2));
+})();
 
-        if (!chart && recent && recent.size) {
-          for (const m of recent.values()) {
-            if (m.author?.id !== interaction.user.id) continue;
-            const att = m.attachments?.first();
-            if (att && att.contentType && att.contentType.startsWith('image/')) {
-              try {
-                if (typeof fetch === 'function') {
-                  const res = await fetch(att.url);
-                  const buf = Buffer.from(await res.arrayBuffer());
-                  attachmentName = att.name || 'chart.png';
-                  files = [ new AttachmentBuilder(buf, { name: attachmentName }) ];
-                  attachmentUrl = att.url;
-                }
-              } catch {}
-              break;
-            }
-          }
+const resBadge = useR >= 0 ? '✅' : '❌';
+const title = `**$${String(signal.asset).toUpperCase()} | Trade Recap ${useR >= 0 ? `+${useR.toFixed(2)}R` : `${useR.toFixed(2)}R`} ${resBadge} (${dirWord}) ${dirDot}**`;
+
+// helper to bulletize lines
+const bullet = arr => (arr && arr.length) ? arr.map(s=>`• ${s}`).join('\n') : '• —';
+
+// Sections
+const reasonBlock = bullet(reasonLines);
+const confBlock   = bullet(confLines);
+
+// Notes: allow plain text lines or a single paragraph
+const notesBlock  = bullet(notesLines);
+
+// Max R (if set)
+const maxRLine = Number.isFinite(Number(signal.maxR))
+  ? `- Max R Reached: ${Number(signal.maxR).toFixed(2)}R`
+  : null;
+
+let recapText = [
+  title,
+  '',
+  '🧾 **Results**',
+  `- Final: ${useR >= 0 ? `+${useR.toFixed(2)}R` : `${useR.toFixed(2)}R`}`,
+  ...(maxRLine ? [maxRLine] : []),
+  '',
+  '🧠 **Trade Reason**',
+  reasonBlock,
+  '',
+  '📊 **Entry Confluences**',
+  confBlock,
+  '',
+  '📝 **Notes**',
+  notesBlock,
+  '',
+  signal.jumpUrl ? `[View original signal](${signal.jumpUrl})` : ''
+].join('\n').trim();
+
+// ----- Pick up an attached image if user posted one (no URL required) -----
+const channel = await client.channels.fetch(interaction.channelId);
+const recent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
+let files = [];
+
+if (!chart && recent && recent.size) {
+  for (const m of recent.values()) {
+    if (m.author?.id !== interaction.user.id) continue;
+    const att = m.attachments?.first();
+    if (att && att.contentType && att.contentType.startsWith('image/')) {
+      try {
+        if (typeof fetch === 'function') {
+          const res = await fetch(att.url);
+          const buf = Buffer.from(await res.arrayBuffer());
+          const name = att.name || 'chart.png';
+          files = [ new AttachmentBuilder(buf, { name }) ];
         }
+      } catch {}
+      break;
+    }
+  }
+}
 
-        const embedPack = renderRecapEmbed(signal, {
-          attachmentName,
-          attachmentUrl,
-          imageUrl: chart || undefined,
-        });
+// If user supplied a URL in the modal, keep that as a clickable line
+if (chart && /^https?:\/\//i.test(chart)) {
+  recapText += `\n\n[Chart](${chart})`;
+}
 
-        await channel.send({
-          content: recapText,
-          allowedMentions: { parse: [] },
-          embeds: embedPack.embeds,
-          files
-        });
+// Send one clean message + (optional) file
+await channel.send({
+  content: recapText,
+  allowedMentions: { parse: [] },
+  files
+});
+
 
         return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
       }
