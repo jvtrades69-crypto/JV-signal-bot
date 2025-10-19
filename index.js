@@ -1153,58 +1153,65 @@ const dirDot  = signal.direction === 'SHORT' ? '🔴' : '🟢';
 // result R
 const isFinal = ['CLOSED','STOPPED_BE','STOPPED_OUT'].includes(signal.status);
 const hasFinal = signal.finalR != null && Number.isFinite(Number(signal.finalR));
-const useR = (isFinal && hasFinal) ? Number(signal.finalR) : (()=>{
-  // same calc as in embeds renderers
+const useR = (isFinal && hasFinal) ? Number(signal.finalR) : (() => {
   const fills = Array.isArray(signal.fills) ? signal.fills : [];
   if (!fills.length) return 0;
   let sum = 0;
   for (const f of fills) {
     const pct = Number(f.pct || 0);
-    const r   = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, f.price);
-    if (Number.isNaN(pct) || r === null) continue;
-    sum += (pct * r) / 100;
+    const rr  = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, f.price);
+    if (Number.isNaN(pct) || rr === null) continue;
+    sum += (pct * rr) / 100;
   }
   return Number(sum.toFixed(2));
 })();
 
+// peak/maximum R label
+const peakR = Number.isFinite(Number(signal.maxR)) ? Number(signal.maxR).toFixed(2) : null;
+
+// Highest TP hit → Take Profit section
+const order = ['TP1','TP2','TP3','TP4','TP5'];
+const highestHit = [...order].reverse().find(k => signal.tpHits && signal.tpHits[k]);
+let takeProfitText = '• —';
+if (highestHit) takeProfitText = `• ${highestHit.replace('TP','TP ')} hit`;
+else if (signal.status === STATUS.STOPPED_OUT) takeProfitText = '• None (Stopped Out ❌ before TP1)';
+
+// Merge BE plan line into Reason bullets if present
+const reasonPlusPlan = [...reasonLines];
+if (signal.beAt) reasonPlusPlan.push(`Plan: move stops to breakeven at ${fmt(signal.beAt)}`);
+
+// helpers
+const bullet = arr => (arr && arr.length) ? arr.map(s => `• ${s}`).join('\n') : '• —';
+const reasonBlock = bullet(reasonPlusPlan);
+const confBlock   = bullet(confLines);
+const notesBlock  = bullet(notesLines);
+
+// Title (✅/❌ + direction dot)
 const resBadge = useR >= 0 ? '✅' : '❌';
 const title = `**$${String(signal.asset).toUpperCase()} | Trade Recap ${useR >= 0 ? `+${useR.toFixed(2)}R` : `${useR.toFixed(2)}R`} ${resBadge} (${dirWord}) ${dirDot}**`;
 
-// helper to bulletize lines
-const bullet = arr => (arr && arr.length) ? arr.map(s=>`• ${s}`).join('\n') : '• —';
-
-// Sections
-const reasonBlock = bullet(reasonLines);
-const confBlock   = bullet(confLines);
-
-// Notes: allow plain text lines or a single paragraph
-const notesBlock  = bullet(notesLines);
-
-// Max R (if set)
-const maxRLine = Number.isFinite(Number(signal.maxR))
-  ? `- Max R Reached: ${Number(signal.maxR).toFixed(2)}R`
-  : null;
-
+// Build message in requested order: Reason → Entry Confluences → Take Profit → Results → Post-Mortem
 let recapText = [
   title,
   '',
-  '🧾 **Results**',
-  `- Final: ${useR >= 0 ? `+${useR.toFixed(2)}R` : `${useR.toFixed(2)}R`}`,
-  ...(maxRLine ? [maxRLine] : []),
-  '',
-  '🧠 **Trade Reason**',
+  '📌 **Trade Reason**',
   reasonBlock,
   '',
   '📊 **Entry Confluences**',
   confBlock,
   '',
-  '📝 **Notes**',
+  '🎯 **Take Profit**',
+  takeProfitText,
+  '',
+  '⚖️ **Results**',
+  `- Final: ${useR >= 0 ? `+${useR.toFixed(2)}R` : `${useR.toFixed(2)}R`}`,
+  ...(peakR ? [`- Peak R: ${peakR}R`] : []),
+  '',
+  '🧠 **Post-Mortem (What I learned)**',
   notesBlock,
   '',
-  signal.jumpUrl ? `[View original signal](${signal.jumpUrl})` : ''
+  signal.jumpUrl ? `[View Original Trade](${signal.jumpUrl})` : ''
 ].join('\n').trim();
-
-// ----- Pick up an attached image if user posted one (no URL required) -----
 const channel = await client.channels.fetch(interaction.channelId);
 const recent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
 let files = [];
