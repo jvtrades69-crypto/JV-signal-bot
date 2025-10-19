@@ -81,26 +81,25 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
   lines.push(`- Entry: \`${fmt(signal.entry)}\``);
   lines.push(`- SL: \`${fmt(signal.sl)}\``);
 
-// TP lines with % out and R
-const tpPerc = computeTpPercents(signal);
-for (const key of ['tp1','tp2','tp3','tp4','tp5']) {
-  const v = signal[key];
-  if (v == null || v === '') continue;
-  const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, v);
-  const rrTxt = (r != null) ? `${r.toFixed(2)}R` : null;
-  const label = key.toUpperCase();
-  const pct = tpPerc[label];
+  // TP lines with % out and R
+  const tpPerc = computeTpPercents(signal);
+  for (const key of ['tp1','tp2','tp3','tp4','tp5']) {
+    const v = signal[key];
+    if (v == null || v === '') continue;
+    const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, v);
+    const rrTxt = (r != null) ? `${r.toFixed(2)}R` : null;
+    const label = key.toUpperCase();
+    const pct = tpPerc[label];
 
-  if (pct > 0 && rrTxt)      lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
-  else if (pct > 0)          lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out)`);
-  else if (rrTxt)            lines.push(`- ${label}: \`${fmt(v)}\` (${rrTxt})`);
-  else                       lines.push(`- ${label}: \`${fmt(v)}\``);
-}
-// BE plan line must appear after TP lines
-if (signal.beAt) {
-  lines.push(`- Stops to breakeven at \`${fmt(signal.beAt)}\``);
-}
-
+    if (pct > 0 && rrTxt)      lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
+    else if (pct > 0)          lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out)`);
+    else if (rrTxt)            lines.push(`- ${label}: \`${fmt(v)}\` (${rrTxt})`);
+    else                       lines.push(`- ${label}: \`${fmt(v)}\``);
+  }
+  // BE plan line must appear after TP lines
+  if (signal.beAt) {
+    lines.push(`- Stops to breakeven at \`${fmt(signal.beAt)}\``);
+  }
 
   if (signal.reason && String(signal.reason).trim()) {
     lines.push('', '📝 **Reasoning**', String(signal.reason).trim());
@@ -131,21 +130,21 @@ if (signal.beAt) {
     const afterTP = highestTP ? ` after ${highestTP}` : '';
 
     if (signal.status === 'CLOSED') {
-  if (signal.stoppedInProfit) {
-    const atPrice = isFinite(Number(signal.slProfitAfter)) ? ` at \`${fmt(signal.slProfitAfter)}\`` : '';
-    lines.push(`Inactive 🟥 | Stopped in profits${afterTP}${atPrice}`);
-  } else {
-    // show final close price if available
-    const fills = Array.isArray(signal.fills) ? signal.fills : [];
-    const finalFill = [...fills].reverse().find(f => {
-      const src = String(f.source || '').toUpperCase();
-      return src === 'FINAL_CLOSE' || src === 'FINAL_CLOSE_PROFIT';
-    });
-    const priceTail = finalFill && isFinite(Number(finalFill.price)) ? ` at \`${fmt(finalFill.price)}\`` : '';
-    lines.push(`Inactive 🟥 | Fully closed${afterTP}${priceTail}`);
-  }
-}
- else if (signal.status === 'STOPPED_BE') {
+      if (signal.stoppedInProfit) {
+        const atPrice = isFinite(Number(signal.slProfitAfter)) ? ` at \`${fmt(signal.slProfitAfter)}\`` : '';
+        lines.push(`Inactive 🟥 | Stopped in profits${afterTP}${atPrice}`);
+      } else {
+        // show final close price if available
+        const fills = Array.isArray(signal.fills) ? signal.fills : [];
+        const finalFill = [...fills].reverse().find(f => {
+          const src = String(f.source || '').toUpperCase();
+          return src === 'FINAL_CLOSE' || src === 'FINAL_CLOSE_PROFIT';
+        });
+        const priceTail = finalFill && isFinite(Number(finalFill.price)) ? ` at \`${fmt(finalFill.price)}\`` : '';
+        lines.push(`Inactive 🟥 | Fully closed${afterTP}${priceTail}`);
+      }
+    }
+    else if (signal.status === 'STOPPED_BE') {
       // final BE without price
       lines.push(`Inactive 🟥 | Stopped breakeven${afterTP}`);
     } else if (signal.status === 'STOPPED_OUT') {
@@ -219,30 +218,69 @@ export function renderSummaryText(activeSignals) {
 export function renderRecapText(signal, extras = {}, rrChips = []) {
   const { reasonLines = [], confLines = [], notesLines = [], showBasics = false } = extras || {};
   const lines = [];
-  lines.push(`**${String(signal.asset).toUpperCase()} — Trade Recap (${dirWord(signal)})**`, '');
 
+  // ---- Title with outcome emoji and direction dot
   const isFinal = ['CLOSED', 'STOPPED_BE', 'STOPPED_OUT'].includes(signal.status);
   const hasFinal = signal.finalR != null && isFinite(Number(signal.finalR));
   const useR = (isFinal && hasFinal) ? Number(signal.finalR) : computeRealized(signal);
+  const outcome = useR >= 0 ? '✅' : '❌';
+  const title = `$${String(signal.asset).toUpperCase()} | Trade Recap ${useR >= 0 ? '+' : ''}${useR.toFixed(2)}R ${outcome} (${dirWord(signal)}) ${dirDot(signal)}`;
+  lines.push(`**${title}**`, '');
 
-  lines.push('Result', `${useR >= 0 ? '+' : ''}${useR.toFixed(2)}R`, '');
+  // ---- Trade Reason
+  if (reasonLines.length) {
+    lines.push('🧠 **Trade Reason**', ...reasonLines.map(s => `• ${s}`), '');
+  }
 
+  // ---- Entry Confluences
+  if (confLines.length) {
+    lines.push('📊 **Entry Confluences**', ...confLines.map(s => `• ${s}`), '');
+  }
+
+  // ---- Take Profit (from plan/fills with R)
+  const tpPerc = computeTpPercents(signal);
+  const tpLines = [];
+  for (const key of ['tp1','tp2','tp3','tp4','tp5']) {
+    const v = signal[key];
+    if (v == null || v === '') continue;
+    const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, v);
+    const rrTxt = (r != null) ? `${r.toFixed(2)}R` : null;
+    const label = key.toUpperCase();
+    const pct = tpPerc[label];
+    if (pct > 0 && rrTxt)      tpLines.push(`• ${label} \`${fmt(v)}\` (${pct}% | ${rrTxt})`);
+    else if (pct > 0)          tpLines.push(`• ${label} \`${fmt(v)}\` (${pct}%)`);
+    else if (rrTxt)            tpLines.push(`• ${label} \`${fmt(v)}\` (${rrTxt})`);
+    else                       tpLines.push(`• ${label} \`${fmt(v)}\``);
+  }
+  if (tpLines.length) {
+    lines.push('🎯 **Take Profit**', ...tpLines, '');
+  }
+
+  // ---- Results (Final + Max R)
+  const resultsBlock = [];
+  resultsBlock.push(`• Final: ${useR >= 0 ? '+' : ''}${useR.toFixed(2)}R`);
+  if (signal.maxR != null && isFinite(Number(signal.maxR))) {
+    resultsBlock.push(`• Max R Reached: ${Number(signal.maxR).toFixed(2)}R`);
+  }
+  lines.push('⚖ **Results**', ...resultsBlock, '');
+
+  // ---- Notes
+  if (notesLines.length) {
+    lines.push('📝 **Notes**', ...notesLines.map(s => `• ${s}`), '');
+  }
+
+  // ---- Optional basics (if requested)
   if (showBasics) {
     lines.push('Basics');
     lines.push(`- Entry: \`${fmt(signal.entry)}\``);
-    lines.push(`- SL: \`${fmt(signal.sl)}\``);
-    lines.push('');
+    lines.push(`- SL: \`${fmt(signal.sl)}\``, '');
   }
 
-  if (reasonLines.length) {
-    lines.push('Reason', ...reasonLines.map(s => `- ${s}`), '');
+  // ---- Link to original signal
+  if (signal.jumpUrl) {
+    lines.push(`[View original signal](${signal.jumpUrl})`);
   }
-  if (confLines.length) {
-    lines.push('Confluences', ...confLines.map(s => `- ${s}`), '');
-  }
-  if (notesLines.length) {
-    lines.push('Notes', ...notesLines.map(s => `- ${s}`), '');
-  }
+
   return lines.join('\n').trimEnd();
 }
 
@@ -280,17 +318,17 @@ export function renderRecapEmbed(signal, { imageUrl, attachmentName, attachmentU
   if (signal.jumpUrl) {
     embed.fields.push({ name: 'Signal', value: `[View original signal](${signal.jumpUrl})`, inline: false });
   }
-// Prefer an explicit URL if provided…
-if (imageUrl) {
-  embed.image = { url: imageUrl };
-} else if (attachmentName) {
-  // …otherwise show the uploaded file
-  embed.image = { url: `attachment://${attachmentName}` };
-  // keep a link field too if we have the source URL
-  if (attachmentUrl) {
-    embed.fields.push({ name: 'Chart', value: `[${attachmentName}](${attachmentUrl})`, inline: false });
+  // Prefer an explicit URL if provided…
+  if (imageUrl) {
+    embed.image = { url: imageUrl };
+  } else if (attachmentName) {
+    // …otherwise show the uploaded file
+    embed.image = { url: `attachment://${attachmentName}` };
+    // keep a link field too if we have the source URL
+    if (attachmentUrl) {
+      embed.fields.push({ name: 'Chart', value: `[${attachmentName}](${attachmentUrl})`, inline: false });
+    }
   }
-}
 
   return { embeds: [embed] };
 }
