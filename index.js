@@ -1181,7 +1181,8 @@ const reasonPlusPlan = [...reasonLines];
 if (signal.beAt) reasonPlusPlan.push(`Plan: move stops to breakeven at ${fmt(signal.beAt)}`);
 
 // helpers
-const bullet = arr => (arr && arr.length) ? arr.map(s => `• ${s}`).join('\n') : '• —';
+// no auto bullets — you’ll type them if you want them
+const bullet = arr => (arr && arr.length) ? arr.join('\n') : '';
 const reasonBlock = bullet(reasonPlusPlan);
 const confBlock   = bullet(confLines);
 const notesBlock  = bullet(notesLines);
