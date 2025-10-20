@@ -75,19 +75,13 @@ const recapCmd = new SlashCommandBuilder()
         { name: 'Weekly',      value: 'weekly'  },
         { name: 'Trade Recap', value: 'trade'   },
       )
-  );
-  .addStringOption(opt =>
-    opt.setName('id')
-      .setDescription('Signal ID to recap (autocomplete; ignored for trade picker)')
-      .setRequired(false)
-      .setAutocomplete(true)
   )
-  // NEW: allow attaching a chart image directly on /recap
   .addAttachmentOption(opt =>
     opt.setName('chart')
       .setDescription('Attach chart image for the recap (optional)')
       .setRequired(false)
   );
+
 
 /* /thread-restore */
 const threadRestoreCmd = new SlashCommandBuilder()
