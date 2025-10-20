@@ -977,7 +977,8 @@ client.on('interactionCreate', async (interaction) => {
         const items = all.slice(0,5);
         if (!items.length) return interaction.reply({ content:'❌ No trades found to recap.', flags: MessageFlags.Ephemeral });
         const menu = new StringSelectMenuBuilder().setCustomId('recap:pick').setPlaceholder('Select a trade to recap')
-          .addOptions(items.map(s => ({ label:`$${s.asset} ${s.direction==='SHORT'?'Short':'Long'} • ${s.status}`, description:`id:${s.id}`, value:s.id })));
+       .addOptions(items.map(s => ({ label:`$${s.asset} ${s.direction==='SHORT'?'Short':'Long'} • ${s.status}`, value:s.id })));
+
         const row = new ActionRowBuilder().addComponents(menu);
         return interaction.reply({ content:'Pick a trade to recap:', components:[row], flags: MessageFlags.Ephemeral });
       }
@@ -1241,7 +1242,7 @@ if (chart && /^https?:\/\//i.test(chart)) {
 }
 
 // Tag recap role (if configured) + send one clean message (+ optional file)
-const mentionId = config.mentionRoleId;
+const mentionId = config.recapRoleId;
 const mentionText = mentionId ? `\n\n<@&${mentionId}>` : '';
 const allowedMentions = mentionId ? { roles: [mentionId] } : { parse: [] };
 

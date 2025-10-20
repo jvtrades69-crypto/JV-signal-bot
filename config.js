@@ -26,6 +26,8 @@ const cfg = {
   brandName: process.env.BRAND_NAME || 'JV Trades',
   brandAvatarUrl: process.env.BRAND_AVATAR_URL || null,
   mentionRoleId: process.env.TRADER_ROLE_ID || process.env.MENTION_ROLE_ID || null,
+recapRoleId: process.env.TRADE_RECAP_ROLE_ID || null,
+
 };
 
 export default cfg;
