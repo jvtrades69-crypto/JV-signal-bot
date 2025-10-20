@@ -1240,10 +1240,14 @@ if (chart && /^https?:\/\//i.test(chart)) {
   recapText += `\n\n[Chart](${chart})`;
 }
 
-// Send one clean message + (optional) file
+// Tag recap role (if configured) + send one clean message (+ optional file)
+const mentionId = config.mentionRoleId;
+const mentionText = mentionId ? `\n\n<@&${mentionId}>` : '';
+const allowedMentions = mentionId ? { roles: [mentionId] } : { parse: [] };
+
 await channel.send({
-  content: recapText,
-  allowedMentions: { parse: [] },
+  content: recapText + mentionText,
+  allowedMentions,
   files
 });
 
