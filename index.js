@@ -1231,7 +1231,6 @@ if (chart && /^https?:\/\//i.test(chart)) {
 
 // Tag recap role (if configured) + send one clean message (+ optional file)
 const mentionId = config.recapRoleId;
-const mentionId = config.recapRoleId;
 const mentionText = mentionId ? `\n\n<@&${String(mentionId)}>` : '';
 const allowedMentions = mentionId ? { roles: [String(mentionId)] } : { parse: [] };
 
