@@ -392,18 +392,6 @@ async function updateSummary() {
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isAutocomplete()) return;
   try {
-    // recap id autocomplete
-    if (interaction.commandName === 'recap') {
-      const focused = interaction.options.getFocused(true);
-      if (focused.name !== 'id') return;
-
-      const all = (await getSignals()).map(normalizeSignal);
-      all.sort((a, b) => {
-        if (a.messageId && b.messageId) {
-          const A = BigInt(a.messageId), B = BigInt(b.messageId);
-          if (A === B) return 0;
-          return (B > A) ? 1 : -1;
-        }
         return Number(b.createdAt || 0) - Number(a.createdAt || 0);
       });
 
