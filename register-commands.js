@@ -75,7 +75,7 @@ const recapCmd = new SlashCommandBuilder()
         { name: 'Weekly',      value: 'weekly'  },
         { name: 'Trade Recap', value: 'trade'   },
       )
-  )
+  );
   .addStringOption(opt =>
     opt.setName('id')
       .setDescription('Signal ID to recap (autocomplete; ignored for trade picker)')
