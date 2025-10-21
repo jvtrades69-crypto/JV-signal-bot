@@ -1171,9 +1171,10 @@ const peakR = Number.isFinite(Number(signal.maxR)) ? Number(signal.maxR).toFixed
 // Highest TP hit → Take Profit section
 const order = ['TP1','TP2','TP3','TP4','TP5'];
 const highestHit = [...order].reverse().find(k => signal.tpHits && signal.tpHits[k]);
-let takeProfitText = '• —';
-if (highestHit) takeProfitText = `• ${highestHit.replace('TP','TP ')} hit`;
-else if (signal.status === STATUS.STOPPED_OUT) takeProfitText = '• None (Stopped Out ❌ before TP1)';
+let takeProfitText = '- —';
+if (highestHit) takeProfitText = `- ${highestHit.replace('TP','TP ')} hit`;
+else if (signal.status === STATUS.STOPPED_OUT) takeProfitText = '- None (Stopped Out ❌ before TP1)';
+
 
 // Merge BE plan line into Reason bullets if present
 const reasonPlusPlan = [...reasonLines];
@@ -1241,17 +1242,15 @@ if (chart && /^https?:\/\//i.test(chart)) {
 
 // Tag recap role (if configured) + send one clean message (+ optional file)
 const mentionId = config.recapRoleId;
-const mentionText = mentionId ? `\n\n<@&${mentionId}>` : '';
+const mentionText = mentionId ? `<@&${mentionId}>` : '';
 const allowedMentions = mentionId ? { roles: [mentionId] } : { parse: [] };
 
-
-
-
 await channel.send({
-  content: recapText + mentionText,
+  content: (mentionText ? `${mentionText}\n\n` : '') + recapText,
   allowedMentions,
   files
 });
+
 
 
         return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
