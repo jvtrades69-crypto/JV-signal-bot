@@ -1208,7 +1208,7 @@ let recapText = [
   `- Final: ${useR >= 0 ? `+${useR.toFixed(2)}R` : `${useR.toFixed(2)}R`}`,
   ...(peakR ? [`- Peak R: ${peakR}R`] : []),
   '',
-  '🧠 **Post-Mortem (What I learned)**',
+  '📝 **Notes (lesson to take away)**',
   notesBlock,
   '',
   signal.jumpUrl ? `[View Original Trade](${signal.jumpUrl})` : ''
@@ -1242,14 +1242,15 @@ if (chart && /^https?:\/\//i.test(chart)) {
 
 // Tag recap role (if configured) + send one clean message (+ optional file)
 const mentionId = config.recapRoleId;
-const mentionText = mentionId ? `<@&${mentionId}>` : '';
+const mentionText = mentionId ? `\n\n<@&${mentionId}>` : '';
 const allowedMentions = mentionId ? { roles: [mentionId] } : { parse: [] };
 
 await channel.send({
-  content: (mentionText ? `${mentionText}\n\n` : '') + recapText,
+  content: recapText + mentionText,
   allowedMentions,
   files
 });
+
 
 
 
