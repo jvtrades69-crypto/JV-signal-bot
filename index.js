@@ -392,31 +392,42 @@ async function updateSummary() {
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isAutocomplete()) return;
   try {
+    // /recap id autocomplete (labels without raw IDs)
+    if (interaction.commandName === 'recap') {
+      const focused = interaction.options.getFocused(true);
+      if (focused.name !== 'id') return;
+
+      const all = (await getSignals()).map(normalizeSignal);
+      all.sort((a, b) => {
+        if (a.messageId && b.messageId) {
+          const A = BigInt(a.messageId), B = BigInt(b.messageId);
+          return A === B ? 0 : (B > A ? 1 : -1);
+        }
         return Number(b.createdAt || 0) - Number(a.createdAt || 0);
       });
 
       const q = String(focused.value || '').toLowerCase();
       const opts = [];
       for (const s of all.slice(0, 50)) {
-        const name = `${computeThreadName(s)} • id:${s.id}`;
-        if (!q || name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q)) {
+        const name = computeThreadName(s); // keep it clean, no “• id:…”
+        if (!q || name.toLowerCase().includes(q)) {
           opts.push({ name: name.slice(0, 100), value: s.id });
         }
         if (opts.length >= 25) break;
       }
-      return await interaction.respond(opts);
+      return interaction.respond(opts);
     }
 
-    // thread-restore trade autocomplete — simple, fast list of recent trades (no network checks)
+    // /thread-restore trade autocomplete (labels without IDs)
     if (interaction.commandName === 'thread-restore') {
       const focused = interaction.options.getFocused?.(true);
       const q = String(
-        (focused && focused.name === 'trade' ? focused.value : interaction.options.getString?.('trade')) || ''
+        (focused && focused.name === 'trade'
+          ? focused.value
+          : interaction.options.getString?.('trade')) || ''
       ).toLowerCase();
 
       const all = (await getSignals()).map(normalizeSignal);
-
-      // newest-first by messageId if present, else createdAt
       all.sort((a, b) => {
         if (a.messageId && b.messageId) {
           const A = BigInt(a.messageId), B = BigInt(b.messageId);
@@ -427,17 +438,16 @@ client.on('interactionCreate', async (interaction) => {
 
       const choices = [];
       for (const s of all) {
-        const name = `${computeThreadName(s)} • id:${s.id}`.slice(0, 100);
-        if (!q || name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q)) {
+        const name = computeThreadName(s).slice(0, 100);
+        if (!q || name.toLowerCase().includes(q)) {
           choices.push({ name, value: s.id });
         }
         if (choices.length >= 25) break;
       }
-
-      return await interaction.respond(choices);
+      return interaction.respond(choices);
     }
 
-    // signal-restore id autocomplete (deleted signals)
+    // /signal-restore id autocomplete (deleted signals; labels without IDs)
     if (interaction.commandName === 'signal-restore') {
       const focused = interaction.options.getFocused(true);
       if (focused.name !== 'id') return;
@@ -449,13 +459,13 @@ client.on('interactionCreate', async (interaction) => {
         const list = (await store.getDeletedSignals?.()) || [];
         const items = list.map(normalizeSignal).slice(0, 50);
         choices = items.map(s => ({
-          name: `${computeThreadName(s)} • id:${s.id}`.slice(0, 100),
+          name: computeThreadName(s).slice(0, 100),
           value: s.id,
         }));
       } catch {
         choices = [];
       }
-      return await interaction.respond(q ? choices.filter(c => c.name.toLowerCase().includes(q)) : choices);
+      return interaction.respond(q ? choices.filter(c => c.name.toLowerCase().includes(q)) : choices);
     }
   } catch (e) {
     console.error('autocomplete error:', e);
