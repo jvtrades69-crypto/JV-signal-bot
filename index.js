@@ -1208,7 +1208,7 @@ let recapText = [
   `- Final: ${useR >= 0 ? `+${useR.toFixed(2)}R` : `${useR.toFixed(2)}R`}`,
   ...(peakR ? [`- Peak R: ${peakR}R`] : []),
   '',
-  '📝 **Notes (lesson to take away)**',
+  '📝 **Notes (key takeaways)**',
   notesBlock,
   '',
   signal.jumpUrl ? `[View Original Trade](${signal.jumpUrl})` : ''
