@@ -28,6 +28,8 @@ const nano = customAlphabet('1234567890abcdef', 10);
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
 });
+const pendingSignals = new Map();
+
 
 // errors
 process.on('unhandledRejection', (err) => console.error('unhandledRejection:', err));
@@ -68,7 +70,15 @@ function computeRealizedR(signal) {
     if (isNaN(pct) || r === null) continue;
     sum += (pct * r) / 100;
   }
-  return Number(sum.toFixed(2));
+
+  // apply risk badge multiplier (half -> 0.5, 1/4 -> 0.25, 3/4 -> 0.75)
+  const lbl = String(signal.riskLabel || '').toLowerCase();
+  let factor = 1;
+  if (lbl === 'half' || lbl === '1/2') factor = 0.5;
+  else if (lbl === '1/4' || lbl === 'quarter') factor = 0.25;
+  else if (lbl === '3/4' || lbl === 'three-quarter' || lbl === 'threequarter') factor = 0.75;
+
+  return Number((sum * factor).toFixed(2));
 }
 
 function normalizeSignal(raw) {
@@ -204,7 +214,7 @@ async function buildSnapshotText(signal) {
   lines.push(`- Entry: ${fmt(signal.entry)}`);
   lines.push(`- SL: ${fmt(signal.sl)}`);
 
-  const tpKeys = ['tp1','tp2','tp3','tp4','tp5'];
+    const tpKeys = ['tp1','tp2','tp3','tp4','tp5'];
   for (const key of tpKeys) {
     const v = signal[key];
     if (v == null || v === '') continue;
@@ -219,11 +229,13 @@ async function buildSnapshotText(signal) {
     }
     if (pct <= 0 && signal.plan && isNum(signal.plan[src])) pct = Number(signal.plan[src]||0);
 
-    if (pct > 0 && rrTxt)      lines.push(`- ${src}: ${fmt(v)} (${pct}% out | ${rrTxt})`);
-    else if (pct > 0)          lines.push(`- ${src}: ${fmt(v)} (${pct}% out)`);
-    else if (rrTxt)            lines.push(`- ${src}: ${fmt(v)} (${rrTxt})`);
-    else                       lines.push(`- ${src}: ${fmt(v)}`);
+    const hit = signal.tpHits?.[src] ? ' ✅' : '';
+    if (pct > 0 && rrTxt)      lines.push(`- ${src}: ${fmt(v)} (${pct}% out | ${rrTxt})${hit}`);
+    else if (pct > 0)          lines.push(`- ${src}: ${fmt(v)} (${pct}% out)${hit}`);
+    else if (rrTxt)            lines.push(`- ${src}: ${fmt(v)} (${rrTxt})${hit}`);
+    else                       lines.push(`- ${src}: ${fmt(v)}${hit}`);
   }
+
 
   if (signal.beAt) lines.push(`- Stops to breakeven at ${fmt(signal.beAt)}`);
 
@@ -847,37 +859,8 @@ client.on('interactionCreate', async (interaction) => {
       const risk      = interaction.options.getString('risk') || '';
       const be_at     = interaction.options.getString('be_at') || '';
 
-// ALWAYS open Reason modal
-{
-  const pid = nano();
-  const m = new ModalBuilder().setCustomId(modal(pid,'reason')).setTitle('Enter Trade Reason');
-  m.addComponents(new ActionRowBuilder().addComponents(
-    new TextInputBuilder()
-      .setCustomId('reason_value')
-      .setLabel('Reason (bullets, one per line)')
-      .setStyle(TextInputStyle.Paragraph)
-      .setRequired(false)
-  ));
-  pendingSignals.set(pid, {
-    asset: assetSel,
-    direction, entry, sl, tp1, tp2, tp3, tp4, tp5,
-    extraRole,
-    reason: '',
-    plan: {
-      TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
-      TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
-      TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
-      TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
-      TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
-    },
-    channelId: interaction.channelId,
-    chartUrl: chartAtt?.url || null,
-    chartAttached: !!chartAtt?.url,
-    riskLabel: risk,
-    beAt: be_at || null,
-  });
-  return interaction.showModal(m);
-}
+// Use reason provided in the slash command (if any). No modal required.
+const reasonValue = (reason || '').trim();
 
 
       if (assetSel === 'OTHER') {
@@ -886,7 +869,8 @@ client.on('interactionCreate', async (interaction) => {
         const input = new TextInputBuilder().setCustomId('asset_value').setLabel('Asset (e.g., PEPE, XRP)').setStyle(TextInputStyle.Short).setRequired(true);
         m.addComponents(new ActionRowBuilder().addComponents(input));
         pendingSignals.set(pid, {
-          direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason, extraRole,
+          direction, entry, sl, tp1, tp2, tp3, tp4, tp5, reason: reasonValue, extraRole,
+
           plan: {
             TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
             TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
@@ -906,7 +890,8 @@ client.on('interactionCreate', async (interaction) => {
       await createSignal({
         asset: assetSel,
         direction, entry, sl, tp1, tp2, tp3, tp4, tp5,
-        reason, extraRole,
+        reason: reasonValue, extraRole,
+
         plan: {
           TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
           TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
@@ -1164,6 +1149,12 @@ const useR = (isFinal && hasFinal) ? Number(signal.finalR) : (() => {
   }
   return Number(sum.toFixed(2));
 })();
+const rLabel = String(signal.riskLabel || '').toLowerCase();
+const rFactor = rLabel === 'half' || rLabel === '1/2' ? 0.5
+  : rLabel === '1/4' || rLabel === 'quarter' ? 0.25
+  : rLabel === '3/4' || rLabel === 'three-quarter' || rLabel === 'threequarter' ? 0.75
+  : 1;
+const useRFinal = Number((useR * rFactor).toFixed(2));
 
 // peak/maximum R label
 const peakR = Number.isFinite(Number(signal.maxR)) ? Number(signal.maxR).toFixed(2) : null;
@@ -1188,8 +1179,8 @@ const confBlock   = bullet(confLines);
 const notesBlock  = bullet(notesLines);
 
 // Title (✅/❌ + direction dot)
-const resBadge = useR >= 0 ? '✅' : '❌';
-const title = `**$${String(signal.asset).toUpperCase()} | Trade Recap ${useR >= 0 ? `+${useR.toFixed(2)}R` : `${useR.toFixed(2)}R`} ${resBadge} (${dirWord}) ${dirDot}**`;
+const resBadge = useRFinal >= 0 ? '✅' : '❌';
+const title = `**$${String(signal.asset).toUpperCase()} | Trade Recap ${useRFinal >= 0 ? `+${useRFinal.toFixed(2)}R` : `${useRFinal.toFixed(2)}R`} ${resBadge} (${dirWord}) ${dirDot}**`;
 
 // Build message in requested order: Reason → Entry Confluences → Take Profit → Results → Post-Mortem
 let recapText = [
@@ -1205,7 +1196,8 @@ let recapText = [
   takeProfitText,
   '',
   '⚖️ **Results**',
-  `- Final: ${useR >= 0 ? `+${useR.toFixed(2)}R` : `${useR.toFixed(2)}R`}`,
+ `- Final: ${useRFinal >= 0 ? `+${useRFinal.toFixed(2)}R` : `${useRFinal.toFixed(2)}R`}`,
+
   ...(peakR ? [`- Peak R: ${peakR}R`] : []),
   '',
   '📝 **Notes (key takeaways)**',
@@ -1906,8 +1898,6 @@ await channel.send({
   }
 });
 
-// create/save signal
-const pendingSignals = new Map();
 
 async function createSignal(payload, channelId) {
   const signal = normalizeSignal({
