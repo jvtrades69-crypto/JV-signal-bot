@@ -39,7 +39,6 @@ const signalCmd = new SlashCommandBuilder()
   .addStringOption(opt => opt.setName('tp3_pct').setDescription('Planned % at TP3 (0–100)'))
   .addStringOption(opt => opt.setName('tp4_pct').setDescription('Planned % at TP4 (0–100)'))
   .addStringOption(opt => opt.setName('tp5_pct').setDescription('Planned % at TP5 (0–100)'))
- 
   .addStringOption(opt => opt.setName('extra_role').setDescription('Extra role(s) to tag (IDs or @mentions)'))
   .addStringOption(opt =>
     opt.setName('risk')
@@ -54,6 +53,12 @@ const signalCmd = new SlashCommandBuilder()
   .addStringOption(opt =>
     opt.setName('be_at')
       .setDescription('Price to move SL → BE (optional)')
+      .setRequired(false)
+  )
+  // NEW: optional toggle to pop a modal for reason after submit
+  .addBooleanOption(opt =>
+    opt.setName('ask_reason')
+      .setDescription('Prompt me to enter a reason after submitting')
       .setRequired(false)
   );
 
