@@ -31,7 +31,15 @@ function computeRealized(signal) {
     if (Number.isNaN(pct) || r === null) continue;
     sum += (pct * r) / 100;
   }
-  return Number(sum.toFixed(2));
+
+  // apply risk badge multiplier (half -> 0.5, 1/4 -> 0.25, 3/4 -> 0.75)
+  const lbl = String(signal.riskLabel || '').toLowerCase();
+  let factor = 1;
+  if (lbl === 'half' || lbl === '1/2') factor = 0.5;
+  else if (lbl === '1/4' || lbl === 'quarter') factor = 0.25;
+  else if (lbl === '3/4' || lbl === 'three-quarter' || lbl === 'threequarter') factor = 0.75;
+
+  return Number((sum * factor).toFixed(2));
 }
 function dirWord(signal) { return signal.direction === 'SHORT' ? 'Short' : 'Long'; }
 function dirDot(signal) { return signal.direction === 'SHORT' ? '🔴' : '🟢'; }
@@ -81,7 +89,9 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
   lines.push(`- Entry: \`${fmt(signal.entry)}\``);
   lines.push(`- SL: \`${fmt(signal.sl)}\``);
 
-  // TP lines with % out and R
+ 
+ 
+   // TP lines with % out, R and hit marker
   const tpPerc = computeTpPercents(signal);
   for (const key of ['tp1','tp2','tp3','tp4','tp5']) {
     const v = signal[key];
@@ -90,12 +100,14 @@ export function renderSignalText(signal /*, rrChips, isSlBE */) {
     const rrTxt = (r != null) ? `${r.toFixed(2)}R` : null;
     const label = key.toUpperCase();
     const pct = tpPerc[label];
+    const hitMark = signal.tpHits?.[label] ? ' ✅' : '';
 
-    if (pct > 0 && rrTxt)      lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})`);
-    else if (pct > 0)          lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out)`);
-    else if (rrTxt)            lines.push(`- ${label}: \`${fmt(v)}\` (${rrTxt})`);
-    else                       lines.push(`- ${label}: \`${fmt(v)}\``);
+    if (pct > 0 && rrTxt)      lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out | ${rrTxt})${hitMark}`);
+    else if (pct > 0)          lines.push(`- ${label}: \`${fmt(v)}\` (${pct}% out)${hitMark}`);
+    else if (rrTxt)            lines.push(`- ${label}: \`${fmt(v)}\` (${rrTxt})${hitMark}`);
+    else                       lines.push(`- ${label}: \`${fmt(v)}\`${hitMark}`);
   }
+
   // BE plan line must appear after TP lines
   if (signal.beAt) {
     lines.push(`- Stops to breakeven at \`${fmt(signal.beAt)}\``);
@@ -247,10 +259,12 @@ export function renderRecapText(signal, extras = {}, rrChips = []) {
     const rrTxt = (r != null) ? `${r.toFixed(2)}R` : null;
     const label = key.toUpperCase();
     const pct = tpPerc[label];
-    if (pct > 0 && rrTxt)      tpLines.push(`• ${label} \`${fmt(v)}\` (${pct}% | ${rrTxt})`);
-    else if (pct > 0)          tpLines.push(`• ${label} \`${fmt(v)}\` (${pct}%)`);
-    else if (rrTxt)            tpLines.push(`• ${label} \`${fmt(v)}\` (${rrTxt})`);
-    else                       tpLines.push(`• ${label} \`${fmt(v)}\``);
+        const hitMark = signal.tpHits?.[label] ? ' ✅' : '';
+    if (pct > 0 && rrTxt)      tpLines.push(`• ${label} \`${fmt(v)}\` (${pct}% | ${rrTxt})${hitMark}`);
+    else if (pct > 0)          tpLines.push(`• ${label} \`${fmt(v)}\` (${pct}%)${hitMark}`);
+    else if (rrTxt)            tpLines.push(`• ${label} \`${fmt(v)}\` (${rrTxt})${hitMark}`);
+    else                       tpLines.push(`• ${label} \`${fmt(v)}\`${hitMark}`);
+
   }
   if (tpLines.length) {
     lines.push('🎯 **Take Profit**', ...tpLines, '');
