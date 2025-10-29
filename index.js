@@ -1198,7 +1198,65 @@ const order = ['TP1','TP2','TP3','TP4','TP5'];
 const highestHit = [...order].reverse().find(k => signal.tpHits && signal.tpHits[k]);
 let takeProfitText = '- —';
 if (highestHit) takeProfitText = `- ${highestHit.replace('TP','TP ')} hit`;
-else if (signal.status === STATUS.STOPPED_OUT) takeProfitText = '- None (Stopped Out ❌ before TP1)';
+// result R  (always prefer override if present, regardless of status)
+const overrideDigits = (finalROv !== '' ? (String(finalROv).split('.')[1] || '').length : null);
+
+const calcWeightedR = () => {
+  const fills = Array.isArray(signal.fills) ? signal.fills : [];
+  if (!fills.length) return 0;
+  let sum = 0;
+  for (const f of fills) {
+    const pct = Number(f.pct || 0);
+    const rr  = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, f.price);
+    if (Number.isNaN(pct) || rr === null) continue;
+    sum += (pct * rr) / 100;
+  }
+  return Number(sum.toFixed(6));
+};
+
+const rawR = Number.isFinite(Number(signal.finalR)) ? Number(signal.finalR) : calcWeightedR();
+
+const rLabel = String(signal.riskLabel || '').toLowerCase();
+const rFactor = rLabel === 'half' || rLabel === '1/2' ? 0.5
+  : rLabel === '1/4' || rLabel === 'quarter' ? 0.25
+  : rLabel === '3/4' || rLabel === 'three-quarter' || rLabel === 'threequarter' ? 0.75
+  : 1;
+
+// risk badge reduces only losses
+const useRFinal = (rawR < 0 ? rawR * rFactor : rawR);
+const rFmt = (v) => {
+  const dec = overrideDigits != null ? Math.min(6, Math.max(2, overrideDigits)) : 2;
+  return (v >= 0 ? `+${v.toFixed(dec)}R` : `${v.toFixed(dec)}R`);
+};
+
+// peak/maximum R label
+const peakR = Number.isFinite(Number(signal.maxR)) ? Number(signal.maxR).toFixed(2) : null;
+
+// Take Profit section — show ALL TP lines with R and % closed
+const order = ['TP1','TP2','TP3','TP4','TP5'];
+const tpLines = [];
+for (const K of order) {
+  const key = K.toLowerCase();
+  const price = signal[key];
+  if (!isNum(price)) continue;
+
+  const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, price);
+  if (r == null) continue;
+
+  let pct = 0;
+  if (Array.isArray(signal.fills)) {
+    pct = signal.fills
+      .filter(f => String(f.source).toUpperCase() === K)
+      .reduce((a,f)=> a + Number(f.pct || 0), 0);
+  }
+  const pctTxt = pct > 0 ? ` (${pct}% closed)` : '';
+  const hit = signal.tpHits?.[K] ? ' ✅' : '';
+  // Example format: TP1 | 0.48 (25% closed)
+  tpLines.push(`- ${K.replace('TP','TP ')} | ${r.toFixed(2)}${pctTxt}${hit}`);
+}
+
+let takeProfitText = tpLines.length ? tpLines.join('\n') 
+  : (signal.status === STATUS.STOPPED_OUT ? '- None (Stopped Out ❌ before TP1)' : '- —');
 
 
 // Merge BE plan line into Reason bullets if present
@@ -1214,7 +1272,7 @@ const notesBlock  = bullet(notesLines);
 
 // Title (✅/❌ + direction dot)
 const resBadge = useRFinal >= 0 ? '✅' : '❌';
-const title = `**$${String(signal.asset).toUpperCase()} | Trade Recap ${useRFinal >= 0 ? `+${useRFinal.toFixed(2)}R` : `${useRFinal.toFixed(2)}R`} ${resBadge} (${dirWord}) ${dirDot}**`;
+const title = `**$${String(signal.asset).toUpperCase()} | Trade Recap ${rFmt(useRFinal)} ${resBadge} (${dirWord}) ${dirDot}**`;
 
 // Build message in requested order: Reason → Entry Confluences → Take Profit → Results → Post-Mortem
 let recapText = [
@@ -1230,7 +1288,7 @@ let recapText = [
   takeProfitText,
   '',
   '⚖️ **Results**',
- `- Final: ${useRFinal >= 0 ? `+${useRFinal.toFixed(2)}R` : `${useRFinal.toFixed(2)}R`}`,
+ `- Final: ${rFmt(useRFinal)}`,
 
   ...(peakR ? [`- Peak R: ${peakR}R`] : []),
   '',
@@ -1268,15 +1326,14 @@ if (chart && /^https?:\/\//i.test(chart)) {
 
 // Tag recap role (if configured) + send one clean message (+ optional file)
 const mentionId = config.recapRoleId;
-const mentionText = mentionId ? `\n\n<@&${mentionId}>` : '';
 const allowedMentions = mentionId ? { roles: [mentionId] } : { parse: [] };
+const mentionLine = mentionId ? `<@&${mentionId}>` : '';
 
 await channel.send({
-  content: recapText + mentionText,
+  content: mentionLine ? `${mentionLine}\n\n${recapText}` : recapText,
   allowedMentions,
   files
 });
-
 
 
 
