@@ -279,7 +279,7 @@ async function postSignalMessage(signal) {
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
 
   const payload = {
-  content: `${mentionLine ? `${mentionLine}\n\n` : ''}${text}`,
+  content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
   ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } }),
 };
 
@@ -301,8 +301,8 @@ async function editSignalMessage(signal) {
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
 
  const editPayload = {
-  content: `${mentionLine ? `${mentionLine}\n\n` : ''}${text}`,
-  ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
+  content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
+  allowedMentions: { parse: [] } // show tag text, do not ping on edits
 };
 
 
@@ -864,6 +864,7 @@ client.on('interactionCreate', async (interaction) => {
 
 // Use reason provided in the slash command (if any). No modal required.
 const reasonValue = (reason || '').trim();
+const askReason = interaction.options.getBoolean?.('ask_reason') || false;
 
 
       if (assetSel === 'OTHER') {
