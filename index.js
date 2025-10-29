@@ -1168,39 +1168,7 @@ if (interaction.customId.startsWith('modal:asset:')) {
 const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
 const dirDot  = signal.direction === 'SHORT' ? '🔴' : '🟢';
 
-// result R
-const isFinal = ['CLOSED','STOPPED_BE','STOPPED_OUT'].includes(signal.status);
-const hasFinal = signal.finalR != null && Number.isFinite(Number(signal.finalR));
-const useR = (isFinal && hasFinal) ? Number(signal.finalR) : (() => {
-  const fills = Array.isArray(signal.fills) ? signal.fills : [];
-  if (!fills.length) return 0;
-  let sum = 0;
-  for (const f of fills) {
-    const pct = Number(f.pct || 0);
-    const rr  = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, f.price);
-    if (Number.isNaN(pct) || rr === null) continue;
-    sum += (pct * rr) / 100;
-  }
-  return Number(sum.toFixed(2));
-})();
-const riskLbl = String(signal.riskLabel || '').toLowerCase();
-const rFactor = riskLbl === 'half' || riskLbl === '1/2' ? 0.5
-  : riskLbl === '1/4' || riskLbl === 'quarter' ? 0.25
-  : riskLbl === '3/4' || riskLbl === 'three-quarter' || riskLbl === 'threequarter' ? 0.75
-  : 1;
-const useRFinal = Number(((useR < 0 ? useR * rFactor : useR)).toFixed(2));
-
-// peak/maximum R label
-const peakR = Number.isFinite(Number(signal.maxR)) ? Number(signal.maxR).toFixed(2) : null;
-
-// Highest TP hit → Take Profit section
-const order = ['TP1','TP2','TP3','TP4','TP5'];
-const highestHit = [...order].reverse().find(k => signal.tpHits && signal.tpHits[k]);
-let takeProfitText = '- —';
-if (highestHit) takeProfitText = `- ${highestHit.replace('TP','TP ')} hit`;
-// result R  (always prefer override if present, regardless of status)
-const overrideDigits = (finalROv !== '' ? (String(finalROv).split('.')[1] || '').length : null);
-
+// ---------- R calc + TP list (consolidated, no duplicates) ----------
 const calcWeightedR = () => {
   const fills = Array.isArray(signal.fills) ? signal.fills : [];
   if (!fills.length) return 0;
@@ -1214,25 +1182,28 @@ const calcWeightedR = () => {
   return Number(sum.toFixed(6));
 };
 
+const overrideDigits =
+  finalROv !== '' ? (String(finalROv).split('.')[1] || '').length : null;
+
 const rawR = Number.isFinite(Number(signal.finalR)) ? Number(signal.finalR) : calcWeightedR();
 
-const rLabel = String(signal.riskLabel || '').toLowerCase();
-const rFactor = riskLbl === 'half' || riskLbl === '1/2' ? 0.5
+const riskLbl = String(signal.riskLabel || '').toLowerCase();
+const lossFactor = riskLbl === 'half' || riskLbl === '1/2' ? 0.5
   : riskLbl === '1/4' || riskLbl === 'quarter' ? 0.25
   : riskLbl === '3/4' || riskLbl === 'three-quarter' || riskLbl === 'threequarter' ? 0.75
   : 1;
 
-// risk badge reduces only losses
-const useRFinal = (rawR < 0 ? rawR * rFactor : rawR);
+// apply risk badge only to losses
+const useRFinal = rawR < 0 ? rawR * lossFactor : rawR;
+
 const rFmt = (v) => {
   const dec = overrideDigits != null ? Math.min(6, Math.max(2, overrideDigits)) : 2;
-  return (v >= 0 ? `+${v.toFixed(dec)}R` : `${v.toFixed(dec)}R`);
+  return v >= 0 ? `+${v.toFixed(dec)}R` : `${v.toFixed(dec)}R`;
 };
 
-// peak/maximum R label
 const peakR = Number.isFinite(Number(signal.maxR)) ? Number(signal.maxR).toFixed(2) : null;
 
-// Take Profit section — show ALL TP lines with R and % closed
+// TP list — show ALL with R and % closed
 const order = ['TP1','TP2','TP3','TP4','TP5'];
 const tpLines = [];
 for (const K of order) {
@@ -1251,30 +1222,27 @@ for (const K of order) {
   }
   const pctTxt = pct > 0 ? ` (${pct}% closed)` : '';
   const hit = signal.tpHits?.[K] ? ' ✅' : '';
-  // Example format: TP1 | 0.48 (25% closed)
   tpLines.push(`- ${K.replace('TP','TP ')} | ${r.toFixed(2)}${pctTxt}${hit}`);
 }
-
-let takeProfitText = tpLines.length ? tpLines.join('\n') 
+const takeProfitText = tpLines.length
+  ? tpLines.join('\n')
   : (signal.status === STATUS.STOPPED_OUT ? '- None (Stopped Out ❌ before TP1)' : '- —');
 
-
-// Merge BE plan line into Reason bullets if present
+// Merge BE plan into Reason if present
 const reasonPlusPlan = [...reasonLines];
 if (signal.beAt) reasonPlusPlan.push(`Plan: move stops to breakeven at ${fmt(signal.beAt)}`);
 
-// helpers
-// no auto bullets — you’ll type them if you want them
+// helpers (no auto bullets)
 const bullet = arr => (arr && arr.length) ? arr.join('\n') : '';
 const reasonBlock = bullet(reasonPlusPlan);
 const confBlock   = bullet(confLines);
 const notesBlock  = bullet(notesLines);
 
-// Title (✅/❌ + direction dot)
+// Title
 const resBadge = useRFinal >= 0 ? '✅' : '❌';
 const title = `**$${String(signal.asset).toUpperCase()} | Trade Recap ${rFmt(useRFinal)} ${resBadge} (${dirWord}) ${dirDot}**`;
 
-// Build message in requested order: Reason → Entry Confluences → Take Profit → Results → Post-Mortem
+// Build recap text
 let recapText = [
   title,
   '',
@@ -1288,8 +1256,7 @@ let recapText = [
   takeProfitText,
   '',
   '⚖️ **Results**',
- `- Final: ${rFmt(useRFinal)}`,
-
+  `- Final: ${rFmt(useRFinal)}`,
   ...(peakR ? [`- Peak R: ${peakR}R`] : []),
   '',
   '📝 **Notes (key takeaways)**',
@@ -1297,6 +1264,10 @@ let recapText = [
   '',
   signal.jumpUrl ? `[View Original Trade](${signal.jumpUrl})` : ''
 ].join('\n').trim();
+// ---------- end consolidated block ----------
+
+// (the next line should remain exactly as in your file)
+const channel = await client.channels.fetch(interaction.channelId);
 const channel = await client.channels.fetch(interaction.channelId);
 const recent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
 let files = [];
