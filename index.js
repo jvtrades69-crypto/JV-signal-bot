@@ -1183,10 +1183,10 @@ const useR = (isFinal && hasFinal) ? Number(signal.finalR) : (() => {
   }
   return Number(sum.toFixed(2));
 })();
-const rLabel = String(signal.riskLabel || '').toLowerCase();
-const rFactor = rLabel === 'half' || rLabel === '1/2' ? 0.5
-  : rLabel === '1/4' || rLabel === 'quarter' ? 0.25
-  : rLabel === '3/4' || rLabel === 'three-quarter' || rLabel === 'threequarter' ? 0.75
+const riskLbl = String(signal.riskLabel || '').toLowerCase();
+const rFactor = riskLbl === 'half' || riskLbl === '1/2' ? 0.5
+  : riskLbl === '1/4' || riskLbl === 'quarter' ? 0.25
+  : riskLbl === '3/4' || riskLbl === 'three-quarter' || riskLbl === 'threequarter' ? 0.75
   : 1;
 const useRFinal = Number(((useR < 0 ? useR * rFactor : useR)).toFixed(2));
 
@@ -1217,9 +1217,9 @@ const calcWeightedR = () => {
 const rawR = Number.isFinite(Number(signal.finalR)) ? Number(signal.finalR) : calcWeightedR();
 
 const rLabel = String(signal.riskLabel || '').toLowerCase();
-const rFactor = rLabel === 'half' || rLabel === '1/2' ? 0.5
-  : rLabel === '1/4' || rLabel === 'quarter' ? 0.25
-  : rLabel === '3/4' || rLabel === 'three-quarter' || rLabel === 'threequarter' ? 0.75
+const rFactor = riskLbl === 'half' || riskLbl === '1/2' ? 0.5
+  : riskLbl === '1/4' || riskLbl === 'quarter' ? 0.25
+  : riskLbl === '3/4' || riskLbl === 'three-quarter' || riskLbl === 'threequarter' ? 0.75
   : 1;
 
 // risk badge reduces only losses
