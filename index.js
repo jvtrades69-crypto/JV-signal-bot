@@ -533,6 +533,16 @@ function controlRows(signalId) {
   return [row1, row2, row3, row4, row5];
 }
 
+function makeReasonModal(id) {
+  const m = new ModalBuilder().setCustomId(modal(id,'reason')).setTitle('Add Trade Reason');
+  const input = new TextInputBuilder()
+    .setCustomId('reason_value')
+    .setLabel('Reason (bullets or short text)')
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false);
+  m.addComponents(new ActionRowBuilder().addComponents(input));
+  return m;
+}
 // === Control thread helpers ===
 async function createControlThread(signal) {
   const channel = await client.channels.fetch(signal.channelId);
@@ -862,10 +872,32 @@ client.on('interactionCreate', async (interaction) => {
       const risk      = interaction.options.getString('risk') || '';
       const be_at     = interaction.options.getString('be_at') || '';
 
-// Use reason provided in the slash command (if any). No modal required.
+// Use reason provided in the slash command (if any). If ask_reason is true and no reason was provided, show a modal first.
 const reasonValue = (reason || '').trim();
 const askReason = interaction.options.getBoolean?.('ask_reason') || false;
 
+if (askReason && !reasonValue) {
+  const pid = nano();
+  pendingSignals.set(pid, {
+    asset: assetSel,
+    direction, entry, sl, tp1, tp2, tp3, tp4, tp5,
+    reason: '',
+    extraRole,
+    plan: {
+      TP1: isNum(tp1_pct) ? Number(tp1_pct) : null,
+      TP2: isNum(tp2_pct) ? Number(tp2_pct) : null,
+      TP3: isNum(tp3_pct) ? Number(tp3_pct) : null,
+      TP4: isNum(tp4_pct) ? Number(tp4_pct) : null,
+      TP5: isNum(tp5_pct) ? Number(tp5_pct) : null,
+    },
+    channelId: interaction.channelId,
+    chartUrl: chartAtt?.url || null,
+    chartAttached: !!chartAtt?.url,
+    riskLabel: risk,
+    beAt: be_at || null,
+  });
+  return interaction.showModal(makeReasonModal(pid));
+}
 
       if (assetSel === 'OTHER') {
         const pid = nano();
