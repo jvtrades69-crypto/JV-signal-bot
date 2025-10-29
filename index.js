@@ -58,7 +58,8 @@ function rAtPrice(direction, entry, slOriginal, price) {
   if (!isNum(entry) || !isNum(slOriginal) || !isNum(price)) return null;
   const E = Number(entry), S = Number(slOriginal), P = Number(price);
   if (direction === DIR.LONG) { const risk = E - S; if (risk <= 0) return null; return (P - E) / risk; }
-  const risk = S - E; if (risk <= 0) return null; return (E - P) / risk;
+const risk = S - E; if (risk <= 0) return null; return (E - P) / risk;
+
 }
 function computeRealizedR(signal) {
   const fills = Array.isArray(signal.fills) ? signal.fills : [];
@@ -70,14 +71,14 @@ function computeRealizedR(signal) {
     if (isNaN(pct) || r === null) continue;
     sum += (pct * r) / 100;
   }
-
-  // apply risk badge multiplier (half -> 0.5, 1/4 -> 0.25, 3/4 -> 0.75)
+  // risk badge reduces only losses
   const lbl = String(signal.riskLabel || '').toLowerCase();
   let factor = 1;
-  if (lbl === 'half' || lbl === '1/2') factor = 0.5;
-  else if (lbl === '1/4' || lbl === 'quarter') factor = 0.25;
-  else if (lbl === '3/4' || lbl === 'three-quarter' || lbl === 'threequarter') factor = 0.75;
-
+  if (sum < 0) {
+    if (lbl === 'half' || lbl === '1/2') factor = 0.5;
+    else if (lbl === '1/4' || lbl === 'quarter') factor = 0.25;
+    else if (lbl === '3/4' || lbl === 'three-quarter' || lbl === 'threequarter') factor = 0.75;
+  }
   return Number((sum * factor).toFixed(2));
 }
 
@@ -278,9 +279,10 @@ async function postSignalMessage(signal) {
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
 
   const payload = {
-    content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
-    ...(mentionLine ? { allowedMentions } : {}),
-  };
+  content: `${mentionLine ? `${mentionLine}\n\n` : ''}${text}`,
+  ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } }),
+};
+
 
   if (signal.chartUrl && signal.chartAttached) {
     payload.files = [signal.chartUrl];
@@ -298,10 +300,11 @@ async function editSignalMessage(signal) {
   const text = renderSignalText(normalizeSignal(signal));
   const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
 
-  const editPayload = {
-    content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
-    ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
-  };
+ const editPayload = {
+  content: `${mentionLine ? `${mentionLine}\n\n` : ''}${text}`,
+  ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } })
+};
+
 
   if (!signal.chartAttached) {
     editPayload.attachments = [];
