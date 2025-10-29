@@ -241,11 +241,10 @@ async function buildSnapshotText(signal) {
   if (signal.beAt) lines.push(`- Stops to breakeven at ${fmt(signal.beAt)}`);
 
   if (signal.reason && String(signal.reason).trim()) {
-    lines.push('', '📝 Reasoning');
-    const rsn = String(signal.reason).trim().split('\n').map(s=>s.trim()).filter(Boolean);
-    for (const line of rsn) lines.push(`- ${line}`);
-  }
-
+  lines.push('', '📝 Reasoning');
+  const rsn = String(signal.reason).trim().split('\n').map(s=>s.trim()).filter(Boolean);
+  lines.push(...rsn);
+}
   return lines.join('\n');
 }
 
