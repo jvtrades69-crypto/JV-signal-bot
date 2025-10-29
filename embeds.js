@@ -21,6 +21,8 @@ function rAtPrice(direction, entry, slOriginal, price) {
     const risk = E - S; if (risk <= 0) return null; return (P - E) / risk;
   }
   const risk = S - E; if (risk <= 0) return null; return (E - P) / risk;
+
+
 }
 function computeRealized(signal) {
   const fills = Array.isArray(signal.fills) ? signal.fills : [];
@@ -31,17 +33,18 @@ function computeRealized(signal) {
     if (Number.isNaN(pct) || r === null) continue;
     sum += (pct * r) / 100;
   }
-
-  // apply risk badge multiplier (half -> 0.5, 1/4 -> 0.25, 3/4 -> 0.75)
+  // apply risk badge multiplier ONLY on net losses
   const lbl = String(signal.riskLabel || '').toLowerCase();
   let factor = 1;
-  if (lbl === 'half' || lbl === '1/2') factor = 0.5;
-  else if (lbl === '1/4' || lbl === 'quarter') factor = 0.25;
-  else if (lbl === '3/4' || lbl === 'three-quarter' || lbl === 'threequarter') factor = 0.75;
-
+  if (sum < 0) {
+    if (lbl === 'half' || lbl === '1/2') factor = 0.5;
+    else if (lbl === '1/4' || lbl === 'quarter') factor = 0.25;
+    else if (lbl === '3/4' || lbl === 'three-quarter' || lbl === 'threequarter') factor = 0.75;
+  }
   return Number((sum * factor).toFixed(2));
 }
-function dirWord(signal) { return signal.direction === 'SHORT' ? 'Short' : 'Long'; }
+
+  function dirWord(signal) { return signal.direction === 'SHORT' ? 'Short' : 'Long'; }
 function dirDot(signal) { return signal.direction === 'SHORT' ? '🔴' : '🟢'; }
 
 // Sum executed % per TP from fills; fallback to plan if none executed
@@ -68,17 +71,21 @@ function buildTitle(signal) {
   const hasFinal = signal.finalR != null && isFinite(Number(signal.finalR));
   const useR = (isFinal && hasFinal) ? Number(signal.finalR) : computeRealized(signal);
 
-  let suffix = '';
+    let suffix = '';
+  const sign = useR >= 0 ? '+' : '';
+  const verdict = useR >= 0 ? 'Win' : 'Loss';
+
   if (signal.status === 'STOPPED_OUT') {
     suffix = `Loss -${Math.abs(useR).toFixed(2)}R`;
   } else if (signal.status === 'STOPPED_BE') {
     const anyFill = (signal.fills || []).length > 0;
-    suffix = anyFill ? `Win +${useR.toFixed(2)}R` : 'Breakeven';
+    suffix = anyFill ? `${verdict} ${sign}${useR.toFixed(2)}R` : 'Breakeven';
   } else if (signal.status === 'CLOSED') {
-    suffix = `Win +${useR.toFixed(2)}R`;
+    suffix = `${verdict} ${sign}${useR.toFixed(2)}R`;
   } else if ((signal.fills || []).length > 0) {
-    suffix = `Win +${useR.toFixed(2)}R so far`;
+    suffix = `${verdict} ${sign}${useR.toFixed(2)}R so far`;
   }
+
   return suffix ? `**${head} (${suffix})**` : `**${head}**`;
 }
 
