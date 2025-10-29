@@ -828,7 +828,7 @@ client.on('interactionCreate', async (interaction) => {
     if (!tryClaimInteraction(interaction)) return;
 
     // recap picker -> modal
-    if (interaction.isStringSelectMenu && interaction.customId === 'recap:pick') {
+    if (interaction.isStringSelectMenu() && interaction.customId === 'recap:pick') {
       const id = interaction.values?.[0];
       if (!id) {
         return interaction.reply({ content: '❌ Invalid selection.', flags: MessageFlags.Ephemeral });
@@ -935,13 +935,12 @@ const reasonValue = (reason || '').trim();
         const signals = (await getSignals()).map(normalizeSignal);
         const weekly = signals.filter(s => isNum(s.createdAt) && s.createdAt >= monday.getTime() && s.createdAt <= sunday.getTime());
 
-        const total = weekly.length;
         const finals = weekly.filter(s => s.status !== STATUS.RUN_VALID);
-        const netR = finals.reduce((a,s)=> a + (isNum(s.finalR)? Number(s.finalR):0), 0);
-        const wins = finals.filter(s => isNum(s.finalR) && Number(s.finalR) > 0).length;
-        const winRatePct = total ? Math.round((wins/total)*100) : 0;
-        const avgR = total ? netR/total : 0;
-
+const total = finals.length;
+const netR = finals.reduce((a,s)=> a + (isNum(s.finalR)? Number(s.finalR):0), 0);
+const wins = finals.filter(s => isNum(s.finalR) && Number(s.finalR) > 0).length;
+const winRatePct = total ? Math.round((wins/total)*100) : 0;
+const avgR = total ? netR/total : 0;
         const sorted = finals.filter(s => isNum(s.finalR))
                              .sort((a,b)=> Math.abs(Number(b.finalR||0)) - Math.abs(Number(a.finalR||0)));
         const topMoves = sorted.slice(0,2).map(s => ({
@@ -1157,7 +1156,7 @@ const rFactor = rLabel === 'half' || rLabel === '1/2' ? 0.5
   : rLabel === '1/4' || rLabel === 'quarter' ? 0.25
   : rLabel === '3/4' || rLabel === 'three-quarter' || rLabel === 'threequarter' ? 0.75
   : 1;
-const useRFinal = Number((useR * rFactor).toFixed(2));
+const useRFinal = Number(((useR < 0 ? useR * rFactor : useR)).toFixed(2));
 
 // peak/maximum R label
 const peakR = Number.isFinite(Number(signal.maxR)) ? Number(signal.maxR).toFixed(2) : null;
@@ -1745,12 +1744,12 @@ await channel.send({
       if (key === 'risk:set')   return interaction.showModal(makeSetRiskModal(id));
       if (key === 'risk:clear') {
         await ensureDeferred(interaction);
-        await updateSignal(id, { riskLabel: '' });
-        const updated = normalizeSignal(await getSignal(id));
-        await editSignalMessage(updated);
-        await postSnapshot(updated);
-        await updateSummary();
-        return interaction.reply({ content: '⚖️ Risk badge cleared.', flags: MessageFlags.Ephemeral });
+await updateSignal(id, { riskLabel: '' });
+const updated = normalizeSignal(await getSignal(id));
+await editSignalMessage(updated);
+await postSnapshot(updated);
+await updateSummary();
+return safeEditReply(interaction, { content: '⚖️ Risk badge cleared.' });
       }
 
       if (key === 'setbe') {
@@ -1834,7 +1833,7 @@ await channel.send({
           return interaction.reply({ content: 'ℹ️ Trade is already active.', flags: MessageFlags.Ephemeral });
         }
         const fills = (signal.fills || []).filter(f => !['FINAL_CLOSE','STOP_BE','STOP_OUT','STOP_PROFIT','FINAL_CLOSE_PROFIT'].includes(String(f.source).toUpperCase()));
-        await updateSignal(id, { fills, status: STATUS.RUN_VALID, validReentry: true, stoppedInProfit:false, stoppedInProfitAfterTP:null });
+        await updateSignal(id, { fills, status: STATUS.RUN_VALID, validReentry: true, stoppedInProfit:false, stoppedInProfitAfterTP:null, finalR: null });
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
         await postSnapshot(updated);
