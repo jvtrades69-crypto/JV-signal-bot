@@ -298,11 +298,11 @@ async function editSignalMessage(signal) {
   if (!msg) return false;
 
   const text = renderSignalText(normalizeSignal(signal));
-  const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, true);
+  const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
 
- const editPayload = {
+const editPayload = {
   content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
-  allowedMentions: { parse: [] } // show tag text, do not ping on edits
+  ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } }),
 };
 
 
