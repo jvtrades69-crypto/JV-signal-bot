@@ -283,9 +283,10 @@ async function postSignalMessage(signal) {
 };
 
 
-  if (signal.chartUrl && signal.chartAttached) {
-    payload.files = [signal.chartUrl];
-  }
+  // show chart as link instead of trying to reattach
+if (signal.chartUrl) {
+  payload.content += `\n📈 ${signal.chartUrl}`;
+}
 
   const sent = await channel.send(payload);
   return sent.id;
@@ -305,10 +306,7 @@ const editPayload = {
 };
 
 
-  if (!signal.chartAttached) {
-    editPayload.attachments = [];
-    editPayload.files = [];
-  }
+  // leave existing attachments as-is
 
   await msg.edit(editPayload).catch(() => {});
   renameControlThread(signal).catch(() => {});
