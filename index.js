@@ -1238,10 +1238,43 @@ if (lastTerminalFill && signal.latestTpHit) {
   finalCloseLine = `- Fully closed after ${signal.latestTpHit} at ${fmt(lastTerminalFill.price)}`;
 }
 
+// Did any TP actually hit?
+const anyTpHit = ['TP1','TP2','TP3','TP4','TP5'].some(k => signal.tpHits?.[k]);
+
+// Determine terminal state when NO TP was hit
+const lastFillSrc = lastTerminalFill ? String(lastTerminalFill.source).toUpperCase() : '';
+const stoppedOutNoTP   = signal.status === STATUS.STOPPED_OUT && !anyTpHit;
+const stoppedBeNoTP    = signal.status === STATUS.STOPPED_BE   && !anyTpHit;
+
+// "Stopped in profit" can come from your explicit stop-profit flow
+const stoppedProfitNoTP =
+  !anyTpHit && (
+    (signal.status === STATUS.CLOSED && signal.stoppedInProfit === true) ||
+    lastFillSrc === 'STOP_PROFIT'
+  );
+
+// “Fully closed in profits” = closed, no TP hit, and we can justify profit
+const closedInProfitNoTP =
+  !anyTpHit &&
+  signal.status === STATUS.CLOSED &&
+  (
+    (Number.isFinite(Number(signal.finalR)) && Number(signal.finalR) > 0) ||
+    lastFillSrc === 'FINAL_CLOSE_PROFIT'
+  );
+
+// Choose the proper “None (…) before TP1” line when no TPs were hit
+const noneLine =
+  closedInProfitNoTP ? '- None (Fully closed in profits ✅ before TP1)' :
+  stoppedProfitNoTP  ? '- None (Stopped in profit 🟩 before TP1)' :
+  stoppedBeNoTP      ? '- None (Stopped breakeven 🟡 before TP1)' :
+  stoppedOutNoTP     ? '- None (Stopped Out ❌ before TP1)' :
+                       '- —';
+
+// Final TP block
 const takeProfitText =
   tpLines.length
     ? (finalCloseLine ? [...tpLines, finalCloseLine].join('\n') : tpLines.join('\n'))
-    : (signal.status === STATUS.STOPPED_OUT ? '- None (Stopped Out ❌ before TP1)' : '- —');
+    : noneLine;
 
 // Merge BE plan into Reason if present
 const reasonPlusPlan = [...reasonLines];
