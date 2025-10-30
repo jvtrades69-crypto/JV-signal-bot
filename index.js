@@ -1311,19 +1311,20 @@ if (chart && /^https?:\/\//i.test(chart)) {
 }
 
 // Tag recap role (if configured) + send one clean message (+ optional file)
-const mentionId = config.recapRoleId;
+const mentionIdRaw = config.recapRoleId;
+const mentionId = mentionIdRaw ? String(mentionIdRaw) : '';
 const mentionLine = mentionId ? `<@&${mentionId}>` : '';
-const content = mentionLine ? `${recapText}\n\n${mentionLine}` : recapText;
+const content = mentionLine ? `${mentionLine}\n\n${recapText}` : recapText;
 
 await recapChannel.send({
   content,
-  // force Discord to actually allow role pings
-  allowedMentions: {
-    parse: ['roles'],
-    roles: mentionId ? [mentionId] : []
-  },
+  // send only explicit role mentions; no parse
+  allowedMentions: mentionId
+    ? { roles: [mentionId], parse: [] }
+    : { parse: [] },
   files
 });
+
 
 
         return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
