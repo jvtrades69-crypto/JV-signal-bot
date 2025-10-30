@@ -1202,7 +1202,6 @@ const rFmt = (v) => {
 };
 
 const peakR = Number.isFinite(Number(signal.maxR)) ? Number(signal.maxR).toFixed(2) : null;
-
 // TP list — show ALL with R and % closed
 const order = ['TP1','TP2','TP3','TP4','TP5'];
 const tpLines = [];
@@ -1224,9 +1223,26 @@ for (const K of order) {
   const hit = signal.tpHits?.[K] ? ' ✅' : '';
   tpLines.push(`- ${K.replace('TP','TP ')} | ${r.toFixed(2)}${pctTxt}${hit}`);
 }
-const takeProfitText = tpLines.length
-  ? tpLines.join('\n')
-  : (signal.status === STATUS.STOPPED_OUT ? '- None (Stopped Out ❌ before TP1)' : '- —');
+
+// 👇 NEW: detect final close after last TP
+let finalCloseLine = '';
+// look for last fill that was a full/terminal close
+const terminalSources = ['FINAL_CLOSE', 'FINAL_CLOSE_PROFIT', 'STOP_PROFIT', 'STOP_OUT', 'STOP_BE'];
+const lastTerminalFill = Array.isArray(signal.fills)
+  ? [...signal.fills].reverse().find(f =>
+      terminalSources.includes(String(f.source).toUpperCase())
+    )
+  : null;
+
+if (lastTerminalFill && signal.latestTpHit) {
+  // example: "Fully closed after TP4 at 113,200"
+  finalCloseLine = `- Fully closed after ${signal.latestTpHit} at ${fmt(lastTerminalFill.price)}`;
+}
+
+const takeProfitText =
+  tpLines.length
+    ? (finalCloseLine ? [...tpLines, finalCloseLine].join('\n') : tpLines.join('\n'))
+    : (signal.status === STATUS.STOPPED_OUT ? '- None (Stopped Out ❌ before TP1)' : '- —');
 
 // Merge BE plan into Reason if present
 const reasonPlusPlan = [...reasonLines];
@@ -1301,10 +1317,13 @@ const content = mentionLine ? `${recapText}\n\n${mentionLine}` : recapText;
 
 await recapChannel.send({
   content,
-  allowedMentions: mentionId ? { roles: [mentionId] } : { parse: [] },
+  // force Discord to actually allow role pings
+  allowedMentions: {
+    parse: ['roles'],
+    roles: mentionId ? [mentionId] : []
+  },
   files
 });
-
 
 
         return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
