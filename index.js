@@ -1199,7 +1199,7 @@ const rFmt = (v) => {
   return v >= 0 ? `+${v.toFixed(dec)}R` : `${v.toFixed(dec)}R`;
 };
 
-const peakR = Number.isFinite(Number(signal.maxR)) ? Number(signal.maxR).toFixed(2) : null;
+const peakR = isNum(signal.maxR) ? Number(signal.maxR).toFixed(2) : null;
 // TP list — show ALL with R and % closed
 const order = ['TP1','TP2','TP3','TP4','TP5'];
 const tpLines = [];
@@ -1308,15 +1308,24 @@ if (chart && /^https?:\/\//i.test(chart)) {
   recapText += `\n\n[Chart](${chart})`;
 }
 
-// Tag recap role (if configured) + send one clean message (+ optional file)
+// Single message: recap text, then role mention at the bottom (highlight if allowed)
 const mentionId = (config.recapRoleId && String(config.recapRoleId).match(/\d{6,}/)?.[0]) || null;
-const mentionLine = mentionId ? `<@&${mentionId}>` : '';
-const content = mentionLine ? `${mentionLine}\n\n${recapText}` : recapText;
+const canPing =
+  mentionId &&
+  (
+    interaction.guild?.members?.me?.permissions?.has('MentionEveryone') ||
+    interaction.guild?.roles?.cache?.get(mentionId)?.mentionable
+  );
 
-await recapChannel.send({ content: recapText, allowedMentions: { parse: [] }, files });
-if (mentionId) {
-  await recapChannel.send({ content: `<@&${mentionId}>`, allowedMentions: { roles: [mentionId] } });
-}
+const finalContent = canPing
+  ? `${recapText}\n\n<@&${mentionId}>`
+  : recapText;
+
+await recapChannel.send({
+  content: finalContent,
+  allowedMentions: canPing ? { roles: [mentionId] } : { parse: [] },
+  files
+});
 
 
 
