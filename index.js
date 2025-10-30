@@ -11,7 +11,8 @@ import {
   TextInputStyle,
   MessageFlags,
   StringSelectMenuBuilder,
-  AttachmentBuilder
+  AttachmentBuilder,
+  PermissionsBitField
 } from 'discord.js';
 import { customAlphabet } from 'nanoid';
 import config from './config.js';
@@ -1310,20 +1311,21 @@ if (chart && /^https?:\/\//i.test(chart)) {
 
 // Single message: recap text, then role mention at the bottom (highlight if allowed)
 const mentionId = (config.recapRoleId && String(config.recapRoleId).match(/\d{6,}/)?.[0]) || null;
-const canPing =
-  mentionId &&
-  (
-    interaction.guild?.members?.me?.permissions?.has('MentionEveryone') ||
-    interaction.guild?.roles?.cache?.get(mentionId)?.mentionable
-  );
+const guild = recapChannel.guild;
+const role  = mentionId ? guild?.roles?.cache.get(mentionId) : null;
+const canBypass = guild?.members?.me?.permissions?.has(PermissionsBitField.Flags.MentionEveryone);
+const canPing = Boolean(mentionId && (canBypass || role?.mentionable));
 
-const finalContent = canPing
+const finalContent = mentionId
   ? `${recapText}\n\n<@&${mentionId}>`
   : recapText;
 
 await recapChannel.send({
   content: finalContent,
-  allowedMentions: canPing ? { roles: [mentionId] } : { parse: [] },
+  // Always allow this specific role id to be pinged; Discord will only ping if either
+  // (a) the role is set “Allow anyone to @mention this role”, or
+  // (b) the bot has Mention Everyone permission. Otherwise it will render without ping.
+  allowedMentions: mentionId ? { roles: [mentionId], parse: [] } : { parse: [] },
   files
 });
 
