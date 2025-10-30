@@ -1220,7 +1220,7 @@ for (const K of order) {
   }
   const pctTxt = pct > 0 ? ` (${pct}% closed)` : '';
   const hit = signal.tpHits?.[K] ? ' ✅' : '';
-  tpLines.push(`- ${K.replace('TP','TP ')} | ${r.toFixed(2)}${pctTxt}${hit}`);
+  tpLines.push(`- ${K.replace('TP','TP ')} | ${r.toFixed(2)}R${pctTxt}${hit}`);
 }
 
 // 👇 NEW: detect final close after last TP
@@ -1277,7 +1277,7 @@ let recapText = [
   '📝 **Notes (key takeaways)**',
   notesBlock,
   '',
-  signal.jumpUrl ? `[View Original Trade](${signal.jumpUrl})` : ''
+  signal.jumpUrl ? `🔗 [View Original Trade](${signal.jumpUrl})` : ''
 ].join('\n').trim();
 // ---------- end consolidated block ----------
 
