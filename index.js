@@ -1267,9 +1267,8 @@ let recapText = [
 // ---------- end consolidated block ----------
 
 // (the next line should remain exactly as in your file)
-const channel = await client.channels.fetch(interaction.channelId);
-const channel = await client.channels.fetch(interaction.channelId);
-const recent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
+const recapChannel = await client.channels.fetch(interaction.channelId);
+const recent = await recapChannel.messages.fetch({ limit: 20 }).catch(() => null);
 let files = [];
 
 if (!chart && recent && recent.size) {
@@ -1300,7 +1299,7 @@ const mentionId = config.recapRoleId;
 const allowedMentions = mentionId ? { roles: [mentionId] } : { parse: [] };
 const mentionLine = mentionId ? `<@&${mentionId}>` : '';
 
-await channel.send({
+await recapChannel.send({
   content: mentionLine ? `${mentionLine}\n\n${recapText}` : recapText,
   allowedMentions,
   files
