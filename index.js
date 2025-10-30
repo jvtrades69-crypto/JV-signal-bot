@@ -1296,12 +1296,12 @@ if (chart && /^https?:\/\//i.test(chart)) {
 
 // Tag recap role (if configured) + send one clean message (+ optional file)
 const mentionId = config.recapRoleId;
-const allowedMentions = mentionId ? { roles: [mentionId] } : { parse: [] };
 const mentionLine = mentionId ? `<@&${mentionId}>` : '';
+const content = mentionLine ? `${recapText}\n\n${mentionLine}` : recapText;
 
 await recapChannel.send({
-  content: mentionLine ? `${mentionLine}\n\n${recapText}` : recapText,
-  allowedMentions,
+  content,
+  allowedMentions: mentionId ? { roles: [mentionId] } : { parse: [] },
   files
 });
 
