@@ -1309,19 +1309,14 @@ if (chart && /^https?:\/\//i.test(chart)) {
 }
 
 // Tag recap role (if configured) + send one clean message (+ optional file)
-const mentionIdRaw = config.recapRoleId;
-const mentionId = mentionIdRaw ? String(mentionIdRaw) : '';
+const mentionId = (config.recapRoleId && String(config.recapRoleId).match(/\d{6,}/)?.[0]) || null;
 const mentionLine = mentionId ? `<@&${mentionId}>` : '';
 const content = mentionLine ? `${mentionLine}\n\n${recapText}` : recapText;
 
-await recapChannel.send({
-  content,
-  // send only explicit role mentions; no parse
-  allowedMentions: mentionId
-    ? { roles: [mentionId], parse: [] }
-    : { parse: [] },
-  files
-});
+await recapChannel.send({ content: recapText, allowedMentions: { parse: [] }, files });
+if (mentionId) {
+  await recapChannel.send({ content: `<@&${mentionId}>`, allowedMentions: { roles: [mentionId] } });
+}
 
 
 
