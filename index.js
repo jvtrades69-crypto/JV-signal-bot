@@ -178,8 +178,12 @@ function computeThreadName(signal) {
   const dir   = signal.direction === DIR.SHORT ? 'short' : 'long';
 
   const isFinal  = [STATUS.CLOSED, STATUS.STOPPED_BE, STATUS.STOPPED_OUT].includes(signal.status);
-  const hasFinal = isNum(signal.finalR);
-  const rValue   = (isFinal && hasFinal) ? Number(signal.finalR) : computeRealizedR(signal);
+const hasFinal = isNum(signal.finalR);
+const realized = computeRealizedR(signal);
+const useFinal = (isFinal && hasFinal) && (
+  Number(signal.finalR) !== 0 || realized === 0 || !(signal.fills && signal.fills.length)
+);
+const rValue   = useFinal ? Number(signal.finalR) : realized;
   const rTxt     = `${rValue >= 0 ? '+' : ''}${rValue.toFixed(2)}R`;
 
   const latestHit = signal.latestTpHit ||
@@ -1184,7 +1188,13 @@ const calcWeightedR = () => {
 const overrideDigits =
   finalROv !== '' ? (String(finalROv).split('.')[1] || '').length : null;
 
-const rawR = Number.isFinite(Number(signal.finalR)) ? Number(signal.finalR) : calcWeightedR();
+// Prefer realized R from fills; only use finalR if explicitly set to a non-zero,
+// or realized is actually 0, or there are no fills to compute with.
+const realized = calcWeightedR();
+const useFinal = isNum(signal.finalR) && (
+  Number(signal.finalR) !== 0 || realized === 0 || !(signal.fills && signal.fills.length)
+);
+const rawR = useFinal ? Number(signal.finalR) : realized;
 
 const riskLbl = String(signal.riskLabel || '').toLowerCase();
 const lossFactor = riskLbl === 'half' || riskLbl === '1/2' ? 0.5
@@ -1647,9 +1657,7 @@ await recapChannel.send({
         if (finalRStr !== '') {
           if (!isNum(finalRStr)) return safeEditReply(interaction, { content: '❌ Final R must be a number.' });
           signal.finalR = Math.max(0, Number(finalRStr));
-        } else if (Number.isFinite(signal.finalR) && signal.finalR < 0) {
-          signal.finalR = 0;
-        }
+        
 
         signal.status = STATUS.CLOSED;
         signal.validReentry = false;
