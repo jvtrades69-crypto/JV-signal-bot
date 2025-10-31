@@ -1634,7 +1634,7 @@ await recapChannel.send({
         return safeEditReply(interaction, { content: `✅ Fully closed${suffix} at ${price}.` });
       }
 
-      // full close (profit)
+// full close (profit)
       if (interaction.customId.startsWith('modal:fullprofit:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -1647,6 +1647,7 @@ await recapChannel.send({
         if (!isNum(priceStr)) return safeEditReply(interaction, { content: '❌ Close Price must be a number.' });
         const price = Number(priceStr);
 
+        // Close the remaining position at price with a profit-coded source
         const currentPct = (Array.isArray(signal.fills) ? signal.fills : []).reduce((a, f) => a + Number(f.pct || 0), 0);
         const remaining  = Math.max(0, 100 - currentPct);
         if (remaining > 0) {
@@ -1654,11 +1655,15 @@ await recapChannel.send({
           signal.fills.push({ pct: remaining, price, source: 'FINAL_CLOSE_PROFIT' });
         }
 
+        // Optional non-negative Final R override
         if (finalRStr !== '') {
-          if (!isNum(finalRStr)) return safeEditReply(interaction, { content: '❌ Final R must be a number.' });
+          if (!isNum(finalRStr)) {
+            return safeEditReply(interaction, { content: '❌ Final R must be a number.' });
+          }
           signal.finalR = Math.max(0, Number(finalRStr));
-        
+        }
 
+        // Close the trade
         signal.status = STATUS.CLOSED;
         signal.validReentry = false;
 
@@ -1673,7 +1678,14 @@ await recapChannel.send({
         await editSignalMessage(updated);
         await postSnapshot(updated);
         await updateSummary();
-        return safeEditReply(interaction, { content: `✅ Fully closed in profits at ${price}${Number.isFinite(signal.finalR) ? ` (Final ${signal.finalR.toFixed(2)}R)` : ''}` });
+
+        return safeEditReply(
+          interaction,
+          {
+            content: `✅ Fully closed in profits at ${price}` +
+                     (Number.isFinite(signal.finalR) ? ` (Final ${signal.finalR.toFixed(2)}R)` : '')
+          }
+        );
       }
 
       // stop BE / stop out / stop profit with RR override
