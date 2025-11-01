@@ -1326,14 +1326,36 @@ let recapText = [
 
 // (the next line should remain exactly as in your file)
 const recapChannel = await client.channels.fetch(interaction.channelId);
-const recent = await recapChannel.messages.fetch({ limit: 20 }).catch(() => null);
 let files = [];
 
-if (!chart && recent && recent.size) {
-  for (const m of recent.values()) {
-    if (m.author?.id !== interaction.user.id) continue;
-    const att = m.attachments?.first();
-    if (att && att.contentType && att.contentType.startsWith('image/')) {
+// Only auto-attach if user didn't supply a URL in the modal.
+if (!chart) {
+  const WINDOW_MS = 5 * 60 * 1000; // look back 5 minutes max
+  const now = Date.now();
+
+  // Fetch a bigger window, then filter & sort deterministically
+  const recent = await recapChannel.messages.fetch({ limit: 50 }).catch(() => null);
+
+  if (recent && recent.size) {
+    // Keep only images from the invoking user, within the time window
+    const candidates = recent
+      .filter(m => m.author?.id === interaction.user.id)
+      .filter(m => m.attachments && m.attachments.size > 0)
+      .filter(m => (now - (m.createdTimestamp || 0)) <= WINDOW_MS)
+      .map(m => ({
+        message: m,
+        // prefer the first image-like attachment on that message
+        attachment: m.attachments.find(a =>
+          (a.contentType && a.contentType.startsWith('image/')) ||
+          (typeof a.name === 'string' && /\.(png|jpe?g|gif|webp)$/i.test(a.name))
+        )
+      }))
+      .filter(x => !!x.attachment)
+      // newest first
+      .sort((a, b) => (b.message.createdTimestamp || 0) - (a.message.createdTimestamp || 0));
+
+    if (candidates.length) {
+      const att = candidates[0].attachment;
       try {
         if (typeof fetch === 'function') {
           const res = await fetch(att.url);
@@ -1342,10 +1364,10 @@ if (!chart && recent && recent.size) {
           files = [ new AttachmentBuilder(buf, { name }) ];
         }
       } catch {}
-      break;
     }
   }
 }
+
 
 // If user supplied a URL in the modal, keep that as a clickable line
 if (chart && /^https?:\/\//i.test(chart)) {
