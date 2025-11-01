@@ -1328,43 +1328,50 @@ let recapText = [
 const recapChannel = await client.channels.fetch(interaction.channelId);
 let files = [];
 
-// Only auto-attach if user didn't supply a URL in the modal.
+// Helper: decide if an attachment is image-like
+const isImageAttachment = (a) => {
+  const ct = (a.contentType || '').toLowerCase();
+  const nm = (a.name || '');
+  return (ct.startsWith('image/')) || /\.(png|jpe?g|gif|webp)$/i.test(nm);
+};
+
+// Only auto-attach if user didn't provide a chart URL in the modal
 if (!chart) {
-  const WINDOW_MS = 5 * 60 * 1000; // look back 5 minutes max
   const now = Date.now();
+  const recent = await recapChannel.messages.fetch({ limit: 100 }).catch(() => null);
 
-  // Fetch a bigger window, then filter & sort deterministically
-  const recent = await recapChannel.messages.fetch({ limit: 50 }).catch(() => null);
-
-  if (recent && recent.size) {
-    // Keep only images from the invoking user, within the time window
-    const candidates = recent
-      .filter(m => m.author?.id === interaction.user.id)
+  const pickLatest = (collection, { fromUserOnly = true, withinMs = null } = {}) => {
+    if (!collection || !collection.size) return null;
+    return collection
+      .filter(m => (!fromUserOnly || m.author?.id === interaction.user.id))
       .filter(m => m.attachments && m.attachments.size > 0)
-      .filter(m => (now - (m.createdTimestamp || 0)) <= WINDOW_MS)
-      .map(m => ({
-        message: m,
-        // prefer the first image-like attachment on that message
-        attachment: m.attachments.find(a =>
-          (a.contentType && a.contentType.startsWith('image/')) ||
-          (typeof a.name === 'string' && /\.(png|jpe?g|gif|webp)$/i.test(a.name))
-        )
-      }))
-      .filter(x => !!x.attachment)
-      // newest first
-      .sort((a, b) => (b.message.createdTimestamp || 0) - (a.message.createdTimestamp || 0));
+      .filter(m => {
+        if (withinMs == null) return true;
+        const ts = m.createdTimestamp || 0;
+        return (now - ts) <= withinMs;
+      })
+      .map(m => {
+        const att = m.attachments.find(isImageAttachment);
+        return att ? { m, att } : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => (b.m.createdTimestamp || 0) - (a.m.createdTimestamp || 0))
+      [0] || null;
+  };
 
-    if (candidates.length) {
-      const att = candidates[0].attachment;
-      try {
-        if (typeof fetch === 'function') {
-          const res = await fetch(att.url);
-          const buf = Buffer.from(await res.arrayBuffer());
-          const name = att.name || 'chart.png';
-          files = [ new AttachmentBuilder(buf, { name }) ];
-        }
-      } catch {}
-    }
+  // Phase 1: strict window (15 min)
+  let chosen = pickLatest(recent, { fromUserOnly: true, withinMs: 15 * 60 * 1000 });
+
+  // Phase 2: relax window (no time limit)
+  if (!chosen) chosen = pickLatest(recent, { fromUserOnly: true, withinMs: null });
+
+  // Phase 3: last resort — any recent image in channel (no user filter)
+  if (!chosen) chosen = pickLatest(recent, { fromUserOnly: false, withinMs: null });
+
+  if (chosen) {
+    // Attach directly by URL (no buffering). Discord will fetch it.
+    const fname = chosen.att.name || 'chart.png';
+    files = [ new AttachmentBuilder(chosen.att.url, { name: fname }) ];
   }
 }
 
