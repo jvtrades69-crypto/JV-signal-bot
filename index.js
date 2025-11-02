@@ -1328,57 +1328,55 @@ let recapText = [
 const recapChannel = await client.channels.fetch(interaction.channelId);
 let files = [];
 
-// Helper: decide if an attachment is image-like
-const isImageAttachment = (a) => {
-  const ct = (a.contentType || '').toLowerCase();
-  const nm = (a.name || '');
-  return (ct.startsWith('image/')) || /\.(png|jpe?g|gif|webp)$/i.test(nm);
+// helper: detect images by contentType or filename
+const looksLikeImage = (a) => {
+  const ct = String(a?.contentType || '').toLowerCase();
+  const nm = String(a?.name || '');
+  return ct.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(nm);
 };
 
-// Only auto-attach if user didn't provide a chart URL in the modal
-if (!chart) {
-  const now = Date.now();
-  const recent = await recapChannel.messages.fetch({ limit: 100 }).catch(() => null);
+// Always prefer an explicit URL typed in the modal.
+if (chart && /^https?:\/\//i.test(chart)) {
+  try {
+    const res = await fetch(chart);
+    const buf = Buffer.from(await res.arrayBuffer());
+    const name = 'chart.png';
+    files = [ new AttachmentBuilder(buf, { name }) ];
+  } catch {}
+  recapText += `\n\n[Chart](${chart})`;
+} else {
+  // No URL provided: pick the most recent image the user sent in THIS channel,
+  // strictly BEFORE the modal submission, and not older than 10 minutes.
+  const createdAt = interaction.createdTimestamp || Date.now();
+  const lowerBound = createdAt - 10 * 60 * 1000; // 10 min window
 
-  const pickLatest = (collection, { fromUserOnly = true, withinMs = null } = {}) => {
-    if (!collection || !collection.size) return null;
-    return collection
-      .filter(m => (!fromUserOnly || m.author?.id === interaction.user.id))
-      .filter(m => m.attachments && m.attachments.size > 0)
-      .filter(m => {
-        if (withinMs == null) return true;
-        const ts = m.createdTimestamp || 0;
-        return (now - ts) <= withinMs;
-      })
+  const recent = await recapChannel.messages.fetch({ limit: 100 }).catch(() => null);
+  if (recent && recent.size) {
+    const candidates = recent
+      .filter(m =>
+        m.author?.id === interaction.user.id &&
+        m.createdTimestamp < createdAt &&
+        m.createdTimestamp >= lowerBound &&
+        m.attachments?.size > 0
+      )
       .map(m => {
-        const att = m.attachments.find(isImageAttachment);
-        return att ? { m, att } : null;
+        const att = m.attachments.find(looksLikeImage);
+        return att ? { ts: m.createdTimestamp || 0, att } : null;
       })
       .filter(Boolean)
-      .sort((a, b) => (b.m.createdTimestamp || 0) - (a.m.createdTimestamp || 0))
-      [0] || null;
-  };
+      .sort((a, b) => b.ts - a.ts); // newest first
 
-  // Phase 1: strict window (15 min)
-  let chosen = pickLatest(recent, { fromUserOnly: true, withinMs: 15 * 60 * 1000 });
-
-  // Phase 2: relax window (no time limit)
-  if (!chosen) chosen = pickLatest(recent, { fromUserOnly: true, withinMs: null });
-
-  // Phase 3: last resort — any recent image in channel (no user filter)
-  if (!chosen) chosen = pickLatest(recent, { fromUserOnly: false, withinMs: null });
-
-  if (chosen) {
-    // Attach directly by URL (no buffering). Discord will fetch it.
-    const fname = chosen.att.name || 'chart.png';
-    files = [ new AttachmentBuilder(chosen.att.url, { name: fname }) ];
+    if (candidates.length) {
+      const url = candidates[0].att.url;
+      try {
+        const res = await fetch(url);
+        const buf = Buffer.from(await res.arrayBuffer());
+        const name = candidates[0].att.name || 'chart.png';
+        files = [ new AttachmentBuilder(buf, { name }) ];
+        recapText += `\n\n[Chart](${url})`; // keep a link for click-through
+      } catch {}
+    }
   }
-}
-
-
-// If user supplied a URL in the modal, keep that as a clickable line
-if (chart && /^https?:\/\//i.test(chart)) {
-  recapText += `\n\n[Chart](${chart})`;
 }
 
 // Single message: recap text, then role mention at the bottom (highlight if allowed)
