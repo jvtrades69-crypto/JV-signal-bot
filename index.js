@@ -30,6 +30,13 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
 });
 const pendingSignals = new Map();
+// stash a single /recap slash-UI attachment per user (10-min TTL)
+const pendingRecapCharts = new Map();
+const __looksLikeImage = (att) => {
+  const ct = String(att?.contentType || '').toLowerCase();
+  const nm = String(att?.name || '');
+  return ct.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(nm);
+};
 
 
 // errors
@@ -952,6 +959,13 @@ if (askReason && !reasonValue) {
       }
       const period = interaction.options.getString('period') || '';
 
+// capture optional image picked in the slash UI (mobile gallery)
+const slashAtt = interaction.options.getAttachment?.('chart');
+if (slashAtt && __looksLikeImage(slashAtt)) {
+  pendingRecapCharts.set(interaction.user.id, slashAtt.url);
+  setTimeout(() => pendingRecapCharts.delete(interaction.user.id), 10 * 60 * 1000);
+}
+
       if (period === 'monthly') {
         const signals = (await getSignals()).map(normalizeSignal);
         const now = new Date(); const y = now.getUTCFullYear(); const m = now.getUTCMonth();
@@ -1151,7 +1165,14 @@ if (interaction.customId.startsWith('modal:asset:')) {
         const reason = (interaction.fields.getTextInputValue('recap_reason') || '').trim();
         const confs  = (interaction.fields.getTextInputValue('recap_confs')  || '').trim();
         const notes  = (interaction.fields.getTextInputValue('recap_notes')  || '').trim();
-        const chart  = (interaction.fields.getTextInputValue('recap_chart')  || '').trim();
+        let chart = (interaction.fields.getTextInputValue('recap_chart') || '').trim();
+if (!chart) {
+  const stashUrl = pendingRecapCharts.get(interaction.user.id);
+  if (stashUrl) {
+    chart = stashUrl;
+    pendingRecapCharts.delete(interaction.user.id);
+  }
+}
 
         const reasonLines = reason ? reason.split('\n').map(s => s.trim()).filter(Boolean) : [];
         const confLines   = confs  ? confs.split('\n').map(s => s.trim()).filter(Boolean)  : [];
