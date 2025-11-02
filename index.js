@@ -1402,9 +1402,10 @@ if (chart && /^https?:\/\//i.test(chart)) {
   }
 }
 
-// Build final content (always include a click-through link)
-if (chartLink) recapText += `\n\n[Chart](${chartLink})`;
-
+// Attach image only — do not also show "Chart" link to avoid duplicates
+if (chartLink) {
+  // no link line — image itself will appear as embed
+}
 // Role mention handling (unchanged)
 const mentionId = (config.recapRoleId && String(config.recapRoleId).match(/\d{6,}/)?.[0]) || null;
 const guild = recapChannel.guild;
