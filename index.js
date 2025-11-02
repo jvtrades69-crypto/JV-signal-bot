@@ -1326,29 +1326,26 @@ let recapText = [
 
 // (the next line should remain exactly as in your file)
 const recapChannel = await client.channels.fetch(interaction.channelId);
-let files = [];
 
 // helper: detect images by contentType or filename
 const looksLikeImage = (a) => {
   const ct = String(a?.contentType || '').toLowerCase();
   const nm = String(a?.name || '');
-  return ct.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(nm);
+  return (ct.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(nm));
 };
 
-// Always prefer an explicit URL typed in the modal.
+let files = [];
+let chartLink = null;
+
+// 1) Prefer explicit URL in modal
 if (chart && /^https?:\/\//i.test(chart)) {
-  try {
-    const res = await fetch(chart);
-    const buf = Buffer.from(await res.arrayBuffer());
-    const name = 'chart.png';
-    files = [ new AttachmentBuilder(buf, { name }) ];
-  } catch {}
-  recapText += `\n\n[Chart](${chart})`;
+  chartLink = chart;
+  // Attach by URL first (Discord fetches it). Fallback to buffer if that fails later.
+  files = [{ attachment: chart, name: 'chart.png' }];
 } else {
-  // No URL provided: pick the most recent image the user sent in THIS channel,
-  // strictly BEFORE the modal submission, and not older than 10 minutes.
+  // 2) Auto-pick the most recent image you posted shortly BEFORE the modal
   const createdAt = interaction.createdTimestamp || Date.now();
-  const lowerBound = createdAt - 10 * 60 * 1000; // 10 min window
+  const lowerBound = createdAt - 30 * 60 * 1000; // 30 min window
 
   const recent = await recapChannel.messages.fetch({ limit: 100 }).catch(() => null);
   if (recent && recent.size) {
@@ -1367,34 +1364,38 @@ if (chart && /^https?:\/\//i.test(chart)) {
       .sort((a, b) => b.ts - a.ts); // newest first
 
     if (candidates.length) {
-      const url = candidates[0].att.url;
-      try {
-        const res = await fetch(url);
-        const buf = Buffer.from(await res.arrayBuffer());
-        const name = candidates[0].att.name || 'chart.png';
-        files = [ new AttachmentBuilder(buf, { name }) ];
-        recapText += `\n\n[Chart](${url})`; // keep a link for click-through
-      } catch {}
+      const url  = candidates[0].att.url;
+      const name = candidates[0].att.name || 'chart.png';
+      chartLink = url;
+
+      // Attach-by-URL path (most robust)
+      files = [{ attachment: url, name }];
+
+      // Optional buffer fallback if you prefer:
+      // try {
+      //   const res = await fetch(url);
+      //   const buf = Buffer.from(await res.arrayBuffer());
+      //   files = [ new AttachmentBuilder(buf, { name }) ];
+      // } catch {}
     }
   }
 }
 
-// Single message: recap text, then role mention at the bottom (highlight if allowed)
+// Build final content (always include a click-through link)
+if (chartLink) recapText += `\n\n[Chart](${chartLink})`;
+
+// Role mention handling (unchanged)
 const mentionId = (config.recapRoleId && String(config.recapRoleId).match(/\d{6,}/)?.[0]) || null;
 const guild = recapChannel.guild;
 const role  = mentionId ? guild?.roles?.cache.get(mentionId) : null;
 const canBypass = guild?.members?.me?.permissions?.has(PermissionsBitField.Flags.MentionEveryone);
 const canPing = Boolean(mentionId && (canBypass || role?.mentionable));
 
-const finalContent = mentionId
-  ? `${recapText}\n\n<@&${mentionId}>`
-  : recapText;
+const finalContent = mentionId ? `${recapText}\n\n<@&${mentionId}>` : recapText;
 
+// Send
 await recapChannel.send({
   content: finalContent,
-  // Always allow this specific role id to be pinged; Discord will only ping if either
-  // (a) the role is set “Allow anyone to @mention this role”, or
-  // (b) the bot has Mention Everyone permission. Otherwise it will render without ping.
   allowedMentions: mentionId ? { roles: [mentionId], parse: [] } : { parse: [] },
   files
 });
