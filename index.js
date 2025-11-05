@@ -1994,7 +1994,8 @@ return safeEditReply(interaction, { content: '⚖️ Risk badge cleared.' });
       }
       if (key === 'undo:be') {
         await ensureDeferred(interaction);
-        await updateSignal(id, { beSet:false, beMovedAfter:null });
+       await updateSignal(id, { beSet:false, beMovedAfter:null, validReentry:true, status: STATUS.RUN_VALID });
+
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
         await postSnapshot(updated);
@@ -2003,7 +2004,8 @@ return safeEditReply(interaction, { content: '⚖️ Risk badge cleared.' });
       }
       if (key === 'undo:profit') {
         await ensureDeferred(interaction);
-        await updateSignal(id, { slProfitSet:false, slProfitAfter:null, slProfitAfterTP:null, stoppedInProfit:false, stoppedInProfitAfterTP:null });
+        await updateSignal(id, { slProfitSet:false, slProfitAfter:null, slProfitAfterTP:null, stoppedInProfit:false, stoppedInProfitAfterTP:null, validReentry:true, status: STATUS.RUN_VALID });
+
         const updated = normalizeSignal(await getSignal(id));
         await editSignalMessage(updated);
         await postSnapshot(updated);
