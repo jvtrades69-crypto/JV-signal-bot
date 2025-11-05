@@ -1990,8 +1990,69 @@ return safeEditReply(interaction, { content: '⚖️ Risk badge cleared.' });
       }
 
       if (key === 'undo:tp') {
-        return interaction.showModal(makeUndoTPModal(id));
-      }
+  // show TP buttons (ephemeral) and handle the click inline
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(btn(id,'undo:tp:TP1')).setLabel('TP1').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(id,'undo:tp:TP2')).setLabel('TP2').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(id,'undo:tp:TP3')).setLabel('TP3').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(id,'undo:tp:TP4')).setLabel('TP4').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(btn(id,'undo:tp:TP5')).setLabel('TP5').setStyle(ButtonStyle.Secondary),
+  );
+
+  await interaction.reply({
+    content: 'Pick a TP to undo:',
+    components: [row],
+    flags: MessageFlags.Ephemeral
+  });
+
+  const msg = await interaction.fetchReply();
+  const filter = (i) => i.user.id === interaction.user.id && i.customId.startsWith(`btn:undo:tp:`);
+  let choice;
+  try {
+    choice = await msg.awaitMessageComponent({ filter, time: 30000 });
+  } catch {
+    // timeout: clean up UI silently
+    try { await interaction.editReply({ content: 'Timed out.', components: [] }); } catch {}
+    return;
+  }
+
+  // parse which TP
+  const parts = choice.customId.split(':'); // ['btn','undo','tp','TPx', '<id>']
+  const tpKey = parts[3]; // TP1..TP5
+  const tradeId = parts[4];
+
+  // perform the same undo logic you had in the modal submit
+  let signal = normalizeSignal(await getSignal(tradeId));
+  if (!signal || !/^TP[1-5]$/.test(tpKey)) {
+    try { await choice.update({ content: '❌ Invalid selection.', components: [] }); } catch {}
+    return;
+  }
+
+  // remove fills for that TP, clear hit flag, recompute latest hit
+  signal.fills = (signal.fills || []).filter(f => String(f.source).toUpperCase() !== tpKey);
+  signal.tpHits = { ...(signal.tpHits || {}), [tpKey]: false };
+  const order = ['TP5','TP4','TP3','TP2','TP1'];
+  signal.latestTpHit = order.find(k => signal.tpHits[k]) || null;
+
+  await updateSignal(tradeId, {
+    fills: signal.fills,
+    tpHits: signal.tpHits,
+    latestTpHit: signal.latestTpHit,
+    // keep it running + re-enterable after an undo, consistent with your desired behavior
+    status: STATUS.RUN_VALID,
+    validReentry: true
+  });
+
+  const updated = normalizeSignal(await getSignal(tradeId));
+  await editSignalMessage(updated);
+  await postSnapshot(updated);
+  await updateSummary();
+
+  try {
+    await choice.update({ content: `↩️ ${tpKey} undone.`, components: [] });
+  } catch {}
+  return;
+}
       if (key === 'undo:be') {
         await ensureDeferred(interaction);
        await updateSignal(id, { beSet:false, beMovedAfter:null, validReentry:true, status: STATUS.RUN_VALID });
