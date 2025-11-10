@@ -985,11 +985,16 @@ if (slashAtt && __looksLikeImage(slashAtt)) {
         const weekly = signals.filter(s => isNum(s.createdAt) && s.createdAt >= monday.getTime() && s.createdAt <= sunday.getTime());
 
         const finals = weekly.filter(s => s.status !== STATUS.RUN_VALID);
-const total = finals.length;
-const netR = finals.reduce((a,s)=> a + (isNum(s.finalR)? Number(s.finalR):0), 0);
 const wins = finals.filter(s => isNum(s.finalR) && Number(s.finalR) > 0).length;
-const winRatePct = total ? Math.round((wins/total)*100) : 0;
-const avgR = total ? netR/total : 0;
+const losses = finals.filter(s => isNum(s.finalR) && Number(s.finalR) < 0).length;
+const breakeven = finals.filter(s => isNum(s.finalR) && Number(s.finalR) === 0).length;
+
+const total = wins + losses + breakeven;
+const denom = wins + losses; // exclude BE from win-rate
+const netR = finals.reduce((a,s)=> a + (isNum(s.finalR)? Number(s.finalR):0), 0);
+const winRatePct = denom ? Math.round((wins/denom)*100) : 0;
+const avgR = denom ? netR / denom : 0; // avg over closed trades excluding BE
+
         const sorted = finals.filter(s => isNum(s.finalR))
                              .sort((a,b)=> Math.abs(Number(b.finalR||0)) - Math.abs(Number(a.finalR||0)));
         const topMoves = sorted.slice(0,2).map(s => ({
