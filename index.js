@@ -1043,19 +1043,25 @@ const avgR = denom ? netR / denom : 0; // avg over closed trades excluding BE
       }
 
       const linkId = await getThreadId(tradeId).catch(() => null);
-      if (linkId) {
-        try {
-          const thread = await interaction.client.channels.fetch(linkId);
-          if (thread) {
-            if (thread.archived) await thread.setArchived(false);
-            await thread.members.add(interaction.user.id).catch(()=>{});
-            const sig = normalizeSignal(raw);
-await thread.send({ content: 'Owner Control Panel', components: controlRows(sig.id) }).catch(()=>{});
-await postSnapshot(sig);
-            return safeEditReply(interaction, { content: `✅ Panel posted to existing thread: <#${thread.id}>` });
-          }
-        } catch {}
-      }
+if (linkId) {
+  try {
+    const thread = await interaction.client.channels.fetch(linkId);
+    const parentOk = thread?.parentId === raw.channelId;
+    const nameOk = !!thread && typeof thread.name === 'string';
+    if (thread && parentOk && nameOk) {
+      if (thread.archived) await thread.setArchived(false);
+      await thread.members.add(interaction.user.id).catch(()=>{});
+      const sig = normalizeSignal(raw);
+      await thread.send({ content: 'Owner Control Panel', components: controlRows(sig.id) }).catch(()=>{});
+      await postSnapshot(sig);
+      return safeEditReply(interaction, { content: `✅ Panel posted to existing thread: <#${thread.id}>` });
+    } else {
+      await setThreadId(tradeId, null).catch(()=>{});
+    }
+  } catch {
+    await setThreadId(tradeId, null).catch(()=>{});
+  }
+}
 
       const channel = await interaction.client.channels.fetch(raw.channelId).catch(()=>null);
       if (!channel?.isTextBased?.()) return safeEditReply(interaction, { content: '❌ Original channel not found.' });
