@@ -433,10 +433,17 @@ client.on('interactionCreate', async (interaction) => {
       const q = String(focused.value || '').toLowerCase();
       const opts = [];
       for (const s of all.slice(0, 50)) {
-        const name = computeThreadName(s); // keep it clean, no “• id:…”
-        if (!q || name.toLowerCase().includes(q)) {
-          opts.push({ name: name.slice(0, 100), value: s.id });
-        }
+        const latest = s.latestTpHit || ['TP5','TP4','TP3','TP2','TP1'].find(k => s.tpHits?.[k]) || null;
+const after  = latest ? ` after ${latest}` : '';
+const tag =
+  s.status === STATUS.STOPPED_BE  ? `stopped breakeven${after}` :
+  s.status === STATUS.STOPPED_OUT ? `stopped out` :
+  s.status === STATUS.CLOSED      ? (s.stoppedInProfit ? `stopped in profits${after}` : `fully closed${after}`) :
+  latest ? `${latest} hit` : 'running';
+const name = `${computeThreadName(s)} — ${tag}`.slice(0, 100);
+if (!q || name.toLowerCase().includes(q)) {
+  opts.push({ name, value: s.id });
+}
         if (opts.length >= 25) break;
       }
       return interaction.respond(opts);
@@ -462,10 +469,17 @@ client.on('interactionCreate', async (interaction) => {
 
       const choices = [];
       for (const s of all) {
-        const name = computeThreadName(s).slice(0, 100);
-        if (!q || name.toLowerCase().includes(q)) {
-          choices.push({ name, value: s.id });
-        }
+        const latest = s.latestTpHit || ['TP5','TP4','TP3','TP2','TP1'].find(k => s.tpHits?.[k]) || null;
+const after  = latest ? ` after ${latest}` : '';
+const tag =
+  s.status === STATUS.STOPPED_BE  ? `stopped breakeven${after}` :
+  s.status === STATUS.STOPPED_OUT ? `stopped out` :
+  s.status === STATUS.CLOSED      ? (s.stoppedInProfit ? `stopped in profits${after}` : `fully closed${after}`) :
+  latest ? `${latest} hit` : 'running';
+const name = `${computeThreadName(s)} — ${tag}`.slice(0, 100);
+if (!q || name.toLowerCase().includes(q)) {
+  choices.push({ name, value: s.id });
+}
         if (choices.length >= 25) break;
       }
       return interaction.respond(choices);
@@ -482,10 +496,16 @@ client.on('interactionCreate', async (interaction) => {
         const store = await import('./store.js');
         const list = (await store.getDeletedSignals?.()) || [];
         const items = list.map(normalizeSignal).slice(0, 50);
-        choices = items.map(s => ({
-          name: computeThreadName(s).slice(0, 100),
-          value: s.id,
-        }));
+        choices = items.map(s => {
+  const latest = s.latestTpHit || ['TP5','TP4','TP3','TP2','TP1'].find(k => s.tpHits?.[k]) || null;
+  const after  = latest ? ` after ${latest}` : '';
+  const tag =
+    s.status === STATUS.STOPPED_BE  ? `stopped breakeven${after}` :
+    s.status === STATUS.STOPPED_OUT ? `stopped out` :
+    s.status === STATUS.CLOSED      ? (s.stoppedInProfit ? `stopped in profits${after}` : `fully closed${after}`) :
+    latest ? `${latest} hit` : 'running';
+  return { name: `${computeThreadName(s)} — ${tag}`.slice(0, 100), value: s.id };
+});
       } catch {
         choices = [];
       }
