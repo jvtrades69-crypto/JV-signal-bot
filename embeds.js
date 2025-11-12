@@ -389,7 +389,7 @@ export function renderMonthlyRecap(trades, year, monthIndex) {
       if (rr != null) approxRunner = (remPct/100)*rr;
     }
 
-    return `- **${asset} ${dir}**  \`${plusR(realised)}\` so far ✅  (\`${usedPct}%\` closed, \`${remPct}%\` runner still open ~ ${approxRunner.toFixed(2)}R unrealised ) [View Trade](${url})`;
+    return `- **${asset} ${dir}**  \`${plusR(realised)}\` so far ✅  (\`${usedPct}%\` closed, \`${remPct}%\` runner ~ ${approxRunner.toFixed(2)}R) [View Trade](${url})`;
   };
 
   const L = [];
@@ -398,8 +398,7 @@ export function renderMonthlyRecap(trades, year, monthIndex) {
   L.push(`- ✅ **Wins:** \`${wins}\`  `);
   L.push(`- ❌ **Losses:** \`${losses}\`  `);
   L.push(`- 🟡 **Breakeven:** \`${breakeven}\``);
-  L.push(`- **Net R:** \`${plusR(netAllR)}\`${unrealisedR ? `  (\`${plusR(unrealisedR)}\` unrealised from runners )` : ''}  `);
-  L.push(`- **Avg R/closed trade:** \`${plusR(avgRClosed)}\`  `);
+  L.push(`- **Net R:** ${`**${plusR(netAllR)}**`}${unrealisedR ? `  (${`**${plusR(unrealisedR)}**`} unrealised from runners)` : ''}  `);
   L.push(`- **Win rate:** \`${winRatePct}%\`  `, '');
   L.push(`🔮 **All ${inMonth.length} Trades**  `);
   if (inMonth.length) L.push(...inMonth.map(tradeLine));
