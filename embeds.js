@@ -305,19 +305,155 @@ export function renderRecapText(signal, extras = {}, rrChips = []) {
   return lines.join('\n').trimEnd();
 }
 
-// ---- simple monthly recap (kept for compatibility) ----
-export function renderMonthlyRecap(signals, year, monthIdx) {
-  const monthName = new Date(Date.UTC(year, monthIdx, 1)).toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
-  const closed = (signals || []).filter(s => s && s.status === 'CLOSED' && isFinite(Number(s.finalR)));
-  const sum = closed.reduce((acc, s) => acc + Number(s.finalR || 0), 0);
-  const wins = closed.filter(s => Number(s.finalR) > 0).length;
-  const losses = closed.filter(s => Number(s.finalR) < 0).length;
-  const be = closed.filter(s => Number(s.finalR) === 0).length;
+export function renderMonthlyRecap(trades, year, monthIndex) {
+  const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const mname = MONTHS[monthIndex] || `M${monthIndex+1}`;
 
-  const lines = [];
-  lines.push(`**${monthName} ${year} — Monthly Recap**`);
-  lines.push(`Trades: ${closed.length} • Wins: ${wins} • BE: ${be} • Losses: ${losses}`);
-  lines.push(`Total: ${sum >= 0 ? '+' : ''}${sum.toFixed(2)}R`);
+  const isNum = (v) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(String(v).replace(/[,_\s]/g,'')));
+  const toN = (v) => Number(String(v).replace(/[,_\s]/g,''));
+  const rAt = (dir, entry, sl0, price) => {
+    if (!isNum(entry) || !isNum(sl0) || !isNum(price)) return null;
+    const E = toN(entry), S = toN(sl0), P = toN(price);
+    if (String(dir).toUpperCase() === 'LONG') {
+      const risk = E - S; if (risk <= 0) return null; return (P - E) / risk;
+    } else {
+      const risk = S - E; if (risk <= 0) return null; return (E - P) / risk;
+    }
+  };
+  const roundR = (x) => (x >= 0 ? `+${x.toFixed(2)}R` : `${x.toFixed(2)}R`);
+
+  // only trades created in the given month
+  const inMonth = (Array.isArray(trades) ? trades : []).filter(t => {
+    const ts = Number(t?.createdAt || 0);
+    if (!Number.isFinite(ts)) return false;
+    const d = new Date(ts);
+    return d.getUTCFullYear() === year && d.getUTCMonth() === monthIndex;
+  });
+
+  // classify
+  const closed = inMonth.filter(t => String(t?.status).toUpperCase() !== 'RUN_VALID');
+  const open   = inMonth.filter(t => String(t?.status).toUpperCase() === 'RUN_VALID');
+
+  const finalR = (t) => (isNum(t?.finalR) ? Number(t.finalR) : 0);
+
+  const wins      = closed.filter(t => finalR(t) > 0).length;
+  const losses    = closed.filter(t => finalR(t) < 0).length;
+  const breakeven = closed.filter(t => finalR(t) === 0).length;
+
+  const totalTrades = inMonth.length;
+
+  const netClosedR = closed.reduce((a,t) => a + finalR(t), 0);
+
+  // unrealised from runners = remaining size × R at highest TP hit; if no TP hit → 0
+  const unrealisedR = open.reduce((acc, t) => {
+    const fills = Array.isArray(t?.fills) ? t.fills : [];
+    const usedPct = fills.reduce((a,f) => a + Number(f?.pct || 0), 0);
+    const remainingPct = Math.max(0, 100 - usedPct);
+
+    const tpOrder = ['TP5','TP4','TP3','TP2','TP1'];
+    const highestHit = tpOrder.find(k => t?.tpHits?.[k]) || null;
+    if (!highestHit || remainingPct <= 0) return acc;
+
+    const price = t[String(highestHit).toLowerCase()];
+    const rr = rAt(t.direction, t.entry, (t.slOriginal ?? t.sl), price);
+    if (rr == null) return acc;
+
+    return acc + (remainingPct / 100) * rr;
+  }, 0);
+
+  const netAllR = netClosedR + unrealisedR;
+
+  const denom = wins + losses; // exclude BE for win-rate
+  const winRatePct = denom ? Math.round((wins/denom)*100) : 0;
+  const avgR = denom ? netClosedR / denom : 0;
+
+  // “All N Trades” lines
+  const lineFor = (t) => {
+    const asset = `$${String(t.asset||'').toUpperCase()}`;
+    const dir   = String(t.direction).toUpperCase() === 'SHORT' ? 'Short' : 'Long';
+    const url   = t.jumpUrl ? t.jumpUrl : '#️⃣';
+
+    const tpOrder = ['TP5','TP4','TP3','TP2','TP1'];
+    const highestHit = tpOrder.find(k => t?.tpHits?.[k]) || null;
+
+    if (String(t.status).toUpperCase() !== 'RUN_VALID') {
+      const r = finalR(t);
+      const badge = r > 0 ? '✅' : r < 0 ? '❌' : '🟡';
+      return `- **${asset} ${dir}**  \`${roundR(r)}\` ${badge}  [View Trade](${url})`;
+    }
+
+    const fills = Array.isArray(t?.fills) ? t.fills : [];
+    const usedPct = fills.reduce((a,f) => a + Number(f?.pct || 0), 0);
+    const remainingPct = Math.max(0, 100 - usedPct);
+
+    const realised = fills.reduce((a,f) => {
+      const rr = rAt(t.direction, t.entry, (t.slOriginal ?? t.sl), f?.price);
+      const pct = Number(f?.pct || 0);
+      return (!Number.isFinite(pct) || rr == null) ? a : a + (pct/100)*rr;
+    }, 0);
+
+    let approxRunner = 0;
+    if (highestHit && remainingPct > 0) {
+      const p = t[String(highestHit).toLowerCase()];
+      const rr = rAt(t.direction, t.entry, (t.slOriginal ?? t.sl), p);
+      if (rr != null) approxRunner = (remainingPct/100) * rr;
+    }
+
+    const soFar = realised;
+    const badge = '✅';
+    const runnerNote = remainingPct > 0
+      ? ` **(${usedPct}% closed, ${remainingPct}% runner still open ~ ${approxRunner.toFixed(2)}R unrealised )`
+      : '';
+
+    return `- **${asset} ${dir}**  \`${roundR(soFar)}\` so far ${badge}${runnerNote} [View Trade](${url})`;
+  };
+
+  // Best trade = max finalR among closed > 0
+  const best = closed
+    .filter(t => finalR(t) > 0)
+    .sort((a,b) => finalR(b) - finalR(a))[0] || null;
+
+  const bestBlock = best ? (() => {
+    const asset = `$${String(best.asset||'').toUpperCase()}`;
+    const dir   = String(best.direction).toUpperCase() === 'SHORT' ? 'Short' : 'Long';
+    const url   = best.jumpUrl ? best.jumpUrl : '#️⃣';
+    const bestTitle = `📈 **${asset} ${dir} (${roundR(finalR(best))})** [View Trade](${url})`;
+
+    const order = ['TP1','TP2','TP3','TP4','TP5'];
+    const tps = [];
+    for (const K of order) {
+      const price = best[String(K).toLowerCase()];
+      if (!isNum(price)) continue;
+      const rr = rAt(best.direction, best.entry, (best.slOriginal ?? best.sl), price);
+      if (rr == null) continue;
+
+      const pct = (Array.isArray(best.fills) ? best.fills : [])
+        .filter(f => String(f?.source).toUpperCase() === K)
+        .reduce((a,f)=> a + Number(f?.pct || 0), 0);
+
+      const hit = best.tpHits?.[K] ? ' ✅' : '';
+      tps.push(`- ${K.replace('TP','TP ')} | \`${(rr>=0?`+${rr.toFixed(2)}`:rr.toFixed(2))}R\`${pct>0?` (${pct}%)`:''}${hit}`);
+    }
+    return [`🏆 **Best Trade**`, bestTitle, `🎯 **Take Profits**`, ...(tps.length?tps:['- —'])].join('\n');
+  })() : '';
+
+  const lines = [
+    `📊 **JV Trades | Monthly Recap (${mname} ${year})**`,
+    '',
+    `- **Total trades:** \`${totalTrades}\`  `,
+    `- ✅ **Wins:** \`${wins}\`  `,
+    `- ❌ **Losses:** \`${losses}\`  `,
+    `- 🟡 **Breakeven:** \`${breakeven}\``,
+    `- **Net R:** \`${roundR(netAllR)}\`${unrealisedR ? `  (\`${roundR(unrealisedR)}\` unrealised from runners)` : ''}  `,
+    `- **Avg R/closed trade:** \`${(avgR>=0?`+${avgR.toFixed(2)}`:avgR.toFixed(2))}R\`  `,
+    `- **Win rate:** \`${winRatePct}%\`  `,
+    '',
+    `🔮 **All ${totalTrades} Trades**  `,
+    ...inMonth.map(lineFor),
+    '',
+    bestBlock,
+  ].filter(Boolean);
+
   return lines.join('\n');
 }
 
