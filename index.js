@@ -986,12 +986,47 @@ if (slashAtt && __looksLikeImage(slashAtt)) {
   setTimeout(() => pendingRecapCharts.delete(interaction.user.id), 10 * 60 * 1000);
 }
 
-      if (period === 'monthly') {
+            if (period === 'monthly') {
+        // optional: year, month (1–12), notes
+        const yearOpt  = interaction.options.getInteger?.('year');
+        const monthOpt = interaction.options.getInteger?.('month');
+        const notesRaw = interaction.options.getString?.('notes') || '';
+
+        let y;
+        let m; // 0-based
+
+        if (Number.isInteger(yearOpt) && Number.isInteger(monthOpt) && monthOpt >= 1 && monthOpt <= 12) {
+          y = yearOpt;
+          m = monthOpt - 1;
+        } else {
+          const now = new Date();
+          y = now.getUTCFullYear();
+          m = now.getUTCMonth();
+        }
+
         const signals = (await getSignals()).map(normalizeSignal);
-        const now = new Date(); const y = now.getUTCFullYear(); const m = now.getUTCMonth();
-        const monthly = signals.filter(s => isNum(s.createdAt) && (new Date(Number(s.createdAt))).getUTCFullYear()===y && (new Date(Number(s.createdAt))).getUTCMonth()===m);
+        const monthly = signals.filter(s => {
+          const ts = isNum(s.createdAt) ? Number(s.createdAt) : null;
+          if (!Number.isFinite(ts)) return false;
+          const d = new Date(ts);
+          return d.getUTCFullYear() === y && d.getUTCMonth() === m;
+        });
+
         const text = renderMonthlyRecap(monthly, y, m);
-        return interaction.reply({ content: text, allowedMentions: { parse: [] } });
+
+        const out = [text];
+        if (notesRaw.trim()) {
+          const lines = notesRaw.trim().split('\n').map(l => l.trim()).filter(Boolean);
+          if (lines.length) {
+            out.push('', '🗒️ **Notes**');
+            out.push(...lines.map(l => `- ${l}`));
+          }
+        }
+
+        return interaction.reply({
+          content: out.join('\n'),
+          allowedMentions: { parse: [] }
+        });
       }
 
       if (period === 'weekly') {
