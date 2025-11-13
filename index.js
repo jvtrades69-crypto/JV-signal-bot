@@ -986,49 +986,38 @@ if (slashAtt && __looksLikeImage(slashAtt)) {
   setTimeout(() => pendingRecapCharts.delete(interaction.user.id), 10 * 60 * 1000);
 }
 
-            if (period === 'monthly') {
+                    if (period === 'monthly') {
+        const signals = (await getSignals()).map(normalizeSignal);
+
         // optional: year, month (1–12), notes
         const yearOpt  = interaction.options.getInteger?.('year');
-        const monthOpt = interaction.options.getInteger?.('month');
-        const notesRaw = interaction.options.getString?.('notes') || '';
+        const monthOpt = interaction.options.getInteger?.('month'); // 1–12
+        const notesRaw = (interaction.options.getString?.('notes') || '').trim();
 
-        let y;
-        let m; // 0-based
+        const now = new Date();
+        const y = Number.isInteger(yearOpt) ? yearOpt : now.getUTCFullYear();
+        const m = (Number.isInteger(monthOpt) && monthOpt >= 1 && monthOpt <= 12)
+          ? monthOpt - 1
+          : now.getUTCMonth(); // 0–11
 
-        if (Number.isInteger(yearOpt) && Number.isInteger(monthOpt) && monthOpt >= 1 && monthOpt <= 12) {
-          y = yearOpt;
-          m = monthOpt - 1;
-        } else {
-          const now = new Date();
-          y = now.getUTCFullYear();
-          m = now.getUTCMonth();
-        }
-
-        const signals = (await getSignals()).map(normalizeSignal);
         const monthly = signals.filter(s => {
-          const ts = isNum(s.createdAt) ? Number(s.createdAt) : null;
-          if (!Number.isFinite(ts)) return false;
-          const d = new Date(ts);
+          if (!isNum(s.createdAt)) return false;
+          const d = new Date(Number(s.createdAt));
           return d.getUTCFullYear() === y && d.getUTCMonth() === m;
         });
 
-        const text = renderMonthlyRecap(monthly, y, m);
+        // split notes into lines, pass into renderMonthlyRecap
+        const notesLines = notesRaw
+          ? notesRaw.split('\n').map(s => s.trim()).filter(Boolean)
+          : [];
 
-        const out = [text];
-        if (notesRaw.trim()) {
-          const lines = notesRaw.trim().split('\n').map(l => l.trim()).filter(Boolean);
-          if (lines.length) {
-            out.push('', '🗒️ **Notes**');
-            out.push(...lines.map(l => `- ${l}`));
-          }
-        }
+        const text = renderMonthlyRecap(monthly, y, m, { notesLines });
 
         return interaction.reply({
-          content: out.join('\n'),
+          content: text,
           allowedMentions: { parse: [] }
         });
       }
-
       if (period === 'weekly') {
         const now = new Date();
         const day = now.getUTCDay();
