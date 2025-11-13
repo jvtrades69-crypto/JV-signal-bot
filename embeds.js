@@ -305,30 +305,35 @@ export function renderRecapText(signal, extras = {}, rrChips = []) {
   return lines.join('\n').trimEnd();
 }
 
-export function renderMonthlyRecap(trades, year, monthIndex) {
+export function renderMonthlyRecap(trades, year, monthIndex, { notesLines = [] } = {}) {
   const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-  const mname = MONTHS[monthIndex] || `M${monthIndex+1}`;
+  const mname = MONTHS[monthIndex] || `M${monthIndex + 1}`;
 
-  const isNum = (v) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(String(v).replace(/[,_\s]/g,'')));
-  const toN = (v) => Number(String(v).replace(/[,_\s]/g,''));
+  const isNum = (v) =>
+    v !== null &&
+    v !== undefined &&
+    v !== '' &&
+    Number.isFinite(Number(String(v).replace(/[,_\s]/g, '')));
+  const toN = (v) => Number(String(v).replace(/[,_\s]/g, ''));
   const rAt = (dir, entry, sl0, price) => {
     if (!isNum(entry) || !isNum(sl0) || !isNum(price)) return null;
     const E = toN(entry), S = toN(sl0), P = toN(price);
-    if (String(dir).toUpperCase() === 'LONG') { const r = E - S; if (r <= 0) return null; return (P - E) / r; }
+    if (String(dir).toUpperCase() === 'LONG') {
+      const r = E - S; if (r <= 0) return null; return (P - E) / r;
+    }
     const r = S - E; if (r <= 0) return null; return (E - P) / r;
   };
   const plusR = (x) => (x >= 0 ? `+${x.toFixed(2)}R` : `${x.toFixed(2)}R`);
 
-  // filter trades created in this month (UTC)
-  const inMonth = (Array.isArray(trades) ? trades : []).filter(t => {
+  const all = (Array.isArray(trades) ? trades : []).filter(t => {
     const ts = Number(t?.createdAt || 0);
     if (!Number.isFinite(ts)) return false;
     const d = new Date(ts);
     return d.getUTCFullYear() === year && d.getUTCMonth() === monthIndex;
   });
 
-  const closed = inMonth.filter(t => String(t?.status).toUpperCase() !== 'RUN_VALID');
-  const open   = inMonth.filter(t => String(t?.status).toUpperCase() === 'RUN_VALID');
+  const closed = all.filter(t => String(t?.status).toUpperCase() !== 'RUN_VALID');
+  const open   = all.filter(t => String(t?.status).toUpperCase() === 'RUN_VALID');
 
   const finalR = (t) => (isNum(t?.finalR) ? Number(t.finalR) : 0);
 
@@ -336,75 +341,93 @@ export function renderMonthlyRecap(trades, year, monthIndex) {
   const losses    = closed.filter(t => finalR(t) < 0).length;
   const breakeven = closed.filter(t => finalR(t) === 0).length;
 
-  // win rate excludes breakeven
   const denom = wins + losses;
-  const winRatePct = denom ? Math.round((wins/denom)*100) : 0;
-  const avgRClosed = denom ? (closed.reduce((a,t)=>a+finalR(t),0) / denom) : 0;
+  const winRatePct = denom ? Math.round((wins / denom) * 100) : 0;
+  const avgRClosed = denom ? (closed.reduce((a, t) => a + finalR(t), 0) / denom) : 0;
 
-  // net closed + unrealised from runners at highest TP hit on remaining size
-  const netClosedR = closed.reduce((a,t) => a + finalR(t), 0);
+  const netClosedR = closed.reduce((a, t) => a + finalR(t), 0);
   const unrealisedR = open.reduce((acc, t) => {
     const fills = Array.isArray(t?.fills) ? t.fills : [];
-    const usedPct = fills.reduce((a,f)=>a+Number(f?.pct||0),0);
+    const usedPct = fills.reduce((a, f) => a + Number(f?.pct || 0), 0);
     const remainingPct = Math.max(0, 100 - usedPct);
 
-    const highest = ['TP5','TP4','TP3','TP2','TP1'].find(k => t?.tpHits?.[k]) || null;
+    const highest = ['TP5', 'TP4', 'TP3', 'TP2', 'TP1'].find(k => t?.tpHits?.[k]) || null;
     if (!highest || remainingPct <= 0) return acc;
 
     const price = t[String(highest).toLowerCase()];
     const rr = rAt(t.direction, t.entry, (t.slOriginal ?? t.sl), price);
     if (rr == null) return acc;
 
-    return acc + (remainingPct/100)*rr;
+    return acc + (remainingPct / 100) * rr;
   }, 0);
   const netAllR = netClosedR + unrealisedR;
 
-  // per-trade line
-  const tradeLine = (t) => {
-    const asset = `$${String(t.asset||'').toUpperCase()}`;
+  const tradeLineClosed = (t) => {
+    const asset = `$${String(t.asset || '').toUpperCase()}`;
     const dir   = String(t.direction).toUpperCase() === 'SHORT' ? 'Short' : 'Long';
     const url   = t.jumpUrl ? t.jumpUrl : '#️⃣';
 
-    if (String(t.status).toUpperCase() !== 'RUN_VALID') {
-      const r = finalR(t);
-      const badge = r > 0 ? '✅' : r < 0 ? '❌' : '🟡';
-      return `- **${asset} ${dir}**  \`${plusR(r)}\` ${badge}  [View Trade](${url})`;
-    }
+    const r = finalR(t);
+    const badge = r > 0 ? '✅' : r < 0 ? '❌' : '🟡';
+    return `- **${asset} ${dir}**  \`${plusR(r)}\` ${badge}  [View Trade](${url})`;
+  };
+
+  const tradeLineOpen = (t) => {
+    const asset = `$${String(t.asset || '').toUpperCase()}`;
+    const dir   = String(t.direction).toUpperCase() === 'SHORT' ? 'Short' : 'Long';
+    const url   = t.jumpUrl ? t.jumpUrl : '#️⃣';
 
     const fills = Array.isArray(t?.fills) ? t.fills : [];
-    const usedPct = Math.min(100, Math.max(0, fills.reduce((a,f)=>a+Number(f?.pct||0),0)));
+    const usedPct = Math.min(100, Math.max(0, fills.reduce((a, f) => a + Number(f?.pct || 0), 0)));
     const remPct  = Math.max(0, 100 - usedPct);
 
-    const realised = fills.reduce((a,f) => {
+    const realised = fills.reduce((a, f) => {
       const rr = rAt(t.direction, t.entry, (t.slOriginal ?? t.sl), f?.price);
       const pct = Number(f?.pct || 0);
-      return (!Number.isFinite(pct) || rr == null) ? a : a + (pct/100)*rr;
+      return (!Number.isFinite(pct) || rr == null) ? a : a + (pct / 100) * rr;
     }, 0);
 
     let approxRunner = 0;
-    const highest = ['TP5','TP4','TP3','TP2','TP1'].find(k => t?.tpHits?.[k]) || null;
+    const highest = ['TP5', 'TP4', 'TP3', 'TP2', 'TP1'].find(k => t?.tpHits?.[k]) || null;
     if (highest && remPct > 0) {
       const p = t[String(highest).toLowerCase()];
       const rr = rAt(t.direction, t.entry, (t.slOriginal ?? t.sl), p);
-      if (rr != null) approxRunner = (remPct/100)*rr;
+      if (rr != null) approxRunner = (remPct / 100) * rr;
     }
 
-    return `- **${asset} ${dir}**  \`${plusR(realised)}\` so far ✅  (\`${usedPct}%\` closed, \`${remPct}%\` runner ~ ${approxRunner.toFixed(2)}R) [View Trade](${url})`;
+    return `- **${asset} ${dir}**  \`${plusR(realised)}\` so far ✅  (\`${usedPct}%\` closed, \`${remPct}%\` runner open ~\`${approxRunner.toFixed(2)}R\` unrealised)  [View Trade](${url})`;
   };
 
   const L = [];
-  L.push(`📊 **JV Trades | Monthly Recap (${mname} ${year})**`, '');
-  L.push(`- **Total trades:** \`${inMonth.length}\`  `);
-  L.push(`- ✅ **Wins:** \`${wins}\`  `);
-  L.push(`- ❌ **Losses:** \`${losses}\`  `);
+  L.push(`📊 **JV Trades | Monthly Recap (${mname} ${year})**`);
+  L.push(`*(Closed PnL only; open runners excluded from stats)*`, '');
+  L.push(`- **Total trades:** \`${closed.length}\``);
+  L.push(`- ✅ **Wins:** \`${wins}\``);
+  L.push(`- ❌ **Losses:** \`${losses}\``);
   L.push(`- 🟡 **Breakeven:** \`${breakeven}\``);
-  L.push(`- **Net R:** ${`**${plusR(netAllR)}**`}${unrealisedR ? `  (${`**${plusR(unrealisedR)}**`} unrealised from runners)` : ''}  `);
-  L.push(`- **Win rate:** \`${winRatePct}%\`  `, '');
-  L.push(`🔮 **All ${inMonth.length} Trades**  `);
-  if (inMonth.length) L.push(...inMonth.map(tradeLine));
+  L.push(`- **Net R (closed):** \`${plusR(netClosedR)}\``);
+  L.push(`- **Avg R/closed trade:** \`${plusR(avgRClosed)}\``);
+  L.push(`- **Win rate:** \`${winRatePct}%\`  *(BE counted as non-wins)*`, '');
+
+  L.push(`🔮 **All ${closed.length} Trades (closed)**`);
+  if (closed.length) closed.forEach(t => L.push(tradeLineClosed(t)));
+  else L.push('- —');
+
+  L.push('', '📂 **Open positions carried to next month**');
+  if (open.length) open.forEach(t => L.push(tradeLineOpen(t)));
+  else L.push('- —');
+
+  if (Array.isArray(notesLines)) {
+    L.push('', '🗒️ **Notes**');
+    if (notesLines.length) {
+      notesLines.forEach(n => L.push(`- ${n}`));
+    } else {
+      L.push('- —');
+    }
+  }
+
   return L.join('\n');
 }
-
 // ---- recap embed for attachments ----
 export function renderRecapEmbed(signal, { imageUrl, attachmentName, attachmentUrl } = {}) {
   const isFinal = ['CLOSED', 'STOPPED_BE', 'STOPPED_OUT'].includes(signal.status);
