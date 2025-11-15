@@ -1169,319 +1169,296 @@ await updateSummary();
     }
 
     // MODALS
-    if (interaction.isModalSubmit()) {
-      const idPart = interaction.customId.split(':').pop();
+      // Monthly recap modal submit
+  if (interaction.customId === 'modal:monthly_recap') {
+    await ensureDeferred(interaction);
 
-      // NEW: reason modal submit (top-level, not nested)
-if (interaction.customId.startsWith('modal:reason:')) {
-  await ensureDeferred(interaction);
-  const stash = pendingSignals.get(idPart);
-  pendingSignals.delete(idPart);
-  if (!stash) return safeEditReply(interaction, { content: '❌ Session expired. Try /signal again.' });
+    const monthYearRaw = (interaction.fields.getTextInputValue('month_year') || '').trim();
+    const notesRaw     = (interaction.fields.getTextInputValue('notes') || '').trim();
 
-  const reasonTxt = (interaction.fields.getTextInputValue('reason_value') || '').trim();
+    let y, m; // m = 0–11
 
-  // If user also picked asset = OTHER, chain to asset modal next
-  if ((stash.asset || '') === 'OTHER') {
-    const pid2 = nano();
-    const m2 = new ModalBuilder().setCustomId(modal(pid2,'asset')).setTitle('Enter custom asset');
-    const input2 = new TextInputBuilder()
-      .setCustomId('asset_value')
-      .setLabel('Asset (e.g., PEPE, XRP)')
-      .setStyle(TextInputStyle.Short)
-      .setRequired(true);
-    m2.addComponents(new ActionRowBuilder().addComponents(input2));
-    pendingSignals.set(pid2, { ...stash, reason: reasonTxt });
-    return interaction.showModal(m2);
-  }
-
-  await createSignal({ ...stash, reason: reasonTxt }, stash.channelId || interaction.channelId);
-  return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
-}
-
-// Asset modal submit (unchanged)
-if (interaction.customId.startsWith('modal:asset:')) {
-  await ensureDeferred(interaction);
-  const stash = pendingSignals.get(idPart);
-  pendingSignals.delete(idPart);
-  if (!stash) return safeEditReply(interaction, { content: '❌ Session expired. Try /signal again.' });
-  const asset = interaction.fields.getTextInputValue('asset_value').trim().toUpperCase();
-  await createSignal({ asset, ...stash }, stash.channelId || interaction.channelId);
-  return safeEditReply(interaction, { content: `✅ Trade signal posted for ${asset}.` });
-}
-
-
-      if (interaction.customId.startsWith('modal:recap:')) {
-        await ensureDeferred(interaction);
-        const id = idPart;
-        let signal = normalizeSignal(await getSignal(id));
-        if (!signal) return safeEditReply(interaction, { content: '❌ Trade not found for recap.' });
-
-        const reason = (interaction.fields.getTextInputValue('recap_reason') || '').trim();
-        const confs  = (interaction.fields.getTextInputValue('recap_confs')  || '').trim();
-        const notes  = (interaction.fields.getTextInputValue('recap_notes')  || '').trim();
-        let chart = (interaction.fields.getTextInputValue('recap_chart') || '').trim();
-if (!chart) {
-  const stashUrl = pendingRecapCharts.get(interaction.user.id);
-  if (stashUrl) {
-    chart = stashUrl;
-    pendingRecapCharts.delete(interaction.user.id);
-  }
-}
-
-        const reasonLines = reason ? reason.split('\n').map(s => s.trim()).filter(Boolean) : [];
-        const confLines   = confs  ? confs.split('\n').map(s => s.trim()).filter(Boolean)  : [];
-        const notesLines  = notes  ? notes.split('\n').map(s => s.trim()).filter(Boolean)  : [];
-
-        // Final R override
-        const finalROv = (interaction.fields.getTextInputValue('recap_finalr') || '').trim();
-        if (finalROv !== '') {
-          if (!isNum(finalROv)) {
-            return safeEditReply(interaction, { content: '❌ Final R must be a number (e.g., 1.25 or -0.5).' });
-          }
-          await updateSignal(id, { finalR: Number(finalROv) });
-          signal = normalizeSignal(await getSignal(id));
-        }
-
-// ----- Build recap text in the "nice" style (single message) -----
-const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
-const dirDot  = signal.direction === 'SHORT' ? '🔴' : '🟢';
-
-// ---------- R calc + TP list (consolidated, no duplicates) ----------
-const calcWeightedR = () => {
-  const fills = Array.isArray(signal.fills) ? signal.fills : [];
-  if (!fills.length) return 0;
-  let sum = 0;
-  for (const f of fills) {
-    const pct = Number(f.pct || 0);
-    const rr  = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, f.price);
-    if (Number.isNaN(pct) || rr === null) continue;
-    sum += (pct * rr) / 100;
-  }
-  return Number(sum.toFixed(6));
-};
-
-const overrideDigits =
-  finalROv !== '' ? (String(finalROv).split('.')[1] || '').length : null;
-
-// Prefer realized R from fills; only use finalR if explicitly set to a non-zero,
-// or realized is actually 0, or there are no fills to compute with.
-const realized = calcWeightedR();
-const useFinal = isNum(signal.finalR) && (
-  Number(signal.finalR) !== 0 || realized === 0 || !(signal.fills && signal.fills.length)
-);
-const rawR = useFinal ? Number(signal.finalR) : realized;
-
-const riskLbl = String(signal.riskLabel || '').toLowerCase();
-const lossFactor = riskLbl === 'half' || riskLbl === '1/2' ? 0.5
-  : riskLbl === '1/4' || riskLbl === 'quarter' ? 0.25
-  : riskLbl === '3/4' || riskLbl === 'three-quarter' || riskLbl === 'threequarter' ? 0.75
-  : 1;
-
-// apply risk badge only to losses
-const useRFinal = rawR < 0 ? rawR * lossFactor : rawR;
-
-const rFmt = (v) => {
-  const dec = overrideDigits != null ? Math.min(6, Math.max(2, overrideDigits)) : 2;
-  return v >= 0 ? `+${v.toFixed(dec)}R` : `${v.toFixed(dec)}R`;
-};
-
-const peakR = isNum(signal.maxR) ? Number(signal.maxR).toFixed(2) : null;
-// TP list — show ALL with R and % closed
-const order = ['TP1','TP2','TP3','TP4','TP5'];
-const tpLines = [];
-for (const K of order) {
-  const key = K.toLowerCase();
-  const price = signal[key];
-  if (!isNum(price)) continue;
-
-  const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, price);
-  if (r == null) continue;
-
-  let pct = 0;
-  if (Array.isArray(signal.fills)) {
-    pct = signal.fills
-      .filter(f => String(f.source).toUpperCase() === K)
-      .reduce((a,f)=> a + Number(f.pct || 0), 0);
-  }
-  const pctTxt = pct > 0 ? ` (${pct}% closed)` : '';
-  const hit = signal.tpHits?.[K] ? ' ✅' : '';
-  tpLines.push(`- ${K.replace('TP','TP ')} | ${r.toFixed(2)}R${pctTxt}${hit}`);
-}
-
-// 👇 NEW: detect final close after last TP
-let finalCloseLine = '';
-// look for last fill that was a full/terminal close
-const terminalSources = ['FINAL_CLOSE', 'FINAL_CLOSE_PROFIT', 'STOP_PROFIT', 'STOP_OUT', 'STOP_BE'];
-const lastTerminalFill = Array.isArray(signal.fills)
-  ? [...signal.fills].reverse().find(f =>
-      terminalSources.includes(String(f.source).toUpperCase())
-    )
-  : null;
-
-if (lastTerminalFill && signal.latestTpHit) {
-  // example: "Fully closed after TP4 at 113,200"
-  finalCloseLine = `- Fully closed after ${signal.latestTpHit} at ${fmt(lastTerminalFill.price)}`;
-}
-
-// Did any TP actually hit?
-const anyTpHit = ['TP1','TP2','TP3','TP4','TP5'].some(k => signal.tpHits?.[k]);
-
-// Determine terminal state when NO TP was hit
-const lastFillSrc = lastTerminalFill ? String(lastTerminalFill.source).toUpperCase() : '';
-const stoppedOutNoTP   = signal.status === STATUS.STOPPED_OUT && !anyTpHit;
-const stoppedBeNoTP    = signal.status === STATUS.STOPPED_BE   && !anyTpHit;
-
-// "Stopped in profit" can come from your explicit stop-profit flow
-const stoppedProfitNoTP =
-  !anyTpHit && (
-    (signal.status === STATUS.CLOSED && signal.stoppedInProfit === true) ||
-    lastFillSrc === 'STOP_PROFIT'
-  );
-
-// “Fully closed in profits” = closed, no TP hit, and we can justify profit
-const closedInProfitNoTP =
-  !anyTpHit &&
-  signal.status === STATUS.CLOSED &&
-  (
-    (Number.isFinite(Number(signal.finalR)) && Number(signal.finalR) > 0) ||
-    lastFillSrc === 'FINAL_CLOSE_PROFIT'
-  );
-
-// Choose the proper “None (…) before TP1” line when no TPs were hit
-const noneLine =
-  closedInProfitNoTP ? '- None (Fully closed in profits ✅ before TP1)' :
-  stoppedProfitNoTP  ? '- None (Stopped in profit 🟩 before TP1)' :
-  stoppedBeNoTP      ? '- None (Stopped breakeven 🟡 before TP1)' :
-  stoppedOutNoTP     ? '- None (Stopped Out ❌ before TP1)' :
-                       '- —';
-
-// Final TP block
-const takeProfitText =
-  tpLines.length
-    ? (finalCloseLine ? [...tpLines, finalCloseLine].join('\n') : tpLines.join('\n'))
-    : noneLine;
-
-// Merge BE plan into Reason if present
-const reasonPlusPlan = [...reasonLines];
-if (signal.beAt) reasonPlusPlan.push(`Plan: move stops to breakeven at ${fmt(signal.beAt)}`);
-
-// helpers (no auto bullets)
-const bullet = arr => (arr && arr.length) ? arr.join('\n') : '';
-const reasonBlock = bullet(reasonPlusPlan);
-const confBlock   = bullet(confLines);
-const notesBlock  = bullet(notesLines);
-
-// Title
-const resBadge = useRFinal >= 0 ? '✅' : '❌';
-const title = `**$${String(signal.asset).toUpperCase()} | Trade Recap ${rFmt(useRFinal)} ${resBadge} (${dirWord}) ${dirDot}**`;
-
-// Build recap text
-let recapText = [
-  title,
-  '',
-  '📌 **Trade Reason**',
-  reasonBlock,
-  '',
-  '📊 **Entry Confluences**',
-  confBlock,
-  '',
-  '🎯 **Take Profit**',
-  takeProfitText,
-  '',
-  '⚖️ **Results**',
-  `- Final: ${rFmt(useRFinal)}`,
-  ...(peakR ? [`- Peak R: ${peakR}R`] : []),
-  '',
-  '📝 **Notes (key takeaways)**',
-  notesBlock,
-  '',
-  signal.jumpUrl ? `🔗 [View Original Trade](${signal.jumpUrl})` : ''
-].join('\n').trim();
-// ---------- end consolidated block ----------
-
-// (the next line should remain exactly as in your file)
-const recapChannel = await client.channels.fetch(interaction.channelId);
-
-// helper: detect images by contentType or filename
-const looksLikeImage = (a) => {
-  const ct = String(a?.contentType || '').toLowerCase();
-  const nm = String(a?.name || '');
-  return (ct.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(nm));
-};
-
-let files = [];
-let chartLink = null;
-
-// 1) Prefer explicit URL in modal
-if (chart && /^https?:\/\//i.test(chart)) {
-  chartLink = chart;
-  // Attach by URL first (Discord fetches it). Fallback to buffer if that fails later.
-  files = [{ attachment: chart, name: 'chart.png' }];
-} else {
-  // 2) Auto-pick the most recent image you posted shortly BEFORE the modal
-  const createdAt = interaction.createdTimestamp || Date.now();
-  const lowerBound = createdAt - 30 * 60 * 1000; // 30 min window
-
-  const recent = await recapChannel.messages.fetch({ limit: 100 }).catch(() => null);
-  if (recent && recent.size) {
-    const candidates = recent
-      .filter(m =>
-        m.author?.id === interaction.user.id &&
-        m.createdTimestamp < createdAt &&
-        m.createdTimestamp >= lowerBound &&
-        m.attachments?.size > 0
-      )
-      .map(m => {
-        const att = m.attachments.find(looksLikeImage);
-        return att ? { ts: m.createdTimestamp || 0, att } : null;
-      })
-      .filter(Boolean)
-      .sort((a, b) => b.ts - a.ts); // newest first
-
-    if (candidates.length) {
-      const url  = candidates[0].att.url;
-      const name = candidates[0].att.name || 'chart.png';
-      chartLink = url;
-
-      // Attach-by-URL path (most robust)
-      files = [{ attachment: url, name }];
-
-      // Optional buffer fallback if you prefer:
-      // try {
-      //   const res = await fetch(url);
-      //   const buf = Buffer.from(await res.arrayBuffer());
-      //   files = [ new AttachmentBuilder(buf, { name }) ];
-      // } catch {}
-    }
-  }
-}
-
-// Attach image only — do not also show "Chart" link to avoid duplicates
-if (chartLink) {
-  // no link line — image itself will appear as embed
-}
-// Role mention handling (unchanged)
-const mentionId = (config.recapRoleId && String(config.recapRoleId).match(/\d{6,}/)?.[0]) || null;
-const guild = recapChannel.guild;
-const role  = mentionId ? guild?.roles?.cache.get(mentionId) : null;
-const canBypass = guild?.members?.me?.permissions?.has(PermissionsBitField.Flags.MentionEveryone);
-const canPing = Boolean(mentionId && (canBypass || role?.mentionable));
-
-const finalContent = mentionId ? `${recapText}\n\n<@&${mentionId}>` : recapText;
-
-// Send
-await recapChannel.send({
-  content: finalContent,
-  allowedMentions: mentionId ? { roles: [mentionId], parse: [] } : { parse: [] },
-  files
-});
-
-
-
-        return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
+    if (monthYearRaw) {
+      const match = monthYearRaw.match(/^(\d{4})[-/](\d{1,2})$/);
+      if (match) {
+        y = Number(match[1]);
+        m = Number(match[2]) - 1;
       }
+    }
+    if (!Number.isInteger(y) || !Number.isInteger(m) || m < 0 || m > 11) {
+      const now = new Date();
+      y = now.getUTCFullYear();
+      m = now.getUTCMonth();
+    }
 
+    const signals = (await getSignals()).map(normalizeSignal);
+    const monthly = signals.filter(s => {
+      if (!isNum(s.createdAt)) return false;
+      const d = new Date(Number(s.createdAt));
+      return d.getUTCFullYear() === y && d.getUTCMonth() === m;
+    });
+
+    const baseText = renderMonthlyRecap(monthly, y, m);
+
+    const notesLines = notesRaw
+      ? notesRaw.split('\n').map(l => l.trim()).filter(Boolean)
+      : [];
+
+    const out = [baseText];
+    if (notesLines.length) {
+      out.push('', '🗒️ **Notes**');
+      out.push(...notesLines.map(l => `- ${l}`));
+    }
+
+    const recapChannel = await client.channels.fetch(interaction.channelId);
+    await recapChannel.send({
+      content: out.join('\n'),
+      allowedMentions: { parse: [] }
+    });
+
+    return safeEditReply(interaction, { content: '✅ Monthly recap posted.' });
+  }
+
+  // Trade recap modal submit (unchanged logic, just moved under monthly)
+  if (interaction.customId.startsWith('modal:recap:')) {
+    await ensureDeferred(interaction);
+    const id = idPart;
+    let signal = normalizeSignal(await getSignal(id));
+    if (!signal) return safeEditReply(interaction, { content: '❌ Trade not found for recap.' });
+
+    const reason = (interaction.fields.getTextInputValue('recap_reason') || '').trim();
+    const confs  = (interaction.fields.getTextInputValue('recap_confs')  || '').trim();
+    const notes  = (interaction.fields.getTextInputValue('recap_notes')  || '').trim();
+    let chart = (interaction.fields.getTextInputValue('recap_chart') || '').trim();
+    if (!chart) {
+      const stashUrl = pendingRecapCharts.get(interaction.user.id);
+      if (stashUrl) {
+        chart = stashUrl;
+        pendingRecapCharts.delete(interaction.user.id);
+      }
+    }
+
+    const reasonLines = reason ? reason.split('\n').map(s => s.trim()).filter(Boolean) : [];
+    const confLines   = confs  ? confs.split('\n').map(s => s.trim()).filter(Boolean)  : [];
+    const notesLines  = notes  ? notes.split('\n').map(s => s.trim()).filter(Boolean)  : [];
+
+    // Final R override
+    const finalROv = (interaction.fields.getTextInputValue('recap_finalr') || '').trim();
+    if (finalROv !== '') {
+      if (!isNum(finalROv)) {
+        return safeEditReply(interaction, { content: '❌ Final R must be a number (e.g., 1.25 or -0.5).' });
+      }
+      await updateSignal(id, { finalR: Number(finalROv) });
+      signal = normalizeSignal(await getSignal(id));
+    }
+
+    // ----- Build recap text in the "nice" style (single message) -----
+    const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
+    const dirDot  = signal.direction === 'SHORT' ? '🔴' : '🟢';
+
+    // ---------- R calc + TP list (consolidated, no duplicates) ----------
+    const calcWeightedR = () => {
+      const fills = Array.isArray(signal.fills) ? signal.fills : [];
+      if (!fills.length) return 0;
+      let sum = 0;
+      for (const f of fills) {
+        const pct = Number(f.pct || 0);
+        const rr  = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, f.price);
+        if (Number.isNaN(pct) || rr === null) continue;
+        sum += (pct * rr) / 100;
+      }
+      return Number(sum.toFixed(6));
+    };
+
+    const overrideDigits =
+      finalROv !== '' ? (String(finalROv).split('.')[1] || '').length : null;
+
+    // Prefer realized R from fills; only use finalR if explicitly set to a non-zero,
+    // or realized is actually 0, or there are no fills to compute with.
+    const realized = calcWeightedR();
+    const useFinal = isNum(signal.finalR) && (
+      Number(signal.finalR) !== 0 || realized === 0 || !(signal.fills && signal.fills.length)
+    );
+    const rawR = useFinal ? Number(signal.finalR) : realized;
+
+    const riskLbl = String(signal.riskLabel || '').toLowerCase();
+    const lossFactor = riskLbl === 'half' || riskLbl === '1/2' ? 0.5
+      : riskLbl === '1/4' || riskLbl === 'quarter' ? 0.25
+      : riskLbl === '3/4' || riskLbl === 'three-quarter' || riskLbl === 'threequarter' ? 0.75
+      : 1;
+
+    // apply risk badge only to losses
+    const useRFinal = rawR < 0 ? rawR * lossFactor : rawR;
+
+    const rFmt = (v) => {
+      const dec = overrideDigits != null ? Math.min(6, Math.max(2, overrideDigits)) : 2;
+      return v >= 0 ? `+${v.toFixed(dec)}R` : `${v.toFixed(dec)}R`;
+    };
+
+    const peakR = isNum(signal.maxR) ? Number(signal.maxR).toFixed(2) : null;
+    // TP list — show ALL with R and % closed
+    const order = ['TP1','TP2','TP3','TP4','TP5'];
+    const tpLines = [];
+    for (const K of order) {
+      const key = K.toLowerCase();
+      const price = signal[key];
+      if (!isNum(price)) continue;
+
+      const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, price);
+      if (r == null) continue;
+
+      let pct = 0;
+      if (Array.isArray(signal.fills)) {
+        pct = signal.fills
+          .filter(f => String(f.source).toUpperCase() === K)
+          .reduce((a,f)=> a + Number(f.pct || 0), 0);
+      }
+      const pctTxt = pct > 0 ? ` (${pct}% closed)` : '';
+      const hit = signal.tpHits?.[K] ? ' ✅' : '';
+      tpLines.push(`- ${K.replace('TP','TP ')} | ${r.toFixed(2)}R${pctTxt}${hit}`);
+    }
+
+    // 👇 detect final close after last TP
+    let finalCloseLine = '';
+    const terminalSources = ['FINAL_CLOSE', 'FINAL_CLOSE_PROFIT', 'STOP_PROFIT', 'STOP_OUT', 'STOP_BE'];
+    const lastTerminalFill = Array.isArray(signal.fills)
+      ? [...signal.fills].reverse().find(f =>
+          terminalSources.includes(String(f.source).toUpperCase())
+        )
+      : null;
+
+    if (lastTerminalFill && signal.latestTpHit) {
+      finalCloseLine = `- Fully closed after ${signal.latestTpHit} at ${fmt(lastTerminalFill.price)}`;
+    }
+
+    const anyTpHit = ['TP1','TP2','TP3','TP4','TP5'].some(k => signal.tpHits?.[k]);
+
+    const lastFillSrc = lastTerminalFill ? String(lastTerminalFill.source).toUpperCase() : '';
+    const stoppedOutNoTP   = signal.status === STATUS.STOPPED_OUT && !anyTpHit;
+    const stoppedBeNoTP    = signal.status === STATUS.STOPPED_BE   && !anyTpHit;
+
+    const stoppedProfitNoTP =
+      !anyTpHit && (
+        (signal.status === STATUS.CLOSED && signal.stoppedInProfit === true) ||
+        lastFillSrc === 'STOP_PROFIT'
+      );
+
+    const closedInProfitNoTP =
+      !anyTpHit &&
+      signal.status === STATUS.CLOSED &&
+      (
+        (Number.isFinite(Number(signal.finalR)) && Number(signal.finalR) > 0) ||
+        lastFillSrc === 'FINAL_CLOSE_PROFIT'
+      );
+
+    const noneLine =
+      closedInProfitNoTP ? '- None (Fully closed in profits ✅ before TP1)' :
+      stoppedProfitNoTP  ? '- None (Stopped in profit 🟩 before TP1)' :
+      stoppedBeNoTP      ? '- None (Stopped breakeven 🟡 before TP1)' :
+      stoppedOutNoTP     ? '- None (Stopped Out ❌ before TP1)' :
+                           '- —';
+
+    const takeProfitText =
+      tpLines.length
+        ? (finalCloseLine ? [...tpLines, finalCloseLine].join('\n') : tpLines.join('\n'))
+        : noneLine;
+
+    const reasonPlusPlan = [...reasonLines];
+    if (signal.beAt) reasonPlusPlan.push(`Plan: move stops to breakeven at ${fmt(signal.beAt)}`);
+
+    const bullet = arr => (arr && arr.length) ? arr.join('\n') : '';
+    const reasonBlock = bullet(reasonPlusPlan);
+    const confBlock   = bullet(confLines);
+    const notesBlock  = bullet(notesLines);
+
+    const resBadge = useRFinal >= 0 ? '✅' : '❌';
+    const title = `**$${String(signal.asset).toUpperCase()} | Trade Recap ${rFmt(useRFinal)} ${resBadge} (${dirWord}) ${dirDot}**`;
+
+    let recapText = [
+      title,
+      '',
+      '📌 **Trade Reason**',
+      reasonBlock,
+      '',
+      '📊 **Entry Confluences**',
+      confBlock,
+      '',
+      '🎯 **Take Profit**',
+      takeProfitText,
+      '',
+      '⚖️ **Results**',
+      `- Final: ${rFmt(useRFinal)}`,
+      ...(peakR ? [`- Peak R: ${peakR}R`] : []),
+      '',
+      '📝 **Notes (key takeaways)**',
+      notesBlock,
+      '',
+      signal.jumpUrl ? `🔗 [View Original Trade](${signal.jumpUrl})` : ''
+    ].join('\n').trim();
+
+    const recapChannel = await client.channels.fetch(interaction.channelId);
+
+    const looksLikeImage = (a) => {
+      const ct = String(a?.contentType || '').toLowerCase();
+      const nm = String(a?.name || '');
+      return (ct.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(nm));
+    };
+
+    let files = [];
+    let chartLink = null;
+
+    if (chart && /^https?:\/\//i.test(chart)) {
+      chartLink = chart;
+      files = [{ attachment: chart, name: 'chart.png' }];
+    } else {
+      const createdAt = interaction.createdTimestamp || Date.now();
+      const lowerBound = createdAt - 30 * 60 * 1000;
+
+      const recent = await recapChannel.messages.fetch({ limit: 100 }).catch(() => null);
+      if (recent && recent.size) {
+        const candidates = recent
+          .filter(m =>
+            m.author?.id === interaction.user.id &&
+            m.createdTimestamp < createdAt &&
+            m.createdTimestamp >= lowerBound &&
+            m.attachments?.size > 0
+          )
+          .map(m => {
+            const att = m.attachments.find(looksLikeImage);
+            return att ? { ts: m.createdTimestamp || 0, att } : null;
+          })
+          .filter(Boolean)
+          .sort((a, b) => b.ts - a.ts);
+
+        if (candidates.length) {
+          const url  = candidates[0].att.url;
+          const name = candidates[0].att.name || 'chart.png';
+          chartLink = url;
+          files = [{ attachment: url, name }];
+        }
+      }
+    }
+
+    if (chartLink) {
+      // image only, no extra link text
+    }
+
+    const mentionId = (config.recapRoleId && String(config.recapRoleId).match(/\d{6,}/)?.[0]) || null;
+    const guild = recapChannel.guild;
+    const role  = mentionId ? guild?.roles?.cache.get(mentionId) : null;
+    const canBypass = guild?.members?.me?.permissions?.has(PermissionsBitField.Flags.MentionEveryone);
+    const canPing = Boolean(mentionId && (canBypass || role?.mentionable));
+
+    const finalContent = mentionId ? `${recapText}\n\n<@&${mentionId}>` : recapText;
+
+    await recapChannel.send({
+      content: finalContent,
+      allowedMentions: mentionId ? { roles: [mentionId], parse: [] } : { parse: [] },
+      files
+    });
+
+    return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
+  }
       // BE Trigger modal submit
       if (interaction.customId.startsWith('modal:be_trigger:')) {
         await ensureDeferred(interaction);
