@@ -1168,6 +1168,13 @@ await updateSummary();
       return safeEditReply(interaction, { content: `✅ Signal restored. Message: ${signal.jumpUrl}` });
     }
 
+        // Extract idPart universally for modals & buttons
+    let idPart = null;
+    if (typeof interaction.customId === 'string') {
+      const __parts = interaction.customId.split(':');
+      if (__parts.length >= 3) idPart = __parts[__parts.length - 1];
+    }
+
     // MODALS
       // Monthly recap modal submit
   if (interaction.customId === 'modal:monthly_recap') {
@@ -1933,9 +1940,8 @@ await updateSummary();
         await editSignalMessage(updated);
         await postSnapshot(updated);
         await updateSummary();
-        return safeEditReply(interaction, { content: `⚖️ Risk badge set to ${riskLabel}.` });
+              return safeEditReply(interaction, { content: `⚖️ Risk badge set to ${riskLabel}.` });
       }
-    }
 
     // buttons
     if (interaction.isButton()) {
