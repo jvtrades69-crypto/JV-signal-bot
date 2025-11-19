@@ -1168,11 +1168,72 @@ await updateSummary();
       return safeEditReply(interaction, { content: `✅ Signal restored. Message: ${signal.jumpUrl}` });
     }
 
-        // MODALS
+            // MODALS
     if (interaction.isModalSubmit()) {
       const idPart = interaction.customId.split(':').pop();
 
-      // Monthly recap modal submit
+      // NEW: Add Trade Reason modal (for /signal ask_reason)
+      if (interaction.customId.startsWith('modal:reason:')) {
+        await ensureDeferred(interaction);
+
+        const pid = idPart;
+        const stash = pendingSignals.get(pid);
+        if (!stash) {
+          return safeEditReply(interaction, {
+            content: '❌ Session expired. Please run `/signal` again.'
+          });
+        }
+
+        const reasonText =
+          (interaction.fields.getTextInputValue('reason_value') || '').trim();
+
+        const payload = {
+          ...stash,
+          reason: reasonText,
+        };
+
+        pendingSignals.delete(pid);
+
+        await createSignal(payload, stash.channelId);
+        return safeEditReply(interaction, {
+          content: '✅ Trade signal posted.'
+        });
+      }
+
+      // NEW: Custom asset modal (asset = OTHER)
+      if (interaction.customId.startsWith('modal:asset:')) {
+        await ensureDeferred(interaction);
+
+        const pid = idPart;
+        const stash = pendingSignals.get(pid);
+        if (!stash) {
+          return safeEditReply(interaction, {
+            content: '❌ Session expired. Please run `/signal` again.'
+          });
+        }
+
+        const assetRaw =
+          (interaction.fields.getTextInputValue('asset_value') || '').trim();
+        if (!assetRaw) {
+          return safeEditReply(interaction, {
+            content: '❌ Please enter an asset name.'
+          });
+        }
+
+        const payload = {
+          ...stash,
+          asset: assetRaw.toUpperCase(),
+        };
+
+        pendingSignals.delete(pid);
+
+        await createSignal(payload, stash.channelId);
+        return safeEditReply(interaction, {
+          content: '✅ Trade signal posted.'
+        });
+      }
+
+      // Monthly recap modal submit (existing code continues below)
       if (interaction.customId === 'modal:monthly_recap') {
     await ensureDeferred(interaction);
 
