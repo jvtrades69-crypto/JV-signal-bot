@@ -1168,9 +1168,12 @@ await updateSummary();
       return safeEditReply(interaction, { content: `✅ Signal restored. Message: ${signal.jumpUrl}` });
     }
 
-    // MODALS
+        // MODALS
+    if (interaction.isModalSubmit()) {
+      const idPart = interaction.customId.split(':').pop();
+
       // Monthly recap modal submit
-  if (interaction.customId === 'modal:monthly_recap') {
+      if (interaction.customId === 'modal:monthly_recap') {
     await ensureDeferred(interaction);
 
     const monthYearRaw = (interaction.fields.getTextInputValue('month_year') || '').trim();
@@ -1936,6 +1939,8 @@ await updateSummary();
         return safeEditReply(interaction, { content: `⚖️ Risk badge set to ${riskLabel}.` });
       }
     }
+
+        } // end modal-submit block
 
     // buttons
     if (interaction.isButton()) {
