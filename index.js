@@ -1931,16 +1931,14 @@ await updateSummary();
         else if (raw === '3/4' || raw === 'three-quarter' || raw === 'threequarter') riskLabel = '3/4';
         else return safeEditReply(interaction, { content: '❌ Use: half | 1/4 | 3/4' });
 
-        await updateSignal(id, { riskLabel });
-        const updated = normalizeSignal(await getSignal(id));
-        await editSignalMessage(updated);
-        await postSnapshot(updated);
-        await updateSummary();
-        return safeEditReply(interaction, { content: `⚖️ Risk badge set to ${riskLabel}.` });
+              await updateSignal(id, { riskLabel });
+      const updated = normalizeSignal(await getSignal(id));
+      await editSignalMessage(updated);
+      await postSnapshot(updated);
+      await updateSummary();
+      return safeEditReply(interaction, { content: `⚖️ Risk badge set to ${riskLabel}.` });
       }
-    }
-
-        } // end modal-submit block
+    } // end modal-submit block
 
     // buttons
     if (interaction.isButton()) {
