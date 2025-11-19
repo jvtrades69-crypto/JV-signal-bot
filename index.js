@@ -1169,296 +1169,309 @@ await updateSummary();
     }
 
     // MODALS
-      // Monthly recap modal submit
-  if (interaction.customId === 'modal:monthly_recap') {
-    await ensureDeferred(interaction);
+    if (interaction.isModalSubmit()) {
+      const idPart = interaction.customId.split(':').pop();
 
-    const monthYearRaw = (interaction.fields.getTextInputValue('month_year') || '').trim();
-    const notesRaw     = (interaction.fields.getTextInputValue('notes') || '').trim();
+      // Add Trade Reason modal submit
+      if (interaction.customId.startsWith('modal:reason:')) {
+        await ensureDeferred(interaction);
 
-    let y, m; // m = 0–11
+        const id = idPart;
+        const reasonValue = (interaction.fields.getTextInputValue('reason_value') || '').trim();
 
-    if (monthYearRaw) {
-      const match = monthYearRaw.match(/^(\d{4})[-/](\d{1,2})$/);
-      if (match) {
-        y = Number(match[1]);
-        m = Number(match[2]) - 1;
-      }
-    }
-    if (!Number.isInteger(y) || !Number.isInteger(m) || m < 0 || m > 11) {
-      const now = new Date();
-      y = now.getUTCFullYear();
-      m = now.getUTCMonth();
-    }
-
-    const signals = (await getSignals()).map(normalizeSignal);
-    const monthly = signals.filter(s => {
-      if (!isNum(s.createdAt)) return false;
-      const d = new Date(Number(s.createdAt));
-      return d.getUTCFullYear() === y && d.getUTCMonth() === m;
-    });
-
-    const baseText = renderMonthlyRecap(monthly, y, m);
-
-    const notesLines = notesRaw
-      ? notesRaw.split('\n').map(l => l.trim()).filter(Boolean)
-      : [];
-
-    const out = [baseText];
-    if (notesLines.length) {
-      out.push('', '🗒️ **Notes**');
-      out.push(...notesLines.map(l => `- ${l}`));
-    }
-
-    const recapChannel = await client.channels.fetch(interaction.channelId);
-    await recapChannel.send({
-      content: out.join('\n'),
-      allowedMentions: { parse: [] }
-    });
-
-    return safeEditReply(interaction, { content: '✅ Monthly recap posted.' });
-  }
-
-  // Trade recap modal submit (unchanged logic, just moved under monthly)
-  if (interaction.customId.startsWith('modal:recap:')) {
-    await ensureDeferred(interaction);
-    const id = idPart;
-    let signal = normalizeSignal(await getSignal(id));
-    if (!signal) return safeEditReply(interaction, { content: '❌ Trade not found for recap.' });
-
-    const reason = (interaction.fields.getTextInputValue('recap_reason') || '').trim();
-    const confs  = (interaction.fields.getTextInputValue('recap_confs')  || '').trim();
-    const notes  = (interaction.fields.getTextInputValue('recap_notes')  || '').trim();
-    let chart = (interaction.fields.getTextInputValue('recap_chart') || '').trim();
-    if (!chart) {
-      const stashUrl = pendingRecapCharts.get(interaction.user.id);
-      if (stashUrl) {
-        chart = stashUrl;
-        pendingRecapCharts.delete(interaction.user.id);
-      }
-    }
-
-    const reasonLines = reason ? reason.split('\n').map(s => s.trim()).filter(Boolean) : [];
-    const confLines   = confs  ? confs.split('\n').map(s => s.trim()).filter(Boolean)  : [];
-    const notesLines  = notes  ? notes.split('\n').map(s => s.trim()).filter(Boolean)  : [];
-
-    // Final R override
-    const finalROv = (interaction.fields.getTextInputValue('recap_finalr') || '').trim();
-    if (finalROv !== '') {
-      if (!isNum(finalROv)) {
-        return safeEditReply(interaction, { content: '❌ Final R must be a number (e.g., 1.25 or -0.5).' });
-      }
-      await updateSignal(id, { finalR: Number(finalROv) });
-      signal = normalizeSignal(await getSignal(id));
-    }
-
-    // ----- Build recap text in the "nice" style (single message) -----
-    const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
-    const dirDot  = signal.direction === 'SHORT' ? '🔴' : '🟢';
-
-    // ---------- R calc + TP list (consolidated, no duplicates) ----------
-    const calcWeightedR = () => {
-      const fills = Array.isArray(signal.fills) ? signal.fills : [];
-      if (!fills.length) return 0;
-      let sum = 0;
-      for (const f of fills) {
-        const pct = Number(f.pct || 0);
-        const rr  = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, f.price);
-        if (Number.isNaN(pct) || rr === null) continue;
-        sum += (pct * rr) / 100;
-      }
-      return Number(sum.toFixed(6));
-    };
-
-    const overrideDigits =
-      finalROv !== '' ? (String(finalROv).split('.')[1] || '').length : null;
-
-    // Prefer realized R from fills; only use finalR if explicitly set to a non-zero,
-    // or realized is actually 0, or there are no fills to compute with.
-    const realized = calcWeightedR();
-    const useFinal = isNum(signal.finalR) && (
-      Number(signal.finalR) !== 0 || realized === 0 || !(signal.fills && signal.fills.length)
-    );
-    const rawR = useFinal ? Number(signal.finalR) : realized;
-
-    const riskLbl = String(signal.riskLabel || '').toLowerCase();
-    const lossFactor = riskLbl === 'half' || riskLbl === '1/2' ? 0.5
-      : riskLbl === '1/4' || riskLbl === 'quarter' ? 0.25
-      : riskLbl === '3/4' || riskLbl === 'three-quarter' || riskLbl === 'threequarter' ? 0.75
-      : 1;
-
-    // apply risk badge only to losses
-    const useRFinal = rawR < 0 ? rawR * lossFactor : rawR;
-
-    const rFmt = (v) => {
-      const dec = overrideDigits != null ? Math.min(6, Math.max(2, overrideDigits)) : 2;
-      return v >= 0 ? `+${v.toFixed(dec)}R` : `${v.toFixed(dec)}R`;
-    };
-
-    const peakR = isNum(signal.maxR) ? Number(signal.maxR).toFixed(2) : null;
-    // TP list — show ALL with R and % closed
-    const order = ['TP1','TP2','TP3','TP4','TP5'];
-    const tpLines = [];
-    for (const K of order) {
-      const key = K.toLowerCase();
-      const price = signal[key];
-      if (!isNum(price)) continue;
-
-      const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, price);
-      if (r == null) continue;
-
-      let pct = 0;
-      if (Array.isArray(signal.fills)) {
-        pct = signal.fills
-          .filter(f => String(f.source).toUpperCase() === K)
-          .reduce((a,f)=> a + Number(f.pct || 0), 0);
-      }
-      const pctTxt = pct > 0 ? ` (${pct}% closed)` : '';
-      const hit = signal.tpHits?.[K] ? ' ✅' : '';
-      tpLines.push(`- ${K.replace('TP','TP ')} | ${r.toFixed(2)}R${pctTxt}${hit}`);
-    }
-
-    // 👇 detect final close after last TP
-    let finalCloseLine = '';
-    const terminalSources = ['FINAL_CLOSE', 'FINAL_CLOSE_PROFIT', 'STOP_PROFIT', 'STOP_OUT', 'STOP_BE'];
-    const lastTerminalFill = Array.isArray(signal.fills)
-      ? [...signal.fills].reverse().find(f =>
-          terminalSources.includes(String(f.source).toUpperCase())
-        )
-      : null;
-
-    if (lastTerminalFill && signal.latestTpHit) {
-      finalCloseLine = `- Fully closed after ${signal.latestTpHit} at ${fmt(lastTerminalFill.price)}`;
-    }
-
-    const anyTpHit = ['TP1','TP2','TP3','TP4','TP5'].some(k => signal.tpHits?.[k]);
-
-    const lastFillSrc = lastTerminalFill ? String(lastTerminalFill.source).toUpperCase() : '';
-    const stoppedOutNoTP   = signal.status === STATUS.STOPPED_OUT && !anyTpHit;
-    const stoppedBeNoTP    = signal.status === STATUS.STOPPED_BE   && !anyTpHit;
-
-    const stoppedProfitNoTP =
-      !anyTpHit && (
-        (signal.status === STATUS.CLOSED && signal.stoppedInProfit === true) ||
-        lastFillSrc === 'STOP_PROFIT'
-      );
-
-    const closedInProfitNoTP =
-      !anyTpHit &&
-      signal.status === STATUS.CLOSED &&
-      (
-        (Number.isFinite(Number(signal.finalR)) && Number(signal.finalR) > 0) ||
-        lastFillSrc === 'FINAL_CLOSE_PROFIT'
-      );
-
-    const noneLine =
-      closedInProfitNoTP ? '- None (Fully closed in profits ✅ before TP1)' :
-      stoppedProfitNoTP  ? '- None (Stopped in profit 🟩 before TP1)' :
-      stoppedBeNoTP      ? '- None (Stopped breakeven 🟡 before TP1)' :
-      stoppedOutNoTP     ? '- None (Stopped Out ❌ before TP1)' :
-                           '- —';
-
-    const takeProfitText =
-      tpLines.length
-        ? (finalCloseLine ? [...tpLines, finalCloseLine].join('\n') : tpLines.join('\n'))
-        : noneLine;
-
-    const reasonPlusPlan = [...reasonLines];
-    if (signal.beAt) reasonPlusPlan.push(`Plan: move stops to breakeven at ${fmt(signal.beAt)}`);
-
-    const bullet = arr => (arr && arr.length) ? arr.join('\n') : '';
-    const reasonBlock = bullet(reasonPlusPlan);
-    const confBlock   = bullet(confLines);
-    const notesBlock  = bullet(notesLines);
-
-    const resBadge = useRFinal >= 0 ? '✅' : '❌';
-    const title = `**$${String(signal.asset).toUpperCase()} | Trade Recap ${rFmt(useRFinal)} ${resBadge} (${dirWord}) ${dirDot}**`;
-
-    let recapText = [
-      title,
-      '',
-      '📌 **Trade Reason**',
-      reasonBlock,
-      '',
-      '📊 **Entry Confluences**',
-      confBlock,
-      '',
-      '🎯 **Take Profit**',
-      takeProfitText,
-      '',
-      '⚖️ **Results**',
-      `- Final: ${rFmt(useRFinal)}`,
-      ...(peakR ? [`- Peak R: ${peakR}R`] : []),
-      '',
-      '📝 **Notes (key takeaways)**',
-      notesBlock,
-      '',
-      signal.jumpUrl ? `🔗 [View Original Trade](${signal.jumpUrl})` : ''
-    ].join('\n').trim();
-
-    const recapChannel = await client.channels.fetch(interaction.channelId);
-
-    const looksLikeImage = (a) => {
-      const ct = String(a?.contentType || '').toLowerCase();
-      const nm = String(a?.name || '');
-      return (ct.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(nm));
-    };
-
-    let files = [];
-    let chartLink = null;
-
-    if (chart && /^https?:\/\//i.test(chart)) {
-      chartLink = chart;
-      files = [{ attachment: chart, name: 'chart.png' }];
-    } else {
-      const createdAt = interaction.createdTimestamp || Date.now();
-      const lowerBound = createdAt - 30 * 60 * 1000;
-
-      const recent = await recapChannel.messages.fetch({ limit: 100 }).catch(() => null);
-      if (recent && recent.size) {
-        const candidates = recent
-          .filter(m =>
-            m.author?.id === interaction.user.id &&
-            m.createdTimestamp < createdAt &&
-            m.createdTimestamp >= lowerBound &&
-            m.attachments?.size > 0
-          )
-          .map(m => {
-            const att = m.attachments.find(looksLikeImage);
-            return att ? { ts: m.createdTimestamp || 0, att } : null;
-          })
-          .filter(Boolean)
-          .sort((a, b) => b.ts - a.ts);
-
-        if (candidates.length) {
-          const url  = candidates[0].att.url;
-          const name = candidates[0].att.name || 'chart.png';
-          chartLink = url;
-          files = [{ attachment: url, name }];
+        const pending = pendingSignals.get(id);
+        if (!pending) {
+          return safeEditReply(interaction, { content: '❌ Pending signal not found.' });
         }
+        pendingSignals.delete(id);
+
+        pending.reason = reasonValue;
+
+        await createSignal(pending, interaction.channelId);
+
+        return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
       }
-    }
 
-    if (chartLink) {
-      // image only, no extra link text
-    }
+      // Monthly recap modal submit
+      if (interaction.customId === 'modal:monthly_recap') {
+        await ensureDeferred(interaction);
 
-    const mentionId = (config.recapRoleId && String(config.recapRoleId).match(/\d{6,}/)?.[0]) || null;
-    const guild = recapChannel.guild;
-    const role  = mentionId ? guild?.roles?.cache.get(mentionId) : null;
-    const canBypass = guild?.members?.me?.permissions?.has(PermissionsBitField.Flags.MentionEveryone);
-    const canPing = Boolean(mentionId && (canBypass || role?.mentionable));
+        const monthYearRaw = (interaction.fields.getTextInputValue('month_year') || '').trim();
+        const notesRaw     = (interaction.fields.getTextInputValue('notes') || '').trim();
 
-    const finalContent = mentionId ? `${recapText}\n\n<@&${mentionId}>` : recapText;
+        let y, m; // m = 0–11
 
-    await recapChannel.send({
-      content: finalContent,
-      allowedMentions: mentionId ? { roles: [mentionId], parse: [] } : { parse: [] },
-      files
-    });
+        if (monthYearRaw) {
+          const match = monthYearRaw.match(/^(\d{4})[-/](\d{1,2})$/);
+          if (match) {
+            y = Number(match[1]);
+            m = Number(match[2]) - 1;
+          }
+        }
+        if (!Number.isInteger(y) || !Number.isInteger(m) || m < 0 || m > 11) {
+          const now = new Date();
+          y = now.getUTCFullYear();
+          m = now.getUTCMonth();
+        }
 
-    return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
-  }
+        const signals = (await getSignals()).map(normalizeSignal);
+        const monthly = signals.filter(s => {
+          if (!isNum(s.createdAt)) return false;
+          const d = new Date(Number(s.createdAt));
+          return d.getUTCFullYear() === y && d.getUTCMonth() === m;
+        });
+
+        const baseText = renderMonthlyRecap(monthly, y, m);
+
+        const notesLines = notesRaw
+          ? notesRaw.split('\n').map(l => l.trim()).filter(Boolean)
+          : [];
+
+        const out = [baseText];
+        if (notesLines.length) {
+          out.push('', '🗒️ **Notes**');
+          out.push(...notesLines.map(l => `- ${l}`));
+        }
+
+        const recapChannel = await client.channels.fetch(interaction.channelId);
+        await recapChannel.send({
+          content: out.join('\n'),
+          allowedMentions: { parse: [] }
+        });
+
+        return safeEditReply(interaction, { content: '✅ Monthly recap posted.' });
+      }
+
+      // Trade recap modal submit
+      if (interaction.customId.startsWith('modal:recap:')) {
+        await ensureDeferred(interaction);
+        const id = idPart;
+        let signal = normalizeSignal(await getSignal(id));
+        if (!signal) return safeEditReply(interaction, { content: '❌ Trade not found for recap.' });
+
+        const reason = (interaction.fields.getTextInputValue('recap_reason') || '').trim();
+        const confs  = (interaction.fields.getTextInputValue('recap_confs')  || '').trim();
+        const notes  = (interaction.fields.getTextInputValue('recap_notes')  || '').trim();
+        let chart = (interaction.fields.getTextInputValue('recap_chart') || '').trim();
+        if (!chart) {
+          const stashUrl = pendingRecapCharts.get(interaction.user.id);
+          if (stashUrl) {
+            chart = stashUrl;
+            pendingRecapCharts.delete(interaction.user.id);
+          }
+        }
+
+        const reasonLines = reason ? reason.split('\n').map(s => s.trim()).filter(Boolean) : [];
+        const confLines   = confs  ? confs.split('\n').map(s => s.trim()).filter(Boolean)  : [];
+        const notesLines  = notes  ? notes.split('\n').map(s => s.trim()).filter(Boolean)  : [];
+
+        // Final R override
+        const finalROv = (interaction.fields.getTextInputValue('recap_finalr') || '').trim();
+        if (finalROv !== '') {
+          if (!isNum(finalROv)) {
+            return safeEditReply(interaction, { content: '❌ Final R must be a number (e.g., 1.25 or -0.5).' });
+          }
+          await updateSignal(id, { finalR: Number(finalROv) });
+          signal = normalizeSignal(await getSignal(id));
+        }
+
+        const dirWord = signal.direction === 'SHORT' ? 'Short' : 'Long';
+        const dirDot  = signal.direction === 'SHORT' ? '🔴' : '🟢';
+
+        const calcWeightedR = () => {
+          const fills = Array.isArray(signal.fills) ? signal.fills : [];
+          if (!fills.length) return 0;
+          let sum = 0;
+          for (const f of fills) {
+            const pct = Number(f.pct || 0);
+            const rr  = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, f.price);
+            if (Number.isNaN(pct) || rr === null) continue;
+            sum += (pct * rr) / 100;
+          }
+          return Number(sum.toFixed(6));
+        };
+
+        const overrideDigits =
+          finalROv !== '' ? (String(finalROv).split('.')[1] || '').length : null;
+
+        const realized = calcWeightedR();
+        const useFinal = isNum(signal.finalR) && (
+          Number(signal.finalR) !== 0 || realized === 0 || !(signal.fills && signal.fills.length)
+        );
+        const rawR = useFinal ? Number(signal.finalR) : realized;
+
+        const riskLbl = String(signal.riskLabel || '').toLowerCase();
+        const lossFactor = riskLbl === 'half' || riskLbl === '1/2' ? 0.5
+          : riskLbl === '1/4' || riskLbl === 'quarter' ? 0.25
+          : riskLbl === '3/4' || riskLbl === 'three-quarter' || riskLbl === 'threequarter' ? 0.75
+          : 1;
+
+        const useRFinal = rawR < 0 ? rawR * lossFactor : rawR;
+
+        const rFmt = (v) => {
+          const dec = overrideDigits != null ? Math.min(6, Math.max(2, overrideDigits)) : 2;
+          return v >= 0 ? `+${v.toFixed(dec)}R` : `${v.toFixed(dec)}R`;
+        };
+
+        const peakR = isNum(signal.maxR) ? Number(signal.maxR).toFixed(2) : null;
+        const order = ['TP1','TP2','TP3','TP4','TP5'];
+        const tpLines = [];
+        for (const K of order) {
+          const key = K.toLowerCase();
+          const price = signal[key];
+          if (!isNum(price)) continue;
+
+          const r = rAtPrice(signal.direction, signal.entry, signal.slOriginal ?? signal.sl, price);
+          if (r == null) continue;
+
+          let pct = 0;
+          if (Array.isArray(signal.fills)) {
+            pct = signal.fills
+              .filter(f => String(f.source).toUpperCase() === K)
+              .reduce((a,f)=> a + Number(f.pct || 0), 0);
+          }
+          const pctTxt = pct > 0 ? ` (${pct}% closed)` : '';
+          const hit = signal.tpHits?.[K] ? ' ✅' : '';
+          tpLines.push(`- ${K.replace('TP','TP ')} | ${r.toFixed(2)}R${pctTxt}${hit}`);
+        }
+
+        let finalCloseLine = '';
+        const terminalSources = ['FINAL_CLOSE', 'FINAL_CLOSE_PROFIT', 'STOP_PROFIT', 'STOP_OUT', 'STOP_BE'];
+        const lastTerminalFill = Array.isArray(signal.fills)
+          ? [...signal.fills].reverse().find(f =>
+              terminalSources.includes(String(f.source).toUpperCase())
+            )
+          : null;
+
+        if (lastTerminalFill && signal.latestTpHit) {
+          finalCloseLine = `- Fully closed after ${signal.latestTpHit} at ${fmt(lastTerminalFill.price)}`;
+        }
+
+        const anyTpHit = ['TP1','TP2','TP3','TP4','TP5'].some(k => signal.tpHits?.[k]);
+
+        const lastFillSrc = lastTerminalFill ? String(lastTerminalFill.source).toUpperCase() : '';
+        const stoppedOutNoTP   = signal.status === STATUS.STOPPED_OUT && !anyTpHit;
+        const stoppedBeNoTP    = signal.status === STATUS.STOPPED_BE   && !anyTpHit;
+
+        const stoppedProfitNoTP =
+          !anyTpHit && (
+            (signal.status === STATUS.CLOSED && signal.stoppedInProfit === true) ||
+            lastFillSrc === 'STOP_PROFIT'
+          );
+
+        const closedInProfitNoTP =
+          !anyTpHit &&
+          signal.status === STATUS.CLOSED &&
+          (
+            (Number.isFinite(Number(signal.finalR)) && Number(signal.finalR) > 0) ||
+            lastFillSrc === 'FINAL_CLOSE_PROFIT'
+          );
+
+        const noneLine =
+          closedInProfitNoTP ? '- None (Fully closed in profits ✅ before TP1)' :
+          stoppedProfitNoTP  ? '- None (Stopped in profit 🟩 before TP1)' :
+          stoppedBeNoTP      ? '- None (Stopped breakeven 🟡 before TP1)' :
+          stoppedOutNoTP     ? '- None (Stopped Out ❌ before TP1)' :
+                               '- —';
+
+        const takeProfitText =
+          tpLines.length
+            ? (finalCloseLine ? [...tpLines, finalCloseLine].join('\n') : tpLines.join('\n'))
+            : noneLine;
+
+        const reasonPlusPlan = [...reasonLines];
+        if (signal.beAt) reasonPlusPlan.push(`Plan: move stops to breakeven at ${fmt(signal.beAt)}`);
+
+        const bullet = arr => (arr && arr.length) ? arr.join('\n') : '';
+        const reasonBlock = bullet(reasonPlusPlan);
+        const confBlock   = bullet(confLines);
+        const notesBlock  = bullet(notesLines);
+
+        const resBadge = useRFinal >= 0 ? '✅' : '❌';
+        const title = `**$${String(signal.asset).toUpperCase()} | Trade Recap ${rFmt(useRFinal)} ${resBadge} (${dirWord}) ${dirDot}**`;
+
+        let recapText = [
+          title,
+          '',
+          '📌 **Trade Reason**',
+          reasonBlock,
+          '',
+          '📊 **Entry Confluences**',
+          confBlock,
+          '',
+          '🎯 **Take Profit**',
+          takeProfitText,
+          '',
+          '⚖️ **Results**',
+          `- Final: ${rFmt(useRFinal)}`,
+          ...(peakR ? [`- Peak R: ${peakR}R`] : []),
+          '',
+          '📝 **Notes (key takeaways)**',
+          notesBlock,
+          '',
+          signal.jumpUrl ? `🔗 [View Original Trade](${signal.jumpUrl})` : ''
+        ].join('\n').trim();
+
+        const recapChannel = await client.channels.fetch(interaction.channelId);
+
+        const looksLikeImage = (a) => {
+          const ct = String(a?.contentType || '').toLowerCase();
+          const nm = String(a?.name || '');
+          return (ct.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(nm));
+        };
+
+        let files = [];
+        let chartLink = null;
+
+        if (chart && /^https?:\/\//i.test(chart)) {
+          chartLink = chart;
+          files = [{ attachment: chart, name: 'chart.png' }];
+        } else {
+          const createdAt = interaction.createdTimestamp || Date.now();
+          const lowerBound = createdAt - 30 * 60 * 1000;
+
+          const recent = await recapChannel.messages.fetch({ limit: 100 }).catch(() => null);
+          if (recent && recent.size) {
+            const candidates = recent
+              .filter(m =>
+                m.author?.id === interaction.user.id &&
+                m.createdTimestamp < createdAt &&
+                m.createdTimestamp >= lowerBound &&
+                m.attachments?.size > 0
+              )
+              .map(m => {
+                const att = m.attachments.find(looksLikeImage);
+                return att ? { ts: m.createdTimestamp || 0, att } : null;
+              })
+              .filter(Boolean)
+              .sort((a, b) => b.ts - a.ts);
+
+            if (candidates.length) {
+              const url  = candidates[0].att.url;
+              const name = candidates[0].att.name || 'chart.png';
+              chartLink = url;
+              files = [{ attachment: url, name }];
+            }
+          }
+        }
+
+        const mentionId = (config.recapRoleId && String(config.recapRoleId).match(/\d{6,}/)?.[0]) || null;
+        const guild = recapChannel.guild;
+        const role  = mentionId ? guild?.roles?.cache.get(mentionId) : null;
+        const canBypass = guild?.members?.me?.permissions?.has(PermissionsBitField.Flags.MentionEveryone);
+        const canPing = Boolean(mentionId && (canBypass || role?.mentionable));
+
+        const finalContent = mentionId ? `${recapText}\n\n<@&${mentionId}>` : recapText;
+
+        await recapChannel.send({
+          content: finalContent,
+          allowedMentions: mentionId ? { roles: [mentionId], parse: [] } : { parse: [] },
+          files
+        });
+
+        return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
+      }
+
       // BE Trigger modal submit
       if (interaction.customId.startsWith('modal:be_trigger:')) {
         await ensureDeferred(interaction);
@@ -1518,7 +1531,7 @@ await updateSummary();
         return safeEditReply(interaction, { content: '✅ TP % plan updated.' });
       }
 
-      // trade info — only patch fields the user actually filled
+      // trade info
       if (interaction.customId.startsWith('modal:trade:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -1601,7 +1614,7 @@ await updateSummary();
         return safeEditReply(interaction, { content: '✅ Chart link updated.' });
       }
 
-      // TP modal submit (records TP hit)
+      // TP modal submit
       if (interaction.customId.startsWith('modal:tp:')) {
         await ensureDeferred(interaction);
         const parts = interaction.customId.split(':');
@@ -1661,18 +1674,15 @@ await updateSummary();
         let signal = normalizeSignal(await getSignal(id));
         if (!signal) return safeEditReply(interaction, { content: 'Signal not found.' });
 
-        // Required: close price
         const priceStr = (interaction.fields.getTextInputValue('close_price') || '').trim();
         if (!isNum(priceStr)) return safeEditReply(interaction, { content: '❌ Close Price must be a number.' });
         const price = Number(priceStr);
 
-        // Optional: Final R override
         const finalRStr = (interaction.fields.getTextInputValue('final_r') || '').trim();
         if (finalRStr !== '' && !isNum(finalRStr)) {
           return safeEditReply(interaction, { content: '❌ Final R must be a number if provided.' });
         }
 
-        // Close remaining size at price
         const currentPct = (Array.isArray(signal.fills) ? signal.fills : []).reduce((a, f) => a + Number(f.pct || 0), 0);
         const remaining  = Math.max(0, 100 - currentPct);
         if (remaining > 0) {
@@ -1680,10 +1690,8 @@ await updateSummary();
           signal.fills.push({ pct: remaining, price, source: 'FINAL_CLOSE' });
         }
 
-        // Latest TP context = highest hit
         const latestHit = ['TP5','TP4','TP3','TP2','TP1'].find(k => signal.tpHits?.[k]) || null;
 
-        // Clear running flags and close
         signal.status = STATUS.CLOSED;
         signal.validReentry = false;
         signal.latestTpHit = latestHit;
@@ -1716,7 +1724,7 @@ await updateSummary();
         return safeEditReply(interaction, { content: `✅ Fully closed${suffix} at ${price}.` });
       }
 
-// full close (profit)
+      // full close (profit)
       if (interaction.customId.startsWith('modal:fullprofit:')) {
         await ensureDeferred(interaction);
         const id = idPart;
@@ -1729,7 +1737,6 @@ await updateSummary();
         if (!isNum(priceStr)) return safeEditReply(interaction, { content: '❌ Close Price must be a number.' });
         const price = Number(priceStr);
 
-        // Close the remaining position at price with a profit-coded source
         const currentPct = (Array.isArray(signal.fills) ? signal.fills : []).reduce((a, f) => a + Number(f.pct || 0), 0);
         const remaining  = Math.max(0, 100 - currentPct);
         if (remaining > 0) {
@@ -1737,7 +1744,6 @@ await updateSummary();
           signal.fills.push({ pct: remaining, price, source: 'FINAL_CLOSE_PROFIT' });
         }
 
-        // Optional non-negative Final R override
         if (finalRStr !== '') {
           if (!isNum(finalRStr)) {
             return safeEditReply(interaction, { content: '❌ Final R must be a number.' });
@@ -1745,7 +1751,6 @@ await updateSummary();
           signal.finalR = Math.max(0, Number(finalRStr));
         }
 
-        // Close the trade
         signal.status = STATUS.CLOSED;
         signal.validReentry = false;
 
@@ -1848,7 +1853,7 @@ await updateSummary();
         }
       }
 
-      // Set SL → In Profit (custom) — flags only
+      // Set SL → In Profit (custom)
       if (interaction.customId.startsWith('modal:profit:')) {
         await ensureDeferred(interaction);
         const id = interaction.customId.split(':').pop();
@@ -1881,7 +1886,7 @@ await updateSummary();
         return safeEditReply(interaction, { content: '✅ SL moved into profits.' });
       }
 
-      // finish modal submit — closes the control thread
+      // finish modal submit
       if (interaction.customId.startsWith('modal:finish:')) {
         await ensureDeferred(interaction);
         const id = interaction.customId.split(':').pop();
