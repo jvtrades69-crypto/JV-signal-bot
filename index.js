@@ -309,21 +309,27 @@ async function editSignalMessage(signal) {
   const msg = await channel.messages.fetch(signal.messageId).catch(() => null);
   if (!msg) return false;
 
-  const text = renderSignalText(normalizeSignal(signal));
-  const { content: mentionLine, allowedMentions } = buildMentions(config.mentionRoleId, signal.extraRole, false);
+  const normalized = normalizeSignal(signal);
+  const text = renderSignalText(normalized);
+  const { content: mentionLine, allowedMentions } = buildMentions(
+    config.mentionRoleId,
+    normalized.extraRole,
+    false
+  );
 
-const editPayload = {
-  content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}`,
-  ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } }),
-};
+  const chartLine = normalized.chartUrl ? `\n📈 ${normalized.chartUrl}` : '';
 
+  const editPayload = {
+    content: `${text}${mentionLine ? `\n\n${mentionLine}` : ''}${chartLine}`,
+    ...(mentionLine ? { allowedMentions } : { allowedMentions: { parse: [] } }),
+  };
 
-  // leave existing attachments as-is
-
+  // leave existing attachments as-is (we only change message content)
   await msg.edit(editPayload).catch(() => {});
-  renameControlThread(signal).catch(() => {});
+  renameControlThread(normalized).catch(() => {});
   return true;
 }
+
 
 async function deleteSignalMessage(signal) {
   const channel = await client.channels.fetch(signal.channelId);
@@ -1460,21 +1466,21 @@ await updateSummary();
       signal.jumpUrl ? `🔗 [View Original Trade](${signal.jumpUrl})` : ''
     ].join('\n').trim();
 
-    const recapChannel = await client.channels.fetch(interaction.channelId);
+       const recapChannel = await client.channels.fetch(interaction.channelId);
 
     const looksLikeImage = (a) => {
       const ct = String(a?.contentType || '').toLowerCase();
       const nm = String(a?.name || '');
-      return (ct.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(nm));
+      return ct.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(nm);
     };
 
-    let files = [];
     let chartLink = null;
 
     if (chart && /^https?:\/\//i.test(chart)) {
+      // user typed/pasted a URL in the modal
       chartLink = chart;
-      files = [{ attachment: chart, name: 'chart.png' }];
     } else {
+      // try to reuse your most recent uploaded image from this channel (last 30 min)
       const createdAt = interaction.createdTimestamp || Date.now();
       const lowerBound = createdAt - 30 * 60 * 1000;
 
@@ -1495,33 +1501,36 @@ await updateSummary();
           .sort((a, b) => b.ts - a.ts);
 
         if (candidates.length) {
-          const url  = candidates[0].att.url;
-          const name = candidates[0].att.name || 'chart.png';
-          chartLink = url;
-          files = [{ attachment: url, name }];
+          chartLink = candidates[0].att.url;
         }
       }
     }
 
+    // If we found a chart URL, append it as a link (no file attachment, no filename bar)
     if (chartLink) {
-      // image only, no extra link text
+      recapText += `\n\n📈 ${chartLink}`;
     }
 
-    const mentionId = (config.recapRoleId && String(config.recapRoleId).match(/\d{6,}/)?.[0]) || null;
+    const mentionId =
+      (config.recapRoleId && String(config.recapRoleId).match(/\d{6,}/)?.[0]) || null;
     const guild = recapChannel.guild;
     const role  = mentionId ? guild?.roles?.cache.get(mentionId) : null;
     const canBypass = guild?.members?.me?.permissions?.has(PermissionsBitField.Flags.MentionEveryone);
     const canPing = Boolean(mentionId && (canBypass || role?.mentionable));
 
-    const finalContent = mentionId ? `${recapText}\n\n<@&${mentionId}>` : recapText;
+    const finalContent = mentionId
+      ? `${recapText}\n\n<@&${mentionId}>`
+      : recapText;
 
     await recapChannel.send({
       content: finalContent,
-      allowedMentions: mentionId ? { roles: [mentionId], parse: [] } : { parse: [] },
-      files
+      allowedMentions: mentionId
+        ? { roles: [mentionId], parse: [] }
+        : { parse: [] }
     });
 
     return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
+
   }
       // BE Trigger modal submit
       if (interaction.customId.startsWith('modal:be_trigger:')) {
