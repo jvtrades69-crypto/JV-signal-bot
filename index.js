@@ -1534,30 +1534,35 @@ await updateSummary();
       }
     }
 
-    // If we found a chart URL, append it as a link (no file attachment, no filename bar)
-    if (chartLink) {
-      recapText += `\n\n📈 ${chartLink}`;
-    }
-
+    // Build final recap text (optionally ping recap role)
     const mentionId =
       (config.recapRoleId && String(config.recapRoleId).match(/\d{6,}/)?.[0]) || null;
-    const guild = recapChannel.guild;
-    const role  = mentionId ? guild?.roles?.cache.get(mentionId) : null;
-    const canBypass = guild?.members?.me?.permissions?.has(PermissionsBitField.Flags.MentionEveryone);
-    const canPing = Boolean(mentionId && (canBypass || role?.mentionable));
 
     const finalContent = mentionId
       ? `${recapText}\n\n<@&${mentionId}>`
       : recapText;
 
-    await recapChannel.send({
+    const sendPayload = {
       content: finalContent,
       allowedMentions: mentionId
         ? { roles: [mentionId], parse: [] }
         : { parse: [] }
-    });
+    };
+
+    // If we found a chart URL, embed it as an image (no filename bar, no extra link line)
+    if (chartLink) {
+      sendPayload.embeds = [
+        {
+          type: 'rich',
+          image: { url: chartLink }
+        }
+      ];
+    }
+
+    await recapChannel.send(sendPayload);
 
     return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
+
 
   }
       // BE Trigger modal submit
