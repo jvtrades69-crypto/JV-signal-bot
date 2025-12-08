@@ -495,27 +495,55 @@ if (!q || name.toLowerCase().includes(q)) {
     if (interaction.commandName === 'signal-restore') {
       const focused = interaction.options.getFocused(true);
       if (focused.name !== 'id') return;
-      const q = String(focused.value || '').toLowerCase();
+            const q = String(focused.value || '').toLowerCase();
 
       let choices = [];
       try {
         const store = await import('./store.js');
         const list = (await store.getDeletedSignals?.()) || [];
-        const items = list.map(normalizeSignal).slice(0, 50);
-        choices = items.map(s => {
-  const latest = s.latestTpHit || ['TP5','TP4','TP3','TP2','TP1'].find(k => s.tpHits?.[k]) || null;
-  const after  = latest ? ` after ${latest}` : '';
-  const tag =
-    s.status === STATUS.STOPPED_BE  ? `stopped breakeven${after}` :
-    s.status === STATUS.STOPPED_OUT ? `stopped out` :
-    s.status === STATUS.CLOSED      ? (s.stoppedInProfit ? `stopped in profits${after}` : `fully closed${after}`) :
-    latest ? `${latest} hit` : 'running';
-  return { name: `${computeThreadName(s)} — ${tag}`.slice(0, 100), value: s.id };
-});
+        const items = list.map(normalizeSignal);
+
+        // Build labels first
+        let allChoices = items.map(s => {
+          const latest =
+            s.latestTpHit ||
+            ['TP5', 'TP4', 'TP3', 'TP2', 'TP1'].find(k => s.tpHits?.[k]) ||
+            null;
+          const after = latest ? ` after ${latest}` : '';
+          const tag =
+            s.status === STATUS.STOPPED_BE
+              ? `stopped breakeven${after}`
+              : s.status === STATUS.STOPPED_OUT
+              ? `stopped out`
+              : s.status === STATUS.CLOSED
+              ? (s.stoppedInProfit
+                  ? `stopped in profits${after}`
+                  : `fully closed${after}`)
+              : latest
+              ? `${latest} hit`
+              : 'running';
+
+          return {
+            name: `${computeThreadName(s)} — ${tag}`.slice(0, 100),
+            value: s.id,
+          };
+        });
+
+        // Apply search filter
+        if (q) {
+          allChoices = allChoices.filter(c =>
+            c.name.toLowerCase().includes(q)
+          );
+        }
+
+        // Discord limit: max 25 choices
+        choices = allChoices.slice(0, 25);
       } catch {
         choices = [];
       }
-      return interaction.respond(q ? choices.filter(c => c.name.toLowerCase().includes(q)) : choices);
+
+      return interaction.respond(choices);
+
     }
   } catch (e) {
     console.error('autocomplete error:', e);
