@@ -791,6 +791,30 @@ function makeRecapModal(id) {
   ));
   return m;
 }
+
+// Monthly recap modal
+function makeMonthlyRecapModal() {
+  const m = new ModalBuilder()
+    .setCustomId('modal:monthly_recap')
+    .setTitle('Monthly Recap');
+
+  const monthYear = new TextInputBuilder()
+    .setCustomId('month_year')
+    .setLabel('Month to recap (YYYY-MM, leave blank for current)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false);
+
+  const notes = new TextInputBuilder()
+    .setCustomId('notes')
+    .setLabel('Notes (optional)')
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false);
+
+  m.addComponents(new ActionRowBuilder().addComponents(monthYear));
+  m.addComponents(new ActionRowBuilder().addComponents(notes));
+  return m;
+}
+
 // Set Risk modal
 function makeSetRiskModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'risk')).setTitle('Set Risk Badge');
@@ -803,6 +827,7 @@ function makeSetRiskModal(id) {
   m.addComponents(new ActionRowBuilder().addComponents(choice));
   return m;
 }
+
 // Full Close (Profit) modal
 function makeFullProfitModal(id) {
   const m = new ModalBuilder().setCustomId(modal(id,'fullprofit')).setTitle('Fully Close — Profit');
@@ -1011,7 +1036,7 @@ if (askReason && !reasonValue) {
       if (interaction.user.id !== config.ownerId) {
         return interaction.reply({ content: 'Only the owner can use this command.', flags: MessageFlags.Ephemeral });
       }
-      const period = interaction.options.getString('period') || '';
+            const period = interaction.options.getString('period') || '';
 
 // capture optional image picked in the slash UI (mobile gallery)
 const slashAtt = interaction.options.getAttachment?.('chart');
@@ -1020,39 +1045,11 @@ if (slashAtt && __looksLikeImage(slashAtt)) {
   setTimeout(() => pendingRecapCharts.delete(interaction.user.id), 10 * 60 * 1000);
 }
 
-                    if (period === 'monthly') {
-        const signals = (await getSignals()).map(normalizeSignal);
-
-        // optional: year, month (1–12), notes
-        const yearOpt  = interaction.options.getInteger?.('year');
-        const monthOpt = interaction.options.getInteger?.('month'); // 1–12
-        const notesRaw = (interaction.options.getString?.('notes') || '').trim();
-
-        const now = new Date();
-        const y = Number.isInteger(yearOpt) ? yearOpt : now.getUTCFullYear();
-        const m = (Number.isInteger(monthOpt) && monthOpt >= 1 && monthOpt <= 12)
-          ? monthOpt - 1
-          : now.getUTCMonth(); // 0–11
-
-        const monthly = signals.filter(s => {
-          if (!isNum(s.createdAt)) return false;
-          const d = new Date(Number(s.createdAt));
-          return d.getUTCFullYear() === y && d.getUTCMonth() === m;
-        });
-
-        // split notes into lines, pass into renderMonthlyRecap
-        const notesLines = notesRaw
-          ? notesRaw.split('\n').map(s => s.trim()).filter(Boolean)
-          : [];
-
-        const text = renderMonthlyRecap(monthly, y, m, { notesLines });
-
-        return interaction.reply({
-          content: text,
-          allowedMentions: { parse: [] }
-        });
+      if (period === 'monthly') {
+        return interaction.showModal(makeMonthlyRecapModal());
       }
       if (period === 'weekly') {
+
         const now = new Date();
         const day = now.getUTCDay();
         const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - ((day + 6) % 7)));
