@@ -792,6 +792,7 @@ function makeRecapModal(id) {
   return m;
 }
 
+
 // Monthly recap modal
 function makeMonthlyRecapModal() {
   const m = new ModalBuilder()
@@ -1046,41 +1047,9 @@ if (slashAtt && __looksLikeImage(slashAtt)) {
 }
 
       if (period === 'monthly') {
-        return interaction.showModal(makeMonthlyRecapModal());
-      }
-      if (period === 'weekly') {
+  return interaction.showModal(makeMonthlyRecapModal());
+}
 
-        const now = new Date();
-        const day = now.getUTCDay();
-        const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - ((day + 6) % 7)));
-        monday.setUTCHours(0,0,0,0);
-        const sunday = new Date(monday); sunday.setUTCDate(monday.getUTCDate()+6); sunday.setUTCHours(23,59,59,999);
-
-        const signals = (await getSignals()).map(normalizeSignal);
-        const weekly = signals.filter(s => isNum(s.createdAt) && s.createdAt >= monday.getTime() && s.createdAt <= sunday.getTime());
-
-        const finals = weekly.filter(s => s.status !== STATUS.RUN_VALID);
-const wins = finals.filter(s => isNum(s.finalR) && Number(s.finalR) > 0).length;
-const losses = finals.filter(s => isNum(s.finalR) && Number(s.finalR) < 0).length;
-const breakeven = finals.filter(s => isNum(s.finalR) && Number(s.finalR) === 0).length;
-
-const total = wins + losses + breakeven;
-const denom = wins + losses; // exclude BE from win-rate
-const netR = finals.reduce((a,s)=> a + (isNum(s.finalR)? Number(s.finalR):0), 0);
-const winRatePct = denom ? Math.round((wins/denom)*100) : 0;
-const avgR = denom ? netR / denom : 0; // avg over closed trades excluding BE
-
-        const sorted = finals.filter(s => isNum(s.finalR))
-                             .sort((a,b)=> Math.abs(Number(b.finalR||0)) - Math.abs(Number(a.finalR||0)));
-        const topMoves = sorted.slice(0,2).map(s => ({
-          asset: s.asset, dirWord: (s.direction==='SHORT'?'Short':'Long'), r: Number(s.finalR||0), jumpUrl: s.jumpUrl || null
-        }));
-        const allTrades = finals.map(s => ({ asset:s.asset, dirWord:(s.direction==='SHORT'?'Short':'Long'), r:Number(s.finalR||0), ok:Number(s.finalR||0)>0 }));
-        const startDateStr = monday.toISOString().slice(0,10); const endDateStr = sunday.toISOString().slice(0,10);
-
-        const text = renderWeeklyRecapDetailed({ startDateStr, endDateStr, totals:{ total, netR, winRatePct, avgR }, topMoves, allTrades, takeaways:[], focus:[] });
-        return interaction.reply({ content: text, allowedMentions:{ parse:[] } });
-      }
 
       if (period === 'trade') {
         const all = (await getSignals()).map(normalizeSignal);
