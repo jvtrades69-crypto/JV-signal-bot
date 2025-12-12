@@ -1268,7 +1268,7 @@ await updateSummary();
       }
 
           // Monthly recap notes modal submit — month comes from select menu
-      if (interaction.customId === 'modal:monthly_notes') {
+            if (interaction.customId === 'modal:monthly_notes') {
         await ensureDeferred(interaction);
 
         const monthYear = pendingMonthlyRecap.get(interaction.user.id);
@@ -1292,26 +1292,21 @@ await updateSummary();
           return d.getUTCFullYear() === y && (d.getUTCMonth() + 1) === monthNum;
         });
 
-        const baseText = renderMonthlyRecap(monthly, y, mIndex);
-
         const notesLines = notesRaw
           ? notesRaw.split('\n').map(l => l.trim()).filter(Boolean)
           : [];
 
-        const out = [baseText];
-        if (notesLines.length) {
-          out.push('', '🗒️ **Notes**');
-          out.push(...notesLines.map(l => `- ${l}`));
-        }
+        const baseText = renderMonthlyRecap(monthly, y, mIndex, { notesLines });
 
         const recapChannel = await client.channels.fetch(interaction.channelId);
         await recapChannel.send({
-          content: out.join('\n'),
+          content: baseText,
           allowedMentions: { parse: [] },
         });
 
         return safeEditReply(interaction, { content: '✅ Monthly recap posted.' });
       }
+
 
 
   // Trade recap modal submit (unchanged logic, just moved under monthly)
