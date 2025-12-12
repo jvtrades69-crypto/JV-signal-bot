@@ -332,13 +332,14 @@ export function renderMonthlyRecap(trades, year, monthIndex, { notesLines = [] }
     return d.getUTCFullYear() === year && d.getUTCMonth() === monthIndex;
   });
 
-    const closed = all.filter(t => String(t?.status).toUpperCase() !== 'RUN_VALID');
+      const closed = all.filter(t => String(t?.status).toUpperCase() !== 'RUN_VALID');
 
   // Raw "running" trades (by status)
   const openRaw = all.filter(t => String(t?.status).toUpperCase() === 'RUN_VALID');
 
-  // Only treat as "carried to next month" if some % is still open.
-  // If 100% is closed via fills, it will NOT be in this list.
+  // Only treat as "carried to next month" if:
+  // - some size was actually opened (usedPct > 0), AND
+  // - some size is still open (remainingPct > 0).
   const openCarried = openRaw.filter(t => {
     const fills = Array.isArray(t?.fills) ? t.fills : [];
     const usedPct = Math.min(
@@ -346,8 +347,9 @@ export function renderMonthlyRecap(trades, year, monthIndex, { notesLines = [] }
       Math.max(0, fills.reduce((a, f) => a + Number(f?.pct || 0), 0))
     );
     const remainingPct = Math.max(0, 100 - usedPct);
-    return remainingPct > 0;
+    return usedPct > 0 && remainingPct > 0;
   });
+
 
     const finalR = (t) => (isNum(t?.finalR) ? Number(t.finalR) : 0);
 
