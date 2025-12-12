@@ -398,9 +398,8 @@ export function renderMonthlyRecap(trades, year, monthIndex, { notesLines = [] }
     return `- **${asset} ${dir}**  \`${plusR(realised)}\` so far ✅  (\`${usedPct}%\` closed, \`${remPct}%\` runner open ~\`${approxRunner.toFixed(2)}R\` unrealised)  [View Trade](${url})`;
   };
 
-  const L = [];
-  L.push(`📊 **JV Trades | Monthly Recap (${mname} ${year})**`);
-  L.push(`*(Closed PnL only; open runners excluded from stats)*`, '');
+    const L = [];
+  L.push(`📊 **JV Trades | Monthly Recap (${mname} ${year})**`, '');
   L.push(`- **Total trades:** \`${closed.length}\``);
   L.push(`- ✅ **Wins:** \`${wins}\``);
   L.push(`- ❌ **Losses:** \`${losses}\``);
@@ -413,9 +412,11 @@ export function renderMonthlyRecap(trades, year, monthIndex, { notesLines = [] }
   if (closed.length) closed.forEach(t => L.push(tradeLineClosed(t)));
   else L.push('- —');
 
-  L.push('', '📂 **Open positions carried to next month**');
-  if (open.length) open.forEach(t => L.push(tradeLineOpen(t)));
-  else L.push('- —');
+    if (open.length) {
+    L.push('', '📂 **Open positions carried to next month**');
+    open.forEach(t => L.push(tradeLineOpen(t)));
+  }
+
 
   if (Array.isArray(notesLines)) {
     L.push('', '🗒️ **Notes**');
