@@ -332,8 +332,22 @@ export function renderMonthlyRecap(trades, year, monthIndex, { notesLines = [] }
     return d.getUTCFullYear() === year && d.getUTCMonth() === monthIndex;
   });
 
-  const closed = all.filter(t => String(t?.status).toUpperCase() !== 'RUN_VALID');
-  const open   = all.filter(t => String(t?.status).toUpperCase() === 'RUN_VALID');
+    const closed = all.filter(t => String(t?.status).toUpperCase() !== 'RUN_VALID');
+
+  // Raw "running" trades (by status)
+  const openRaw = all.filter(t => String(t?.status).toUpperCase() === 'RUN_VALID');
+
+  // Only treat as "carried to next month" if some % is still open.
+  // If 100% is closed via fills, it will NOT be in this list.
+  const openCarried = openRaw.filter(t => {
+    const fills = Array.isArray(t?.fills) ? t.fills : [];
+    const usedPct = Math.min(
+      100,
+      Math.max(0, fills.reduce((a, f) => a + Number(f?.pct || 0), 0))
+    );
+    const remainingPct = Math.max(0, 100 - usedPct);
+    return remainingPct > 0;
+  });
 
   const finalR = (t) => (isNum(t?.finalR) ? Number(t.finalR) : 0);
 
@@ -346,9 +360,12 @@ export function renderMonthlyRecap(trades, year, monthIndex, { notesLines = [] }
   const avgRClosed = denom ? (closed.reduce((a, t) => a + finalR(t), 0) / denom) : 0;
 
   const netClosedR = closed.reduce((a, t) => a + finalR(t), 0);
-  const unrealisedR = open.reduce((acc, t) => {
+  const unrealisedR = openCarried.reduce((acc, t) => {
     const fills = Array.isArray(t?.fills) ? t.fills : [];
-    const usedPct = fills.reduce((a, f) => a + Number(f?.pct || 0), 0);
+    const usedPct = Math.min(
+      100,
+      Math.max(0, fills.reduce((a, f) => a + Number(f?.pct || 0), 0))
+    );
     const remainingPct = Math.max(0, 100 - usedPct);
 
     const highest = ['TP5', 'TP4', 'TP3', 'TP2', 'TP1'].find(k => t?.tpHits?.[k]) || null;
@@ -361,6 +378,7 @@ export function renderMonthlyRecap(trades, year, monthIndex, { notesLines = [] }
     return acc + (remainingPct / 100) * rr;
   }, 0);
   const netAllR = netClosedR + unrealisedR;
+
 
   const tradeLineClosed = (t) => {
     const asset = `$${String(t.asset || '').toUpperCase()}`;
@@ -412,9 +430,9 @@ export function renderMonthlyRecap(trades, year, monthIndex, { notesLines = [] }
   if (closed.length) closed.forEach(t => L.push(tradeLineClosed(t)));
   else L.push('- —');
 
-    if (open.length) {
+        if (openCarried.length) {
     L.push('', '📂 **Open positions carried to next month**');
-    open.forEach(t => L.push(tradeLineOpen(t)));
+    openCarried.forEach(t => L.push(tradeLineOpen(t)));
   }
 
 
