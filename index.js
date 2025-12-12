@@ -32,6 +32,8 @@ const client = new Client({
 const pendingSignals = new Map();
 // stash a single /recap slash-UI attachment per user (10-min TTL)
 const pendingRecapCharts = new Map();
+// stash selected month for monthly recap per user (10-min TTL)
+const pendingMonthlyRecap = new Map();
 const __looksLikeImage = (att) => {
   const ct = String(att?.contentType || '').toLowerCase();
   const nm = String(att?.name || '');
@@ -793,19 +795,11 @@ function makeRecapModal(id) {
 }
 
 
-// Monthly recap modal
+// Monthly recap notes modal (month is chosen via select menu)
 function makeMonthlyRecapModal() {
   const m = new ModalBuilder()
-    .setCustomId('modal:monthly_recap')
+    .setCustomId('modal:monthly_notes')
     .setTitle('Monthly Recap');
-
-  const monthYear = new TextInputBuilder()
-  .setCustomId('month_year')
-  .setLabel('Month to recap (YYYY-MM)')
-  .setPlaceholder('Leave blank for current month')
-  .setStyle(TextInputStyle.Short)
-  .setRequired(false);
-
 
   const notes = new TextInputBuilder()
     .setCustomId('notes')
@@ -813,7 +807,6 @@ function makeMonthlyRecapModal() {
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(false);
 
-  m.addComponents(new ActionRowBuilder().addComponents(monthYear));
   m.addComponents(new ActionRowBuilder().addComponents(notes));
   return m;
 }
@@ -928,14 +921,29 @@ client.on('interactionCreate', async (interaction) => {
   try {
     if (!tryClaimInteraction(interaction)) return;
 
-    // recap picker -> modal
-    if (interaction.isStringSelectMenu() && interaction.customId === 'recap:pick') {
-      const id = interaction.values?.[0];
-      if (!id) {
-        return interaction.reply({ content: '❌ Invalid selection.', flags: MessageFlags.Ephemeral });
+        // recap picker -> modal
+    if (interaction.isStringSelectMenu()) {
+      if (interaction.customId === 'recap:pick') {
+        const id = interaction.values?.[0];
+        if (!id) {
+          return interaction.reply({ content: '❌ Invalid selection.', flags: MessageFlags.Ephemeral });
+        }
+        return interaction.showModal(makeRecapModal(id));
       }
-      return interaction.showModal(makeRecapModal(id));
+
+      if (interaction.customId === 'monthly_recap_pick') {
+        const monthYear = interaction.values?.[0];
+        if (!monthYear) {
+          return interaction.reply({ content: '❌ Invalid month.', flags: MessageFlags.Ephemeral });
+        }
+
+        pendingMonthlyRecap.set(interaction.user.id, monthYear);
+        setTimeout(() => pendingMonthlyRecap.delete(interaction.user.id), 10 * 60 * 1000);
+
+        return interaction.showModal(makeMonthlyRecapModal());
+      }
     }
+
 
     // /signal
     if (interaction.isChatInputCommand() && interaction.commandName === 'signal') {
@@ -1049,8 +1057,32 @@ if (slashAtt && __looksLikeImage(slashAtt)) {
 }
 
       if (period === 'monthly') {
-  return interaction.showModal(makeMonthlyRecapModal());
-}
+        const now = new Date();
+
+        const options = [];
+        for (let i = 0; i < 12; i++) {
+          const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+          const y = d.getUTCFullYear();
+          const m = d.getUTCMonth() + 1;
+          const label = d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+          const value = `${y}-${String(m).padStart(2, '0')}`;
+          options.push({ label, value });
+        }
+
+        const menu = new StringSelectMenuBuilder()
+          .setCustomId('monthly_recap_pick')
+          .setPlaceholder('Select month to recap')
+          .addOptions(options);
+
+        const row = new ActionRowBuilder().addComponents(menu);
+
+        return interaction.reply({
+          content: 'Select a month to recap:',
+          components: [row],
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
 
 
       if (period === 'trade') {
@@ -1235,55 +1267,52 @@ await updateSummary();
         });
       }
 
-      // Monthly recap modal submit (existing code continues below)
-      if (interaction.customId === 'modal:monthly_recap') {
-    await ensureDeferred(interaction);
+          // Monthly recap notes modal submit — month comes from select menu
+      if (interaction.customId === 'modal:monthly_notes') {
+        await ensureDeferred(interaction);
 
-    const monthYearRaw = (interaction.fields.getTextInputValue('month_year') || '').trim();
-    const notesRaw     = (interaction.fields.getTextInputValue('notes') || '').trim();
+        const monthYear = pendingMonthlyRecap.get(interaction.user.id);
+        pendingMonthlyRecap.delete(interaction.user.id);
 
-    let y, m; // m = 0–11
+        if (!monthYear) {
+          return safeEditReply(interaction, { content: '❌ Month selection expired. Run `/recap period: monthly` again.' });
+        }
 
-    if (monthYearRaw) {
-      const match = monthYearRaw.match(/^(\d{4})[-/](\d{1,2})$/);
-      if (match) {
-        y = Number(match[1]);
-        m = Number(match[2]) - 1;
+        const notesRaw = (interaction.fields.getTextInputValue('notes') || '').trim();
+
+        const [yearStr, monthStr] = monthYear.split('-');
+        const y = Number(yearStr);
+        const monthNum = Number(monthStr); // 1–12
+        const mIndex = monthNum - 1;       // 0–11 for renderMonthlyRecap
+
+        const signals = (await getSignals()).map(normalizeSignal);
+        const monthly = signals.filter(s => {
+          if (!isNum(s.createdAt)) return false;
+          const d = new Date(Number(s.createdAt));
+          return d.getUTCFullYear() === y && (d.getUTCMonth() + 1) === monthNum;
+        });
+
+        const baseText = renderMonthlyRecap(monthly, y, mIndex);
+
+        const notesLines = notesRaw
+          ? notesRaw.split('\n').map(l => l.trim()).filter(Boolean)
+          : [];
+
+        const out = [baseText];
+        if (notesLines.length) {
+          out.push('', '🗒️ **Notes**');
+          out.push(...notesLines.map(l => `- ${l}`));
+        }
+
+        const recapChannel = await client.channels.fetch(interaction.channelId);
+        await recapChannel.send({
+          content: out.join('\n'),
+          allowedMentions: { parse: [] },
+        });
+
+        return safeEditReply(interaction, { content: '✅ Monthly recap posted.' });
       }
-    }
-    if (!Number.isInteger(y) || !Number.isInteger(m) || m < 0 || m > 11) {
-      const now = new Date();
-      y = now.getUTCFullYear();
-      m = now.getUTCMonth();
-    }
 
-    const signals = (await getSignals()).map(normalizeSignal);
-    const monthly = signals.filter(s => {
-      if (!isNum(s.createdAt)) return false;
-      const d = new Date(Number(s.createdAt));
-      return d.getUTCFullYear() === y && d.getUTCMonth() === m;
-    });
-
-    const baseText = renderMonthlyRecap(monthly, y, m);
-
-    const notesLines = notesRaw
-      ? notesRaw.split('\n').map(l => l.trim()).filter(Boolean)
-      : [];
-
-    const out = [baseText];
-    if (notesLines.length) {
-      out.push('', '🗒️ **Notes**');
-      out.push(...notesLines.map(l => `- ${l}`));
-    }
-
-    const recapChannel = await client.channels.fetch(interaction.channelId);
-    await recapChannel.send({
-      content: out.join('\n'),
-      allowedMentions: { parse: [] }
-    });
-
-    return safeEditReply(interaction, { content: '✅ Monthly recap posted.' });
-  }
 
   // Trade recap modal submit (unchanged logic, just moved under monthly)
   if (interaction.customId.startsWith('modal:recap:')) {
