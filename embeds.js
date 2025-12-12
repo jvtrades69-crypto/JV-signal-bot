@@ -349,15 +349,23 @@ export function renderMonthlyRecap(trades, year, monthIndex, { notesLines = [] }
     return remainingPct > 0;
   });
 
-  const finalR = (t) => (isNum(t?.finalR) ? Number(t.finalR) : 0);
+    const finalR = (t) => (isNum(t?.finalR) ? Number(t.finalR) : 0);
 
   const wins      = closed.filter(t => finalR(t) > 0).length;
   const losses    = closed.filter(t => finalR(t) < 0).length;
   const breakeven = closed.filter(t => finalR(t) === 0).length;
 
-  const denom = wins + losses;
-  const winRatePct = denom ? Math.round((wins / denom) * 100) : 0;
-  const avgRClosed = denom ? (closed.reduce((a, t) => a + finalR(t), 0) / denom) : 0;
+  // BE counted as wins for win-rate
+  const denom = wins + losses;                      // keep for avgR as before
+  const closedCount = wins + losses + breakeven;    // all closed trades
+  const winCount    = wins + breakeven;             // treat BE as wins
+  const winRatePct  = closedCount
+    ? Math.round((winCount / closedCount) * 100)
+    : 0;
+
+  const avgRClosed = denom
+    ? (closed.reduce((a, t) => a + finalR(t), 0) / denom)
+    : 0;
 
   const netClosedR = closed.reduce((a, t) => a + finalR(t), 0);
   const unrealisedR = openCarried.reduce((acc, t) => {
@@ -424,7 +432,8 @@ export function renderMonthlyRecap(trades, year, monthIndex, { notesLines = [] }
   L.push(`- 🟡 **Breakeven:** \`${breakeven}\``);
   L.push(`- **Net R (closed):** \`${plusR(netClosedR)}\``);
   L.push(`- **Avg R/closed trade:** \`${plusR(avgRClosed)}\``);
-  L.push(`- **Win rate:** \`${winRatePct}%\`  *(BE counted as non-wins)*`, '');
+    L.push(`- **Win rate:** \`${winRatePct}%\`  *(BE counted as wins)*`, '');
+
 
   L.push(`🔮 **All ${closed.length} Trades (closed)**`);
   if (closed.length) closed.forEach(t => L.push(tradeLineClosed(t)));
