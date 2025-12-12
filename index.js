@@ -800,10 +800,12 @@ function makeMonthlyRecapModal() {
     .setTitle('Monthly Recap');
 
   const monthYear = new TextInputBuilder()
-    .setCustomId('month_year')
-    .setLabel('Month to recap (YYYY-MM, leave blank for current)')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(false);
+  .setCustomId('month_year')
+  .setLabel('Month to recap (YYYY-MM)')
+  .setPlaceholder('Leave blank for current month')
+  .setStyle(TextInputStyle.Short)
+  .setRequired(false);
+
 
   const notes = new TextInputBuilder()
     .setCustomId('notes')
