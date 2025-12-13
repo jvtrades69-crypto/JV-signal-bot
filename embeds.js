@@ -453,7 +453,8 @@ export function renderMonthlyRecap(trades, year, monthIndex, { notesLines = [] }
 }
 
 
-    return L.join('\n') + '\n\n<@&1382604370490953810>';
+      return L.join('\n');
+
 
 
 }
