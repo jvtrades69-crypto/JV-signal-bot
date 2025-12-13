@@ -1296,12 +1296,13 @@ await updateSummary();
           ? notesRaw.split('\n').map(l => l.trim()).filter(Boolean)
           : [];
 
-                        const baseText = renderMonthlyRecap(monthly, y, mIndex, { notesLines });
+               const baseText = renderMonthlyRecap(monthly, y, mIndex, { notesLines });
+        const mention = '<@&1382604370490953810>';
 
         const recapChannel = await client.channels.fetch(interaction.channelId);
         await recapChannel.send({
-          content: baseText,
-          allowedMentions: { parse: [] },
+          content: `${baseText}\n\n${mention}`,
+          allowedMentions: { roles: ['1382604370490953810'], parse: [] },
         });
 
         return safeEditReply(interaction, { content: '✅ Monthly recap posted.' });
