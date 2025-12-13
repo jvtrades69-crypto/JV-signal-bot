@@ -1296,15 +1296,26 @@ await updateSummary();
           ? notesRaw.split('\n').map(l => l.trim()).filter(Boolean)
           : [];
 
-        const baseText = renderMonthlyRecap(monthly, y, mIndex, { notesLines });
+                const baseText = renderMonthlyRecap(monthly, y, mIndex, { notesLines });
+
+        // optional role ping for @monthly recap
+        const mentionId =
+          (config.recapRoleId && String(config.recapRoleId).match(/\d{6,}/)?.[0]) || null;
+
+        const finalContent = mentionId
+          ? `${baseText}\n\n<@&${mentionId}>`
+          : baseText;
 
         const recapChannel = await client.channels.fetch(interaction.channelId);
         await recapChannel.send({
-          content: baseText,
-          allowedMentions: { parse: [] },
+          content: finalContent,
+          allowedMentions: mentionId
+            ? { roles: [mentionId], parse: [] }
+            : { parse: [] },
         });
 
         return safeEditReply(interaction, { content: '✅ Monthly recap posted.' });
+
       }
 
 
