@@ -450,13 +450,15 @@ export function renderMonthlyRecap(trades, year, monthIndex, { notesLines = [] }
   if (Array.isArray(notesLines)) {
     L.push('', '🗒️ **Notes**');
     if (notesLines.length) {
-      notesLines.forEach(n => L.push(`- ${n}`));
+      notesLines.forEach(n => L.push(`${n}`));
+
     } else {
       L.push('- —');
     }
   }
 
-    return L.join('\n') + '\n\n@monthly recap';
+    return L.join('\n') + '\n\n<@&1382604370490953810>';
+
 
 }
 // ---- recap embed for attachments ----
