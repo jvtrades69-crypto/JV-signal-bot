@@ -456,7 +456,8 @@ export function renderMonthlyRecap(trades, year, monthIndex, { notesLines = [] }
     }
   }
 
-  return L.join('\n');
+    return L.join('\n') + '\n\n@monthly recap';
+
 }
 // ---- recap embed for attachments ----
 export function renderRecapEmbed(signal, { imageUrl, attachmentName, attachmentUrl } = {}) {
