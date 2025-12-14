@@ -1299,11 +1299,32 @@ await updateSummary();
                const baseText = renderMonthlyRecap(monthly, y, mIndex, { notesLines });
         const mention = '<@&1382604370490953810>';
 
-        const recapChannel = await client.channels.fetch(interaction.channelId);
+               const recapChannel = await client.channels.fetch(interaction.channelId);
         await recapChannel.send({
           content: `${baseText}\n\n${mention}`,
           allowedMentions: { roles: ['1382604370490953810'], parse: [] },
         });
+
+        // --- NEW: private thread copy (non-bold) for owner only ---
+        try {
+          const threadName = `Monthly Recap ${monthYear} (plain)`;
+          const thread = await recapChannel.threads.create({
+            name: threadName.length > 95 ? threadName.slice(0, 95) : threadName,
+            type: ChannelType.PrivateThread,
+            invitable: false,
+            reason: `Monthly recap plain copy for ${interaction.user.id}`,
+          });
+
+          // ensure only you can see it
+          await thread.members.add(interaction.user.id).catch(() => {});
+          if (config.ownerId && config.ownerId !== interaction.user.id) {
+            await thread.members.add(config.ownerId).catch(() => {});
+          }
+
+          const plainText = String(baseText).replace(/\*\*(.*?)\*\*/g, '$1');
+          await thread.send({ content: plainText, allowedMentions: { parse: [] } }).catch(() => {});
+        } catch {}
+        // --- end NEW ---
 
         return safeEditReply(interaction, { content: '✅ Monthly recap posted.' });
 
