@@ -32,6 +32,16 @@ const client = new Client({
 const pendingSignals = new Map();
 // stash a single /recap slash-UI attachment per user (10-min TTL)
 const pendingRecapCharts = new Map();
+
+// ===== DISCORD TO X AUTO-POST =====
+const X_POST_CHANNELS = [
+  '1392009307171717293',
+  '1286727908815274085',
+  '1382588427979198586'
+];
+const N8N_WEBHOOK_URL = 'https://raze11.app.n8n.cloud/webhook/discord-to-x-signal';
+const xPostQueue = new Map();
+
 // stash selected month for monthly recap per user (10-min TTL)
 const pendingMonthlyRecap = new Map();
 const __looksLikeImage = (att) => {
@@ -2382,5 +2392,78 @@ async function pruneGhostSignals() {
     console.error('pruneGhostSignals error:', e);
   }
 }
+
+// ===== DISCORD TO X AUTO-POST LISTENERS =====
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
+  if (!X_POST_CHANNELS.includes(message.channelId)) return;
+
+  let type = 'general';
+  const content = message.content.toLowerCase();
+  if (content.includes('signal') || content.includes('entry') || content.includes('long') || content.includes('short')) {
+    type = 'signal';
+  } else if (content.includes('recap') || content.includes('weekly') || content.includes('summary')) {
+    type = 'recap';
+  }
+
+  const imageUrl = message.attachments.first()?.url || null;
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`xpost_btcc_${message.id}`).setLabel('Post to X (BTCC)').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`xpost_blofin_${message.id}`).setLabel('Post to X (BloFin)').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`xpost_skip_${message.id}`).setLabel('Skip').setStyle(ButtonStyle.Danger)
+  );
+
+  try {
+    await message.reply({ content: 'Post this to X?', components: [row], flags: MessageFlags.Ephemeral });
+    xPostQueue.set(message.id, { content: message.content, imageUrl, type });
+    setTimeout(() => xPostQueue.delete(message.id), 5 * 60 * 1000);
+  } catch {}
+});
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isButton()) return;
+  if (!interaction.customId.startsWith('xpost_')) return;
+
+  const parts = interaction.customId.split('_');
+  const action = parts[1];
+  const messageId = parts[2];
+
+  if (action === 'skip') {
+    xPostQueue.delete(messageId);
+    return interaction.update({ content: 'Skipped.', components: [] });
+  }
+
+  const msgData = xPostQueue.get(messageId);
+  if (!msgData) {
+    return interaction.update({ content: 'Expired. Try again.', components: [] });
+  }
+
+  try {
+    await interaction.update({ content: 'Posting to X...', components: [] });
+
+    const response = await fetch(N8N_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: msgData.content,
+        imageUrl: msgData.imageUrl,
+        type: msgData.type,
+        exchange: action
+      })
+    });
+
+    const result = await response.json();
+    if (result.success) {
+      await interaction.editReply({ content: `Posted to X with ${action.toUpperCase()} promo.` });
+    } else {
+      await interaction.editReply({ content: `Failed: ${result.error || 'Unknown error'}` });
+    }
+  } catch (err) {
+    await interaction.editReply({ content: `Error: ${err.message}` });
+  }
+
+  xPostQueue.delete(messageId);
+});
 
 client.login(config.token);
