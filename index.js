@@ -2414,11 +2414,18 @@ client.on('messageCreate', async (message) => {
     new ButtonBuilder().setCustomId(`xpost_skip_${message.id}`).setLabel('Skip').setStyle(ButtonStyle.Danger)
   );
 
-  try {
-    await message.reply({ content: 'Post this to X?', components: [row], flags: MessageFlags.Ephemeral });
+    try {
+    const dm = await message.author.createDM();
+    await dm.send({ 
+      content: `Post this to X?\n${message.url}`, 
+      components: [row] 
+    });
     xPostQueue.set(message.id, { content: message.content, imageUrl, type });
     setTimeout(() => xPostQueue.delete(message.id), 5 * 60 * 1000);
-  } catch {}
+  } catch (e) {
+    console.error('X post prompt error:', e);
+  }
+
 });
 
 client.on('interactionCreate', async (interaction) => {
