@@ -2453,8 +2453,9 @@ client.on('messageCreate', async (message) => {
   const imageUrl = message.attachments.first()?.url || null;
 
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`xpost_btcc_${message.id}`).setLabel('Post to X (BTCC)').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`xpost_blofin_${message.id}`).setLabel('Post to X (BloFin)').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`xpost_btcc_${message.id}`).setLabel('BTCC').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`xpost_blofin_${message.id}`).setLabel('BloFin').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`xpost_none_${message.id}`).setLabel('No Promo').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`xpost_skip_${message.id}`).setLabel('Skip').setStyle(ButtonStyle.Danger)
   );
 
