@@ -2298,7 +2298,50 @@ return safeEditReply(interaction, { content: '⚖️ Risk badge cleared.' });
         await ensureDeferred(interaction);
         return safeEditReply(interaction, { content: `✅ ${key.toUpperCase()} recorded${isNum(planPct) && Number(planPct) > 0 ? ` (${planPct}%).` : '.'}` });
       }
+// ===== X POST BUTTONS =====
+      if (interaction.customId.startsWith('xpost_')) {
+        const xparts = interaction.customId.split('_');
+        const action = xparts[1];
+        const msgId = xparts[2];
 
+        const msgData = xPostQueue.get(msgId);
+        
+        try { await interaction.message.delete(); } catch {}
+        
+        if (action === 'skip') {
+          xPostQueue.delete(msgId);
+          return;
+        }
+
+        if (!msgData) {
+          return interaction.reply({ content: '❌ Expired. Try again.', flags: MessageFlags.Ephemeral });
+        }
+
+        try {
+          const response = await fetch(N8N_WEBHOOK_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              content: msgData.content,
+              imageUrl: msgData.imageUrl,
+              type: msgData.type,
+              exchange: action
+            })
+          });
+
+          const result = await response.json();
+          if (result.success) {
+            await interaction.reply({ content: `✅ Posted to X with ${action.toUpperCase()} promo.`, flags: MessageFlags.Ephemeral });
+          } else {
+            await interaction.reply({ content: `❌ Failed: ${result.error || 'Unknown error'}`, flags: MessageFlags.Ephemeral });
+          }
+        } catch (err) {
+          await interaction.reply({ content: `❌ Error: ${err.message}`, flags: MessageFlags.Ephemeral });
+        } finally {
+          xPostQueue.delete(msgId);
+        }
+        return;
+      }
       return interaction.reply({ content: 'Unknown action.', flags: MessageFlags.Ephemeral });
     }
   } catch (err) {
@@ -2393,16 +2436,17 @@ async function pruneGhostSignals() {
   }
 }
 
-// ===== DISCORD TO X AUTO-POST LISTENERS =====
+// ===== DISCORD TO X AUTO-POST LISTENER =====
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
+  if (message.author.id !== config.ownerId) return;
   if (!X_POST_CHANNELS.includes(message.channelId)) return;
 
   let type = 'general';
-  const content = message.content.toLowerCase();
-  if (content.includes('signal') || content.includes('entry') || content.includes('long') || content.includes('short')) {
+  const contentLower = message.content.toLowerCase();
+  if (contentLower.includes('signal') || contentLower.includes('entry') || contentLower.includes('long') || contentLower.includes('short')) {
     type = 'signal';
-  } else if (content.includes('recap') || content.includes('weekly') || content.includes('summary')) {
+  } else if (contentLower.includes('recap') || contentLower.includes('weekly') || contentLower.includes('summary')) {
     type = 'recap';
   }
 
@@ -2414,63 +2458,28 @@ client.on('messageCreate', async (message) => {
     new ButtonBuilder().setCustomId(`xpost_skip_${message.id}`).setLabel('Skip').setStyle(ButtonStyle.Danger)
   );
 
-    try {
-    const dm = await message.author.createDM();
-    await dm.send({ 
-      content: `Post this to X?\n${message.url}`, 
+  try {
+    const prompt = await message.channel.send({ 
+      content: '📤 Post this to X?', 
       components: [row] 
     });
-    xPostQueue.set(message.id, { content: message.content, imageUrl, type });
-    setTimeout(() => xPostQueue.delete(message.id), 5 * 60 * 1000);
+    
+    xPostQueue.set(message.id, { 
+      content: message.content, 
+      imageUrl, 
+      type,
+      promptId: prompt.id
+    });
+    
+    setTimeout(async () => {
+      if (xPostQueue.has(message.id)) {
+        xPostQueue.delete(message.id);
+        try { await prompt.delete(); } catch {}
+      }
+    }, 60 * 1000);
   } catch (e) {
     console.error('X post prompt error:', e);
   }
-
 });
-
-client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isButton()) return;
-  if (!interaction.customId.startsWith('xpost_')) return;
-
-  const parts = interaction.customId.split('_');
-  const action = parts[1];
-  const messageId = parts[2];
-
-  if (action === 'skip') {
-    xPostQueue.delete(messageId);
-    return interaction.update({ content: 'Skipped.', components: [] });
-  }
-
-  const msgData = xPostQueue.get(messageId);
-  if (!msgData) {
-    return interaction.update({ content: 'Expired. Try again.', components: [] });
-  }
-
-  try {
-    await interaction.update({ content: 'Posting to X...', components: [] });
-
-    const response = await fetch(N8N_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content: msgData.content,
-        imageUrl: msgData.imageUrl,
-        type: msgData.type,
-        exchange: action
-      })
-    });
-
-    const result = await response.json();
-    if (result.success) {
-      await interaction.editReply({ content: `Posted to X with ${action.toUpperCase()} promo.` });
-    } else {
-      await interaction.editReply({ content: `Failed: ${result.error || 'Unknown error'}` });
-    }
-  } catch (err) {
-    await interaction.editReply({ content: `Error: ${err.message}` });
-  }
-
-  xPostQueue.delete(messageId);
-});
-
+// X post button handler is now in main interactionCreate
 client.login(config.token);
