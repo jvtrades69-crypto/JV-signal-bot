@@ -2329,11 +2329,12 @@ return safeEditReply(interaction, { content: '⚖️ Risk badge cleared.' });
             })
           });
 
-          const result = await response.json();
-          if (result.success) {
-            await interaction.reply({ content: `✅ Posted to X with ${action.toUpperCase()} promo.`, flags: MessageFlags.Ephemeral });
+          if (response.ok) {
+            const promoDisplay = action === 'none' ? 'No' : action.toUpperCase();
+            await interaction.reply({ content: `✅ Posted to X with ${promoDisplay} promo.`, flags: MessageFlags.Ephemeral });
           } else {
-            await interaction.reply({ content: `❌ Failed: ${result.error || 'Unknown error'}`, flags: MessageFlags.Ephemeral });
+            const errorText = await response.text().catch(() => 'Unknown error');
+            await interaction.reply({ content: `❌ Failed: ${errorText}`, flags: MessageFlags.Ephemeral });
           }
         } catch (err) {
           await interaction.reply({ content: `❌ Error: ${err.message}`, flags: MessageFlags.Ephemeral });
