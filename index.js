@@ -2323,7 +2323,7 @@ return safeEditReply(interaction, { content: '⚖️ Risk badge cleared.' });
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               content: msgData.content,
-              imageUrl: msgData.imageUrl,
+              imageUrls: msgData.imageUrls,
               type: msgData.type,
               exchange: action
             })
@@ -2439,7 +2439,7 @@ async function pruneGhostSignals() {
 
 // ===== DISCORD TO X AUTO-POST LISTENER =====
 client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
+  // Bot messages now allowed for xpost buttons in trading-signals/jv-calls
   if (message.author.id !== config.ownerId) return;
   if (!X_POST_CHANNELS.includes(message.channelId)) return;
 
@@ -2451,7 +2451,7 @@ client.on('messageCreate', async (message) => {
     type = 'recap';
   }
 
-  const imageUrl = message.attachments.first()?.url || null;
+  const imageUrls = message.attachments.map(a => a.url);
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`xpost_btcc_${message.id}`).setLabel('BTCC').setStyle(ButtonStyle.Primary),
@@ -2468,7 +2468,7 @@ client.on('messageCreate', async (message) => {
     
     xPostQueue.set(message.id, { 
       content: message.content, 
-      imageUrl, 
+      imageUrls, 
       type,
       promptId: prompt.id
     });
