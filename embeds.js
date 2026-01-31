@@ -468,9 +468,9 @@ export function renderRecapEmbed(signal, { imageUrl, attachmentName, attachmentU
   const embed = {
     type: 'rich',
     title,
-    color: signal.direction === 'SHORT' ? 0xED4245 : 0x57F287,
+    color: signal.status === 'STOPPED_BE' ? 0xFEE75C : (signal.direction === 'SHORT' ? 0xED4245 : 0x57F287),
     fields: [
-      { name: 'Result', value: `${useR >= 0 ? '+' : ''}${useR.toFixed(2)}R`, inline: false },
+      { name: 'Result', value: signal.status === 'STOPPED_BE' ? 'Breakeven +0.00R' : `${useR >= 0 ? '+' : ''}${useR.toFixed(2)}R`, inline: false },
     ],
   };
   if (signal.jumpUrl) {
