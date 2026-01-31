@@ -73,7 +73,7 @@ function buildTitle(signal) {
 
     let suffix = '';
   const sign = useR >= 0 ? '+' : '';
-  const verdict = useR >= 0 ? 'Win' : 'Loss';
+  const verdict = signal.status === 'STOPPED_BE' ? 'Breakeven' : (useR >= 0 ? 'Win' : 'Loss');
 
   if (signal.status === 'STOPPED_OUT') {
     suffix = `Loss -${Math.abs(useR).toFixed(2)}R`;
@@ -468,9 +468,9 @@ export function renderRecapEmbed(signal, { imageUrl, attachmentName, attachmentU
   const embed = {
     type: 'rich',
     title,
-    color: signal.direction === 'SHORT' ? 0xED4245 : 0x57F287,
+    color: signal.status === 'STOPPED_BE' ? 0xFEE75C : (signal.direction === 'SHORT' ? 0xED4245 : 0x57F287),
     fields: [
-      { name: 'Result', value: `${useR >= 0 ? '+' : ''}${useR.toFixed(2)}R`, inline: false },
+      { name: 'Result', value: signal.status === 'STOPPED_BE' ? 'Breakeven +0.00R' : `${useR >= 0 ? '+' : ''}${useR.toFixed(2)}R`, inline: false },
     ],
   };
   if (signal.jumpUrl) {
