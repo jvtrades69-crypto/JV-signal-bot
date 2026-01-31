@@ -583,3 +583,12 @@ export function renderWeeklyRecapDetailed({ startDateStr, endDateStr, totals, to
   L.push('', '#BTC #ETH #SOL #DayTrading');
   return L.join('\n');
 }
+
+// ---------- status display helper ----------
+export function getStatusDisplay(status) {
+  if (status && status.toLowerCase().includes('breakeven')) {
+    return { emoji: ':large_yellow_circle:', label: 'Breakeven +0.00R' };
+  }
+  // Default fallback for other statuses
+  return null;
+}
