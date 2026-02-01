@@ -65,7 +65,8 @@ function computeTpPercents(signal){
 // ---------- titles ----------
 function buildTitle(signal) {
   const riskBadge = (!signal.latestTpHit && signal.riskLabel) ? ` (${signal.riskLabel} risk)` : '';
-  const head = `$${String(signal.asset).toUpperCase()} | ${dirWord(signal)} ${dirDot(signal)}${riskBadge}`;
+  const emoji = signal.status === 'STOPPED_BE' ? '🟡' : dirDot(signal);
+  const head = `$${String(signal.asset).toUpperCase()} | ${dirWord(signal)} ${emoji}${riskBadge}`;
 
   const isFinal = ['CLOSED', 'STOPPED_BE', 'STOPPED_OUT'].includes(signal.status);
   const hasFinal = signal.finalR != null && isFinite(Number(signal.finalR));
