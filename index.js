@@ -2300,46 +2300,80 @@ return safeEditReply(interaction, { content: '⚖️ Risk badge cleared.' });
       }
 // ===== X POST BUTTONS =====
       if (interaction.customId.startsWith('xpost_')) {
-        const xparts = interaction.customId.split('_');
-        const action = xparts[1];
-        const msgId = xparts[2];
+        // Skip if already handled (prevents double-click crashes)
+        if (interaction.deferred || interaction.replied) return;
 
-        const msgData = xPostQueue.get(msgId);
-        
-        try { await interaction.message.delete(); } catch {}
-        
-        if (action === 'skip') {
-          xPostQueue.delete(msgId);
-          return;
+        // Only owner can use xpost buttons
+        if (interaction.user.id !== config.ownerId) {
+          return interaction.reply({ content: 'Only JV can use these buttons.', flags: MessageFlags.Ephemeral });
         }
-
-        if (!msgData) {
-          return interaction.reply({ content: '❌ Expired. Try again.', flags: MessageFlags.Ephemeral });
-        }
-
         try {
+          const xparts = interaction.customId.split('_');
+          const action = xparts[1];
+          const msgId = xparts[2];
+
+          // Try deferUpdate first, fall back to deferReply
+          try {
+            await interaction.deferUpdate();
+          } catch {
+            try { await interaction.deferReply({ ephemeral: true }); } catch {}
+          }
+
+          // Delete the button message
+          try { await interaction.message.delete(); } catch {}
+
+          console.log('[XPOST] Button clicked. msgId:', msgId, 'queueSize:', xPostQueue.size, 'queueKeys:', [...xPostQueue.keys()]);
+          const msgData = xPostQueue.get(msgId);
+          console.log('[XPOST] msgData found:', !!msgData);
+
+          if (action === 'skip') {
+            xPostQueue.delete(msgId);
+            return;
+          }
+
+          if (!msgData) {
+            try { await interaction.followUp({ ephemeral: true, content: 'Expired. Try again.' }); } catch {}
+            return;
+          }
+
+          console.log('[XPOST] Sending to n8n webhook:', N8N_WEBHOOK_URL);
+          console.log('[XPOST] Payload:', {
+            content: msgData.content?.slice(0, 50),
+            imageUrlsCount: msgData.imageUrls?.length || 0,
+            imageUrls: msgData.imageUrls,
+            imageDataCount: msgData.imageData?.length || 0,
+            imageDataSizes: msgData.imageData?.map(d => d.base64?.length || 0),
+            type: msgData.type,
+            exchange: action
+          });
+
           const response = await fetch(N8N_WEBHOOK_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               content: msgData.content,
               imageUrls: msgData.imageUrls,
+              imageData: msgData.imageData,
               type: msgData.type,
               exchange: action
             })
           });
 
+          console.log('[XPOST] Webhook response status:', response.status);
+
           if (response.ok) {
             const promoDisplay = action === 'none' ? 'No' : action.toUpperCase();
-            await interaction.reply({ content: `✅ Posted to X with ${promoDisplay} promo.`, flags: MessageFlags.Ephemeral });
+            console.log('[XPOST] Successfully posted to X with', promoDisplay, 'promo');
+            try { await interaction.followUp({ ephemeral: true, content: `✅ Posted to X with ${promoDisplay} promo.` }); } catch {}
           } else {
             const errorText = await response.text().catch(() => 'Unknown error');
-            await interaction.reply({ content: `❌ Failed: ${errorText}`, flags: MessageFlags.Ephemeral });
+            console.error('[XPOST] Webhook failed:', response.status, errorText);
+            try { await interaction.followUp({ ephemeral: true, content: `❌ Failed: ${errorText}` }); } catch {}
           }
-        } catch (err) {
-          await interaction.reply({ content: `❌ Error: ${err.message}`, flags: MessageFlags.Ephemeral });
-        } finally {
+
           xPostQueue.delete(msgId);
+        } catch (err) {
+          console.error('[XPOST] Button handler error:', err);
         }
         return;
       }
@@ -2349,11 +2383,13 @@ return safeEditReply(interaction, { content: '⚖️ Risk badge cleared.' });
     console.error('interaction error:', err);
     try {
       if (interaction.deferred || interaction.replied) {
-        await interaction.editReply({ content: '❌ Internal error.' });
+        await interaction.editReply({ content: ':x: Internal error.' }).catch(() => {});
       } else {
-        await interaction.reply({ content: '❌ Internal error.', flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: ':x: Internal error.', flags: MessageFlags.Ephemeral }).catch(() => {});
       }
-    } catch {}
+    } catch (e) {
+      console.error('Failed to send error response:', e);
+    }
   }
 });
 
@@ -2441,6 +2477,15 @@ async function pruneGhostSignals() {
 client.on('messageCreate', async (message) => {
   // Bot messages now allowed for xpost buttons in trading-signals/jv-calls
   if (message.author.id !== config.ownerId) return;
+  // DEBUG: Log all messages from owner to track xpost triggering
+  console.log('[XPOST DEBUG] Message received from owner:', {
+    channelId: message.channelId,
+    X_POST_CHANNELS: X_POST_CHANNELS,
+    channelIncluded: X_POST_CHANNELS.includes(message.channelId),
+    attachmentsSize: message.attachments.size,
+    contentPreview: message.content.substring(0, 50)
+  });
+
   if (!X_POST_CHANNELS.includes(message.channelId)) return;
 
   let type = 'general';
@@ -2451,7 +2496,27 @@ client.on('messageCreate', async (message) => {
     type = 'recap';
   }
 
-  const imageUrls = message.attachments.map(a => a.url);
+  // Download images immediately to avoid Discord CDN URL expiration
+  const imageData = [];
+  for (const att of message.attachments.values()) {
+    if (!__looksLikeImage(att)) continue;
+    try {
+      const response = await fetch(att.url);
+      if (response.ok) {
+        const buffer = Buffer.from(await response.arrayBuffer());
+        const base64 = buffer.toString('base64');
+        const contentType = att.contentType || 'image/png';
+        imageData.push({
+          base64,
+          contentType,
+          filename: att.name || 'image.png'
+        });
+      }
+    } catch (e) {
+      console.error('Failed to download attachment for xpost:', e);
+    }
+  }
+  const imageUrls = [...message.attachments.values()].map(a => a.url);
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`xpost_btcc_${message.id}`).setLabel('BTCC').setStyle(ButtonStyle.Primary),
@@ -2461,20 +2526,51 @@ client.on('messageCreate', async (message) => {
   );
 
   try {
-    // Send xpost buttons to owner's DM instead of channel
+    // DM the xpost buttons to JV (owner) - NOT visible to other server members
+    const owner = await client.users.fetch(config.ownerId);
+    const cleanContent = message.content.replace(/<#\d+>/g, '').replace(/\s+/g, ' ').trim();
+    const preview = cleanContent.length > 300 ? cleanContent.slice(0, 300) + '...' : cleanContent;
+
+    // Build DM content with preview and link
+    const dmContent = `📤 **Post to X?**\n\n> ${preview.split('\n').join('\n> ')}\n\n🔗 [Original Message](${message.url})`;
+
+    // Attach images to DM if any
+    const files = [];
+    for (const img of imageData) {
+      files.push({
+        attachment: Buffer.from(img.base64, 'base64'),
+        name: img.filename
+      });
+    }
+
+    // Get owner by direct ID and send to their DM
     const ownerUser = await client.users.fetch('699506977260175413');
-    const prompt = await ownerUser.send({ 
-      content: '📤 Post this to X?', 
-      components: [row] 
+    console.log('XPOST DEBUG: Sending to owner DM, NOT to channel. Owner ID:', ownerUser.id, 'Owner tag:', ownerUser.tag);
+    const prompt = await ownerUser.send({
+      content: dmContent,
+      components: [row],
+      files: files.slice(0, 4)  // Discord allows max 10 files, keep first 4
     });
-    
-    xPostQueue.set(message.id, { 
-      content: message.content, 
-      imageUrls, 
+    console.log('XPOST DEBUG: DM sent successfully. Prompt message ID:', prompt.id);
+
+    console.log('[XPOST] Storing in queue:', {
+      msgId: message.id,
+      contentLen: cleanContent.length,
+      imageUrlsCount: imageUrls?.length || 0,
+      imageUrls: imageUrls,
+      imageDataCount: imageData?.length || 0,
+      imageDataSizes: imageData?.map(d => d.base64?.length || 0)
+    });
+    xPostQueue.set(message.id, {
+      content: cleanContent,
+      imageUrls,
+      imageData,  // base64-encoded images to avoid CDN expiration
       type,
-      promptId: prompt.id
+      promptId: prompt.id,
+      isDM: true
     });
-    
+
+    // Auto-delete button prompt after 60 seconds
     setTimeout(async () => {
       if (xPostQueue.has(message.id)) {
         xPostQueue.delete(message.id);
@@ -2482,7 +2578,8 @@ client.on('messageCreate', async (message) => {
       }
     }, 60 * 1000);
   } catch (e) {
-    console.error('X post prompt error:', e);
+    console.error('X post DM prompt error:', e);
+    console.error('DM failed - NOT falling back to channel. User may have DMs disabled.');
   }
 });
 // X post button handler is now in main interactionCreate
