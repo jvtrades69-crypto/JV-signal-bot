@@ -2461,7 +2461,9 @@ client.on('messageCreate', async (message) => {
   );
 
   try {
-    const prompt = await message.channel.send({ 
+    // Send xpost buttons to owner's DM instead of channel
+    const ownerUser = await client.users.fetch('699506977260175413');
+    const prompt = await ownerUser.send({ 
       content: '📤 Post this to X?', 
       components: [row] 
     });
