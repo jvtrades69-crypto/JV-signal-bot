@@ -1,0 +1,5 @@
+node_modules/
+.env
+*.log
+xpost-queue.json
+ecosystem.config.cjs

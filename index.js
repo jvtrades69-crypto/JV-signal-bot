@@ -1,4 +1,7 @@
 // index.js — JV Signal Bot (risk badge + risk toggles + full close profit + recap FinalR override + BE trigger + weekly/monthly/trade recap)
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import {
   Client,
   GatewayIntentBits,
@@ -34,13 +37,38 @@ const pendingSignals = new Map();
 const pendingRecapCharts = new Map();
 
 // ===== DISCORD TO X AUTO-POST =====
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const XPOST_QUEUE_FILE = path.join(__dirname, 'xpost-queue.json');
+
+function loadQueue() {
+  try {
+    if (fs.existsSync(XPOST_QUEUE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(XPOST_QUEUE_FILE, 'utf8'));
+      return new Map(Object.entries(data));
+    }
+  } catch (e) {
+    console.log('[XPOST] Failed to load queue:', e.message);
+  }
+  return new Map();
+}
+
+function saveQueue() {
+  try {
+    const obj = Object.fromEntries(xPostQueue);
+    fs.writeFileSync(XPOST_QUEUE_FILE, JSON.stringify(obj, null, 2));
+  } catch (e) {
+    console.log('[XPOST] Failed to save queue:', e.message);
+  }
+}
+
 const X_POST_CHANNELS = [
   '1392009307171717293',
   '1286727908815274085',
   '1382588427979198586'
 ];
 const N8N_WEBHOOK_URL = 'https://raze11.app.n8n.cloud/webhook/discord-to-x-signal';
-const xPostQueue = new Map();
+const xPostQueue = loadQueue();
 
 // stash selected month for monthly recap per user (10-min TTL)
 const pendingMonthlyRecap = new Map();
@@ -2328,6 +2356,7 @@ return safeEditReply(interaction, { content: '⚖️ Risk badge cleared.' });
 
           if (action === 'skip') {
             xPostQueue.delete(msgId);
+            saveQueue();
             return;
           }
 
@@ -2372,6 +2401,7 @@ return safeEditReply(interaction, { content: '⚖️ Risk badge cleared.' });
           }
 
           xPostQueue.delete(msgId);
+          saveQueue();
         } catch (err) {
           console.error('[XPOST] Button handler error:', err);
         }
@@ -2488,6 +2518,15 @@ client.on('messageCreate', async (message) => {
 
   if (!X_POST_CHANNELS.includes(message.channelId)) return;
 
+  // Prevent duplicate DM prompts for the same message - set flag IMMEDIATELY before any async work
+  if (xPostQueue.has(message.id)) {
+    console.log('[XPOST] Skipping duplicate message:', message.id);
+    return;
+  }
+  // Reserve the slot immediately to prevent race conditions
+  xPostQueue.set(message.id, { pending: true });
+  saveQueue();
+
   let type = 'general';
   const contentLower = message.content.toLowerCase();
   if (contentLower.includes('signal') || contentLower.includes('entry') || contentLower.includes('long') || contentLower.includes('short')) {
@@ -2569,14 +2608,16 @@ client.on('messageCreate', async (message) => {
       promptId: prompt.id,
       isDM: true
     });
+    saveQueue();
 
-    // Auto-delete button prompt after 60 seconds
+    // Auto-delete button prompt after 10 minutes
     setTimeout(async () => {
       if (xPostQueue.has(message.id)) {
         xPostQueue.delete(message.id);
+        saveQueue();
         try { await prompt.delete(); } catch {}
       }
-    }, 60 * 1000);
+    }, 10 * 60 * 1000);
   } catch (e) {
     console.error('X post DM prompt error:', e);
     console.error('DM failed - NOT falling back to channel. User may have DMs disabled.');
