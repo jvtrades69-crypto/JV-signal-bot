@@ -1060,7 +1060,7 @@ if (askReason && !reasonValue) {
         return interaction.showModal(m);
       }
 
-      await createSignal({
+      const __sig = await createSignal({
         asset: assetSel,
         direction, entry, sl, tp1, tp2, tp3, tp4, tp5,
         reason: reasonValue, extraRole,
@@ -1077,6 +1077,14 @@ if (askReason && !reasonValue) {
         riskLabel: risk,
         beAt: be_at || null,
       }, interaction.channelId);
+
+      // Trigger xpost prompt for this signal
+      if (__sig?.messageId && X_POST_CHANNELS.includes(interaction.channelId)) {
+        const tps = [tp1, tp2, tp3, tp4, tp5].filter(Boolean).map((v, i) => `TP${i+1}: ${v}`).join(' | ');
+        const xText = `$${assetSel} ${direction}\nEntry: ${entry}\nSL: ${sl}\n${tps}`;
+        sendXpostPrompt(__sig.messageId, { content: xText, imageUrl: chartAtt?.url || null, type: 'signal' }).catch(() => {});
+      }
+
       return safeEditReply(interaction, { content: '✅ Trade signal posted.' });
     }
 
@@ -1266,7 +1274,15 @@ await updateSummary();
 
         pendingSignals.delete(pid);
 
-        await createSignal(payload, stash.channelId);
+        const __sig2 = await createSignal(payload, stash.channelId);
+
+        // Trigger xpost prompt for this signal
+        if (__sig2?.messageId && X_POST_CHANNELS.includes(stash.channelId)) {
+          const tps = [stash.tp1, stash.tp2, stash.tp3, stash.tp4, stash.tp5].filter(Boolean).map((v, i) => `TP${i+1}: ${v}`).join(' | ');
+          const xText = `$${payload.asset} ${payload.direction}\nEntry: ${payload.entry}\nSL: ${payload.sl}\n${tps}`;
+          sendXpostPrompt(__sig2.messageId, { content: xText, imageUrl: stash.chartUrl || null, type: 'signal' }).catch(() => {});
+        }
+
         return safeEditReply(interaction, {
           content: '✅ Trade signal posted.'
         });
@@ -1299,7 +1315,15 @@ await updateSummary();
 
         pendingSignals.delete(pid);
 
-        await createSignal(payload, stash.channelId);
+        const __sig3 = await createSignal(payload, stash.channelId);
+
+        // Trigger xpost prompt for this signal
+        if (__sig3?.messageId && X_POST_CHANNELS.includes(stash.channelId)) {
+          const tps = [stash.tp1, stash.tp2, stash.tp3, stash.tp4, stash.tp5].filter(Boolean).map((v, i) => `TP${i+1}: ${v}`).join(' | ');
+          const xText = `$${payload.asset} ${payload.direction}\nEntry: ${payload.entry}\nSL: ${payload.sl}\n${tps}`;
+          sendXpostPrompt(__sig3.messageId, { content: xText, imageUrl: stash.chartUrl || null, type: 'signal' }).catch(() => {});
+        }
+
         return safeEditReply(interaction, {
           content: '✅ Trade signal posted.'
         });
@@ -1338,10 +1362,16 @@ await updateSummary();
         const mention = '<@&1382604370490953810>';
 
                const recapChannel = await client.channels.fetch(interaction.channelId);
-        await recapChannel.send({
+        const __monthlyMsg = await recapChannel.send({
           content: `${baseText}\n\n${mention}`,
           allowedMentions: { roles: ['1382604370490953810'], parse: [] },
         });
+
+        // Trigger xpost prompt for monthly recap
+        if (__monthlyMsg?.id && X_POST_CHANNELS.includes(interaction.channelId)) {
+          const plainText = String(baseText).replace(/\*\*(.*?)\*\*/g, '$1');
+          sendXpostPrompt(__monthlyMsg.id, { content: plainText, imageUrl: null, type: 'recap' }).catch(() => {});
+        }
 
         // --- NEW: private thread copy (non-bold) for owner only ---
         try {
@@ -1613,7 +1643,13 @@ await updateSummary();
       ];
     }
 
-    await recapChannel.send(sendPayload);
+    const __tradeRecapMsg = await recapChannel.send(sendPayload);
+
+    // Trigger xpost prompt for trade recap
+    if (__tradeRecapMsg?.id && X_POST_CHANNELS.includes(interaction.channelId)) {
+      const plainRecap = String(recapText).replace(/\*\*(.*?)\*\*/g, '$1');
+      sendXpostPrompt(__tradeRecapMsg.id, { content: plainRecap, imageUrl: chartLink || null, type: 'recap' }).catch(() => {});
+    }
 
     return safeEditReply(interaction, { content: '✅ Trade recap posted.' });
 
@@ -2500,6 +2536,76 @@ async function pruneGhostSignals() {
     }
   } catch (e) {
     console.error('pruneGhostSignals error:', e);
+  }
+}
+
+// ===== XPOST PROMPT HELPER (used by /signal, /recap, and messageCreate) =====
+async function sendXpostPrompt(msgId, { content, imageUrl, type }) {
+  try {
+    if (xPostQueue.has(msgId)) return;
+    xPostQueue.set(msgId, { pending: true });
+    saveQueue();
+
+    const imageData = [];
+    const imageUrls = [];
+    if (imageUrl) {
+      imageUrls.push(imageUrl);
+      try {
+        const response = await fetch(imageUrl);
+        if (response.ok) {
+          const buffer = Buffer.from(await response.arrayBuffer());
+          imageData.push({
+            base64: buffer.toString('base64'),
+            contentType: 'image/png',
+            filename: 'chart.png'
+          });
+        }
+      } catch (e) {
+        console.error('[XPOST] Failed to download image for xpost:', e);
+      }
+    }
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`xpost_btcc_${msgId}`).setLabel('BTCC').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`xpost_blofin_${msgId}`).setLabel('BloFin').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`xpost_none_${msgId}`).setLabel('No Promo').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`xpost_skip_${msgId}`).setLabel('Skip').setStyle(ButtonStyle.Danger)
+    );
+
+    const preview = content.length > 300 ? content.slice(0, 300) + '...' : content;
+    const dmContent = `📤 **Post to X?**\n\n> ${preview.split('\n').join('\n> ')}`;
+
+    const files = imageData.map(img => ({
+      attachment: Buffer.from(img.base64, 'base64'),
+      name: img.filename
+    }));
+
+    const ownerUser = await client.users.fetch(config.ownerId);
+    const prompt = await ownerUser.send({
+      content: dmContent,
+      components: [row],
+      files: files.slice(0, 4)
+    });
+
+    xPostQueue.set(msgId, {
+      content,
+      imageUrls,
+      imageData,
+      type,
+      promptId: prompt.id,
+      isDM: true
+    });
+    saveQueue();
+
+    setTimeout(async () => {
+      if (xPostQueue.has(msgId)) {
+        xPostQueue.delete(msgId);
+        saveQueue();
+        try { await prompt.delete(); } catch {}
+      }
+    }, 10 * 60 * 1000);
+  } catch (e) {
+    console.error('[XPOST] sendXpostPrompt error:', e);
   }
 }
 
