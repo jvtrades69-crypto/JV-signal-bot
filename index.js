@@ -2397,7 +2397,7 @@ return safeEditReply(interaction, { content: '⚖️ Risk badge cleared.' });
           }
 
           if (!msgData) {
-            try { await interaction.followUp({ ephemeral: true, content: 'Expired. Try again.' }); } catch {}
+            try { await interaction.followUp({ ephemeral: true, content: '⏰ Expired. Please re-send the message to get new buttons.' }); } catch {}
             return;
           }
 
@@ -2426,14 +2426,23 @@ return safeEditReply(interaction, { content: '⚖️ Risk badge cleared.' });
 
           console.log('[XPOST] Webhook response status:', response.status);
 
-          if (response.ok) {
-            const promoDisplay = action === 'none' ? 'No' : action.toUpperCase();
-            console.log('[XPOST] Successfully posted to X with', promoDisplay, 'promo');
-            try { await interaction.followUp({ ephemeral: true, content: `✅ Posted to X with ${promoDisplay} promo.` }); } catch {}
-          } else {
+          if (!response.ok) {
             const errorText = await response.text().catch(() => 'Unknown error');
-            console.error('[XPOST] Webhook failed:', response.status, errorText);
-            try { await interaction.followUp({ ephemeral: true, content: `❌ Failed: ${errorText}` }); } catch {}
+            console.error('[XPOST] Webhook HTTP error:', response.status, errorText);
+            try { await interaction.followUp({ ephemeral: true, content: `❌ Failed (HTTP ${response.status}): ${errorText}` }); } catch {}
+          } else {
+            let result;
+            try { result = await response.json(); } catch { result = {}; }
+            console.log('[XPOST] Webhook response body:', JSON.stringify(result));
+            if (result.success === true) {
+              const promoDisplay = action === 'none' ? 'No' : action.toUpperCase();
+              console.log('[XPOST] Successfully posted to X with', promoDisplay, 'promo');
+              try { await interaction.followUp({ ephemeral: true, content: `✅ Posted to X with ${promoDisplay} promo.` }); } catch {}
+            } else {
+              const errMsg = result.error || result.message || 'Webhook did not confirm success';
+              console.error('[XPOST] Webhook returned success:false -', errMsg);
+              try { await interaction.followUp({ ephemeral: true, content: `❌ Failed: ${errMsg}` }); } catch {}
+            }
           }
 
           xPostQueue.delete(msgId);
@@ -2443,6 +2452,80 @@ return safeEditReply(interaction, { content: '⚖️ Risk badge cleared.' });
         }
         return;
       }
+    // === MARKET INSIGHTS APPROVAL BUTTONS ===
+    if (customId.startsWith('mi_approve_') || customId.startsWith('mi_reject_')) {
+      try {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        const approvalId = interaction.message.id;
+        const isApprove = customId.startsWith('mi_approve_');
+        const pendingDir = '/root/chart-analyst/pending-approvals';
+        const pendingFile = require('path').join(pendingDir, `${approvalId}.json`);
+        const fs = require('fs');
+
+        if (!fs.existsSync(pendingFile)) {
+          return interaction.editReply({ content: 'Approval expired or already handled.' });
+        }
+
+        const pending = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
+
+        if (!isApprove) {
+          fs.unlinkSync(pendingFile);
+          await interaction.editReply({ content: 'Market Insights post rejected.' });
+          try { await interaction.message.edit({ components: [] }); } catch {}
+          return;
+        }
+
+        // APPROVE - post to #jv-market-insights
+        const MARKET_INSIGHTS_CHANNEL = '1286727908815274085';
+        const miText = pending.marketInsightsText || pending.market_insights_text || '';
+        const screenshotPath = pending.screenshotPath || '';
+
+        if (!miText) {
+          fs.unlinkSync(pendingFile);
+          return interaction.editReply({ content: 'No market insights text found in pending data.' });
+        }
+
+        // Post as plain text + image (matching JV's posting style - no embeds)
+        const fetch = require('node-fetch');
+        const FormData = require('form-data');
+        const BOT_TOKEN = fs.readFileSync('/root/chart-analyst/.bot_token', 'utf8').trim();
+        const DISCORD_API = 'https://discord.com/api/v10';
+
+        const form = new FormData();
+        if (screenshotPath && fs.existsSync(screenshotPath)) {
+          form.append('files[0]', fs.createReadStream(screenshotPath), require('path').basename(screenshotPath));
+        }
+
+        const roleMention = '<@&1173283727745482772>'; // Market Insights role
+        const postContent = `${miText}\n\n${roleMention}`;
+
+        const payload = { content: postContent };
+        form.append('payload_json', JSON.stringify(payload));
+
+        const postRes = await fetch(`${DISCORD_API}/channels/${MARKET_INSIGHTS_CHANNEL}/messages`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bot ${BOT_TOKEN}` },
+          body: form
+        });
+
+        const postResult = await postRes.json();
+
+        if (postResult.id) {
+          console.log('[MI] Posted to #jv-market-insights:', postResult.id);
+          fs.unlinkSync(pendingFile);
+          await interaction.editReply({ content: `Posted to #jv-market-insights! Message ID: ${postResult.id}` });
+          try { await interaction.message.edit({ components: [] }); } catch {}
+        } else {
+          console.error('[MI] Post failed:', postResult);
+          await interaction.editReply({ content: `Failed to post: ${JSON.stringify(postResult).substring(0, 200)}` });
+        }
+      } catch (err) {
+        console.error('[MI] Button handler error:', err);
+        try { await interaction.editReply({ content: `Error: ${err.message}` }); } catch {}
+      }
+      return;
+    }
+
       return interaction.reply({ content: 'Unknown action.', flags: MessageFlags.Ephemeral });
     }
   } catch (err) {
@@ -2603,7 +2686,7 @@ async function sendXpostPrompt(msgId, { content, imageUrl, type }) {
         saveQueue();
         try { await prompt.delete(); } catch {}
       }
-    }, 10 * 60 * 1000);
+    }, 86400000); // 24 hours
   } catch (e) {
     console.error('[XPOST] sendXpostPrompt error:', e);
   }
@@ -2716,14 +2799,14 @@ client.on('messageCreate', async (message) => {
     });
     saveQueue();
 
-    // Auto-delete button prompt after 10 minutes
+    // Auto-delete button prompt after 24 hours
     setTimeout(async () => {
       if (xPostQueue.has(message.id)) {
         xPostQueue.delete(message.id);
         saveQueue();
         try { await prompt.delete(); } catch {}
       }
-    }, 10 * 60 * 1000);
+    }, 86400000); // 24 hours
   } catch (e) {
     console.error('X post DM prompt error:', e);
     console.error('DM failed - NOT falling back to channel. User may have DMs disabled.');
