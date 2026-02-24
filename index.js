@@ -132,6 +132,9 @@ function computeRealizedR(signal) {
 
 function normalizeSignal(raw) {
   const s = { ...raw };
+  // Ensure asset is always a valid string — fallback to id-based extraction or 'UNKNOWN'
+  if (!s.asset) s.asset = (s.pair || s.ticker || s.symbol || 'UNKNOWN').toString().replace(/USDT$|USD$|PERP$/i, '');
+  s.asset = String(s.asset).toUpperCase();
   s.entry = toNumOrNull(s.entry);
   s.sl = toNumOrNull(s.sl);
   s.slOriginal = s.slOriginal ?? s.sl;
