@@ -3,5 +3,6 @@
   "summaryMessageId": null,
   "ownerPanels": {},
   "threads": {},
-  "webhooks": {}
+  "webhooks": {},
+  "deleted": []
 }
